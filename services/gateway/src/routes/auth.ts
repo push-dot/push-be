@@ -5,7 +5,7 @@ import { requireUser } from "../middleware/auth.ts";
 
 export async function authMe(request: Request, env: FrontEnv, deps: Deps, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
   const user = await requireUser(request, env, deps, rid, limits, now);
-  if (user instanceof Response) return user;
+  if (user instanceof Response) {return user;}
   const text = pyJson({
     data: {
       id: user.id, displayName: user.displayName,

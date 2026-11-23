@@ -1,5 +1,5 @@
 import type { StoreReceipts } from "./billing/stores.ts";
-import type { Query, Transaction } from "./db.ts";
+import type { Query, QueryResult, Transaction } from "./db.ts";
 import type { Mailer } from "./mail/mailer.ts";
 import type { ReadCache } from "./read-cache.ts";
 import type { SmsSender } from "./sms/sender.ts";
@@ -73,7 +73,7 @@ export interface CoreEnv {
   /** The service account the Play RTDN Pub/Sub push subscription signs as. */
   GOOGLE_OIDC_EMAIL?: string;
   EMAIL?: {
-    send(message: { to: string; from: string; subject: string; text: string; html: string }): Promise<unknown>;
+    send(message: { to: string; from: string; subject: string; text: string; html: string }): Promise<object | void>;
   };
 }
 
@@ -87,7 +87,7 @@ export interface Deps {
   sms?: SmsSender;
   stores?: StoreReceipts;
   /** Isolate-local cache for caller-independent reads. Absent in tests, so they always hit the fake database. */
-  cache?: ReadCache;
+  cache?: ReadCache<QueryResult>;
 }
 
 export interface UserRow {

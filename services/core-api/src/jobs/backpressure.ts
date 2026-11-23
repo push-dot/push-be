@@ -1,6 +1,7 @@
 import type { Query } from "../db.ts";
 import { one } from "../db.ts";
-import { queueDepthLimit, RETRY_AFTER_SEC, type Plan, type QueueName } from "./config.ts";
+import { queueDepthLimit, RETRY_AFTER_SEC } from './config.ts';
+import type { Plan, QueueName } from './config.ts';
 
 export type QueueOwner = { userId: string; companyId?: string };
 
@@ -16,7 +17,7 @@ export const checkBackpressure = async (
     "SELECT count(*)::int AS n FROM ai_jobs WHERE queue = $1 AND status IN ('QUEUED', 'RETRY')",
     [queue],
   );
-  if (Number(row?.n || 0) <= queueDepthLimit(plan)) return { ok: true };
+  if (Number(row?.n || 0) <= queueDepthLimit(plan)) {return { ok: true };}
   const own = await one(
     db,
     "SELECT count(*)::int AS n FROM ai_jobs WHERE queue = $1 AND status IN ('QUEUED', 'RETRY') "

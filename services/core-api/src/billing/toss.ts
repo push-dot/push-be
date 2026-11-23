@@ -20,32 +20,39 @@ export class TossError extends Error {
 
 export type TossPayment = { status: string; paymentKey: string; receiptUrl: string | null };
 
-const call = async (ctx: Ctx, path: string, body: Record<string, unknown>, idempotencyKey?: string): Promise<Record<string, unknown>> => {
+type Json = string | number | boolean | null | Array<Json> | { [key: string]: Json };
+type JsonObject = { [key: string]: Json };
+
+const isJsonObject = (value: unknown): value is JsonObject => typeof value === "object" && value !== null && !Array.isArray(value);
+
+const call = async (ctx: Ctx, path: string, body: JsonObject, idempotencyKey?: string): Promise<JsonObject> => {
   const fetchImpl = ctx.deps.fetch ?? fetch;
   const secret = ctx.env.TOSS_SECRET_KEY || "";
+  const base = { authorization: "Basic " + btoa(secret + ":"), "content-type": "application/json" };
+  const headers = idempotencyKey ? { ...base, "idempotency-key": idempotencyKey } : base;
   let res: Response;
   try {
     res = await fetchImpl(TOSS_ORIGIN + path, {
       method: "POST",
-      headers: {
-        authorization: "Basic " + btoa(secret + ":"),
-        "content-type": "application/json",
-        ...(idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
-      },
+      headers,
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(TOSS_TIMEOUT_MS),
     });
   } catch {
     throw new TossError(0, "NETWORK");
   }
-  let parsed: Record<string, unknown> = {};
-  try { parsed = await res.json() as Record<string, unknown>; } catch { parsed = {}; }
-  if (!res.ok) throw new TossError(res.status, typeof parsed.code === "string" ? parsed.code : "UNKNOWN");
+  let parsed: JsonObject = {};
+  try {
+    const raw: unknown = await res.json();
+    if (isJsonObject(raw)) {parsed = raw;}
+  } catch { /* an unreadable body counts as empty */ }
+  if (!res.ok) {throw new TossError(res.status, typeof parsed.code === "string" ? parsed.code : "UNKNOWN");}
   return parsed;
 };
 
-const paymentOf = (body: Record<string, unknown>): TossPayment => {
-  const url = (body.receipt as { url?: unknown } | null | undefined)?.url;
+const paymentOf = (body: JsonObject): TossPayment => {
+  const receipt = body.receipt;
+  const url = isJsonObject(receipt) ? receipt.url : undefined;
   return {
     status: String(body.status ?? ""),
     paymentKey: String(body.paymentKey ?? ""),
@@ -55,7 +62,7 @@ const paymentOf = (body: Record<string, unknown>): TossPayment => {
 
 export const issueBillingKey = async (ctx: Ctx, authKey: string, customerKey: string): Promise<string> => {
   const body = await call(ctx, "/v1/billing/authorizations/issue", { authKey, customerKey });
-  if (typeof body.billingKey !== "string" || !body.billingKey) throw new TossError(502, "NO_BILLING_KEY");
+  if (typeof body.billingKey !== "string" || !body.billingKey) {throw new TossError(502, "NO_BILLING_KEY");}
   return body.billingKey;
 };
 

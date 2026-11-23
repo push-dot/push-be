@@ -96,7 +96,7 @@ const statusOf = (fields: Record<string, Schema>): Schema => obj({ type: enumOf(
 const since = { ...dateTime, description: "When the run was queued. For waiting: when the card asked." };
 
 /** What a run is doing. The newest status with a phase is the current one. */
-export const statusPhases: Schema[] = [
+export const statusPhases: Array<Schema> = [
   statusOf({ phase: enumOf("queued"), since, ahead: { ...int, description: "In a bot thread, the caller's chat runs queued or running before this one (the bot state's queue position). 0 elsewhere" } }),
   statusOf({ phase: enumOf("thinking", "working"), since }),
   statusOf({ phase: enumOf("waiting"), since, for: enumOf("answer", "confirm"), cardId: uuid }),
@@ -108,7 +108,7 @@ const materialSource = obj({
   title: str,
 }, ["kind", "id", "title"]);
 
-export const chatEvents: Record<string, Schema> = {
+export const chatEvents = {
   status: { anyOf: [statusOf({}), ...statusPhases] },
   token: obj({ type: enumOf("token"), text: str, seq }),
   think: obj({
@@ -302,7 +302,7 @@ export const chatEvents: Record<string, Schema> = {
         documentId: str,
         fileName: {
           type: "string",
-          description: "Edited PDF. Each part drops /\\:*?\"<>|, characters below U+0020, and whitespace, then drops a leading or trailing . or _. With a company: {display}_{company}_{role}.pdf. Empty parts are dropped. The joined name before .pdf is capped at 80 characters; an empty name becomes 이력서. With no company: {original stem}_수정본.pdf, and the stem is shortened so that name stays within 80 characters. An empty stem becomes 이력서.",
+          description: String.raw`Edited PDF. Each part drops /\:*?"<>|, characters below U+0020, and whitespace, then drops a leading or trailing . or _. With a company: {display}_{company}_{role}.pdf. Empty parts are dropped. The joined name before .pdf is capped at 80 characters; an empty name becomes 이력서. With no company: {original stem}_수정본.pdf, and the stem is shortened so that name stays within 80 characters. An empty stem becomes 이력서.`,
         },
         pageLine: str,
         savedLine: str,
@@ -358,15 +358,22 @@ export const chatEvents: Record<string, Schema> = {
   }, ["type", "seq"]),
 };
 
-const variants = (event: Schema): Schema[] | undefined => (event.oneOf ?? event.anyOf) as Schema[] | undefined;
+const schemaList = (value: unknown): Array<Schema> => (Array.isArray(value) ? value.filter(isSchema) : []);
+const isSchema = (value: unknown): value is Schema => typeof value === "object" && value !== null && !Array.isArray(value);
+const variantKey = (event: Schema): "oneOf" | "anyOf" | undefined => {
+  if (event.oneOf) {return "oneOf";}
+  return event.anyOf ? "anyOf" : undefined;
+};
 
 /** A stored frame as a stream sends it. A frame without a required seq is the gateway's own error and has no stamp. */
 export const stamped = (event: Schema): Schema => {
-  if (variants(event)) return { ...event, [event.oneOf ? "oneOf" : "anyOf"]: variants(event)!.map(stamped) };
-  const required = event.required as string[];
+  const key = variantKey(event);
+  if (key) {return { ...event, [key]: schemaList(event[key]).map(stamped) };}
+  const properties = isSchema(event.properties) ? event.properties : undefined;
+  const required = Array.isArray(event.required) ? event.required.filter((name) => typeof name === "string") : [];
   return {
     ...event,
-    properties: { ...(event.properties as Record<string, Schema>), at, turn },
+    properties: { ...properties, at, turn },
     required: required.includes("seq") ? [...required, "at", "turn"] : required,
   };
 };
@@ -388,7 +395,7 @@ const chatStreamDescription = "Frames are `id: <seq>` + `data: <json>` with no `
   + "A choice may add sections and submit. options stays the fallback an older client renders and answers. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. The intake materials are a toggle section whose ids (m_file, m_posting, m_github) are answers; an unchecked id drops that material. Ids of a rows section are not answers. An answer contains submit only when optionId is submit or submit is in optionIds. Without submit, chips and thumbnails use the sent ids and a missing section stays unset; a toggle uses the sent ids, and a toggle section with no id keeps its selected default. "
   + "Gate quality sits after review and before the template gate. It lists automatic fixes as a diff and recommendation toggles. Gate read_failed asks how to continue when the posting could not be read; paste and pick stay on that gate until the next message, and proceed continues to the analyze gate. Neither gate has a cancel option. The present gate (결과를 확인할까요?) is never asked: the flow saves the profile, sends the choice with auto true and no note, and goes on. The tool update_my_profile runs without an approval card; the client shows what changed and lets the person revert it.";
 
-export const messageText = { type: "string", minLength: 1, maxLength: 20000 };
+export const messageText = { type: "string", minLength: 1, maxLength: 20_000 };
 
 export const PERSONAL_INTENTS = [
   "match_posting", "fit", "gaps", "experience", "boost",
@@ -439,7 +446,7 @@ const chatJob = obj({
 
 const expectedRevision = closed({ expectedRevision: int });
 
-export const routes: Route[] = [
+export const routes: Array<Route> = [
   get("gateway", "/api/v1/conversations", {
     tag: "conversations",
     summary: "List conversations",
@@ -714,7 +721,7 @@ const opEvent = (payload: Schema): Schema => obj({ operationId: uuid, sequence: 
 
 const { status: _status, done: _done, ...turnEvents } = chatEvents;
 
-export const schemas: Record<string, Schema> = {
+export const schemas = {
   ConversationTurn: obj({
     jobId: uuid,
     status: enumOf("PENDING", "RUNNING", "DONE", "FAILED", "CANCELLED"),

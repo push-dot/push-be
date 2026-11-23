@@ -1,7 +1,7 @@
 // Rewrites one known line per service inside the test process only. If a line moves,
 // the hook throws so the capture never silently records nothing.
 // Synchronous, so capture adds no await and concurrent queries reach the database in the order the code sends them.
-const APPEND = "process.getBuiltinModule(\"node:fs\").appendFileSync(process.env.SQL_CAPTURE, JSON.stringify(text) + \"\\n\");";
+const APPEND = String.raw`process.getBuiltinModule("node:fs").appendFileSync(process.env.SQL_CAPTURE, JSON.stringify(text) + "\n");`;
 
 const TARGETS = [
   {
@@ -22,8 +22,8 @@ const TARGETS = [
 export async function load(url, context, nextLoad) {
   const result = await nextLoad(url, context);
   const target = TARGETS.find((t) => url.endsWith(t.suffix));
-  if (!target) return result;
+  if (!target) {return result;}
   const source = String(result.source);
-  if (!source.includes(target.mark)) throw new Error("sql-check: " + target.suffix + " changed; update scripts/sql-check/hooks.mjs");
+  if (!source.includes(target.mark)) {throw new Error("sql-check: " + target.suffix + " changed; update scripts/sql-check/hooks.mjs");}
   return { ...result, source: source.replace(target.mark, target.inject(target.mark)) };
 }

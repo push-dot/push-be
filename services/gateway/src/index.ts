@@ -1,6 +1,7 @@
 import { neon, types } from "@neondatabase/serverless";
 
-import { handle, type FrontEnv, type Query } from "./handler.ts";
+import { handle } from './handler.ts';
+import type { FrontEnv, Query } from './handler.ts';
 
 // OID 1114 timestamp, 1184 timestamptz. Leave the wire text alone so
 // microseconds are not rounded through a JS Date.
@@ -17,7 +18,7 @@ export default {
         };
       return await handle(request, env, {
         query,
-        waitUntil: ctx?.waitUntil ? (promise) => ctx.waitUntil!(promise) : undefined,
+        waitUntil: ctx?.waitUntil ? (promise) => ctx.waitUntil?.(promise) : undefined,
       });
     } catch {
       return new Response(
@@ -32,6 +33,6 @@ function neonQuery(databaseUrl: string): Query {
   const sql = neon(databaseUrl);
   return async (text, params) => {
     const rows = await sql.query(text, params);
-    return rows as unknown as Record<string, unknown>[];
+    return rows;
   };
 }

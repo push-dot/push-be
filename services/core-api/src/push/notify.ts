@@ -1,4 +1,5 @@
 import { query } from "../db.ts";
+import type { JsonObject } from "../json.ts";
 import { enqueueJob, kickDispatcher, withDispatcher } from "../jobs/enqueue.ts";
 import type { Ctx } from "../types.ts";
 import { deliverPush } from "./notifier.ts";
@@ -8,16 +9,28 @@ export type Notice = {
   type: string;
   title: string;
   body: string;
-  target: Record<string, unknown>;
+  target: JsonObject;
   conversationId?: string;
   pushBody?: string;
 };
+
+interface NotifyPayload {
+  notificationId: string;
+  userId: string;
+  kind: string;
+  title: string;
+  body: string;
+  target: Notice["target"];
+  createdAt: string;
+  pushBody?: string;
+  conversationId?: string;
+}
 
 const queued = (ctx: Ctx): boolean => (ctx.env.QUEUE_BACKEND || "").trim().toLowerCase() === "redis";
 
 export const sendNotification = async (ctx: Ctx, notice: Notice): Promise<string> => {
   const id = crypto.randomUUID();
-  const payload: Record<string, unknown> = {
+  const payload: NotifyPayload = {
     notificationId: id,
     userId: notice.userId,
     kind: notice.type,
@@ -26,8 +39,8 @@ export const sendNotification = async (ctx: Ctx, notice: Notice): Promise<string
     target: notice.target,
     createdAt: ctx.now.toISOString(),
   };
-  if (notice.pushBody != null) payload.pushBody = notice.pushBody;
-  if (notice.conversationId != null) payload.conversationId = notice.conversationId;
+  if (notice.pushBody !== null && notice.pushBody !== undefined) {payload.pushBody = notice.pushBody;}
+  if (notice.conversationId !== null && notice.conversationId !== undefined) {payload.conversationId = notice.conversationId;}
   if (queued(ctx)) {
     await enqueueJob(ctx.deps.query, {
       type: "notify",

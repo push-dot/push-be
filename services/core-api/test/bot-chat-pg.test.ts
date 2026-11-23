@@ -4,37 +4,49 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
 import { enqueueResumeJob } from "../src/ai-jobs.ts";
-import type { Query } from "../src/db.ts";
-import { handle, type CoreEnv } from "../src/handler.ts";
+import type { Query, Row } from "../src/db.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv } from '../src/handler.ts';
 import { uuid5Url } from "../src/http.ts";
-import { botsPg, type BotsPg, type Person } from "../test-support/bots-pg.ts";
+import type { Json, JsonObject } from "../src/json.ts";
+import { botsPg } from '../test-support/bots-pg.ts';
+import type { BotsPg, Person } from '../test-support/bots-pg.ts';
+
+// Test data comes from JSON bodies and rows; the round trip types it without an assertion.
+const viaJson = <T>(value: unknown): T => {
+  const out: T = JSON.parse(JSON.stringify(value) ?? "null");
+  return out;
+};
+
+const readJson = async <T>(res: Response): Promise<T> => {
+  const body: T = await res.json();
+  return body;
+};
 
 const URL_ = process.env.BILLING_PG_URL;
 const SKIP = "set BILLING_PG_URL to a migrated Postgres";
 
 let db: BotsPg | undefined;
-before(async () => { if (URL_) db = await botsPg(URL_); });
+before(async () => { if (URL_) {db = await botsPg(URL_);} });
 after(async () => { await db?.close(); });
 
-type Answer = { status: number; data: Record<string, unknown>; error?: { code: string; details: Record<string, unknown> | null } };
+type Answer = { status: number; data: JsonObject; error?: { code: string; details: JsonObject | null } };
 
 const envFor = (user: Person): CoreEnv => ({ APP_ENV: "development", DEV_AUTH_TOKEN: "dev", DEV_USER_ID: user.id, QUEUE_BACKEND: "redis" });
 
 const call = async (user: Person, method: string, path: string, body?: unknown, run: Query = db!.pg.query, key: string = crypto.randomUUID()): Promise<Answer> => {
   const res = await handle(new Request("https://core.example/api/v1" + path, {
     method,
-    headers: {
-      authorization: "Bearer dev",
-      "content-type": "application/json",
-      ...(method === "POST" ? { "idempotency-key": key } : {}),
-    },
+    headers: method === "POST"
+      ? { authorization: "Bearer dev", "content-type": "application/json", "idempotency-key": key }
+      : { authorization: "Bearer dev", "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), envFor(user), { query: run, transaction: db!.pg.transaction, now: () => new Date() });
-  const json = await res.json() as { data?: Record<string, unknown>; error?: Answer["error"] };
+  const json = await readJson<{ data?: JsonObject; error?: Answer["error"] }>(res);
   return { status: res.status, data: json.data ?? {}, error: json.error };
 };
 
-const rows = async (sql: string, params: unknown[]): Promise<Record<string, unknown>[]> => (await db!.pg.query(sql, params)).rows;
+const rows = async (sql: string, params: Array<unknown>): Promise<Array<Row>> => (await db!.pg.query(sql, params)).rows;
 
 const companyBot = async (user: Person, company: string): Promise<{ id: string; postingId: string }> => {
   const postingId = await db!.posting(company);
@@ -45,7 +57,7 @@ const companyBot = async (user: Person, company: string): Promise<{ id: string; 
 
 const threadsOf = (botId: string) => rows("SELECT id, user_id, title, company_id, posting_id FROM conversations WHERE bot_id = $1::uuid", [botId]);
 
-const jobIdOf = (answer: Answer): string => String((answer.data.result as { value: { jobId: string } }).value.jobId);
+const jobIdOf = (answer: Answer): string => String((viaJson<{ value: { jobId: string } }>(answer.data.result)).value.jobId);
 
 const statusRows = (jobId: string) => rows(
   `SELECT e.payload, to_char(j.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS queued_at
@@ -61,7 +73,7 @@ const seedCard = async (user: Person, thread: string): Promise<string> => {
 };
 
 test("two sends at once to a new bot create one thread", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const bot = await companyBot(user, "모아페이");
   assert.deepEqual(await threadsOf(bot.id), [], "a bot has no thread before its first send");
@@ -77,7 +89,7 @@ test("two sends at once to a new bot create one thread", async (t) => {
 });
 
 test("the Push Bot takes a send before it was ever listed", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("FREE");
   assert.equal((await call(user, "POST", "/bots/push/messages/stream", { text: "안녕" })).status, 202);
   const thread = await rows("SELECT b.kind FROM conversations c JOIN bots b ON b.id = c.bot_id WHERE c.user_id = $1::uuid", [user.id]);
@@ -85,7 +97,7 @@ test("the Push Bot takes a send before it was ever listed", async (t) => {
 });
 
 test("a send stores its attachments with their titles and hands them to the run", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const { pg } = db;
   const user = await db.person("PRO");
   const other = await db.person("PRO");
@@ -134,7 +146,7 @@ test("a send stores its attachments with their titles and hands them to the run"
 });
 
 test("a queued job starts with one status row that carries its phase, its start and the queue ahead", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const first = await call(user, "POST", "/bots/push/messages/stream", { text: "하나" });
   const second = await call(user, "POST", "/bots/push/messages/stream", { text: "둘" });
@@ -156,14 +168,17 @@ test("a queued job starts with one status row that carries its phase, its start 
   const url = new URL("https://core.example/");
   const resumed = await enqueueResumeJob({
     request: new Request(url), env: envFor(user), rid: "test", url, now: new Date(),
-    user: { id: user.id } as never, deps: { query: db.pg.query, transaction: db.pg.transaction },
+    user: {
+      id: user.id, displayName: "", locale: "ko", email: "", provider: "dev", plan: "FREE", subscriptionStatus: "NONE",
+      stripeCustomerId: null, periodEndsAt: null, createdAt: "", accountType: "PERSONAL", companyId: null, companyRole: null,
+    }, deps: { query: db.pg.query, transaction: db.pg.transaction },
   }, { conversationId: String(thread.id), userId: user.id, payload: { resume: { approvalId: crypto.randomUUID(), optionId: "approve" } } });
   const status = await statusRows(resumed);
   assert.deepEqual(status.map((row) => row.payload), [{ text: "대기 중", phase: "queued", ahead: 3, since: status[0].queued_at }]);
 });
 
 test("without consent a send creates no thread and a card answer starts no run", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const stranger = await db.person("PRO", false);
   const refused = await call(stranger, "POST", "/bots/push/messages/stream", { text: "안녕" });
   assert.deepEqual([refused.status, refused.error?.code], [403, "CONSENT_REQUIRED"]);
@@ -183,7 +198,7 @@ test("without consent a send creates no thread and a card answer starts no run",
 });
 
 test("a send with the read switch off is refused like a send without consent, and nothing starts", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   await db.pg.query("INSERT INTO user_settings (user_id, allow_ai_read_my_files) VALUES ($1::uuid, false)", [user.id]);
 
@@ -198,7 +213,7 @@ test("a send with the read switch off is refused like a send without consent, an
 });
 
 test("a card is answered by bot, and the answer names no job", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const empty = await companyBot(user, "NoThread");
   assert.equal((await call(user, "POST", `/bots/${empty.id}/approvals/${crypto.randomUUID()}`, { optionId: "approve" })).status, 404);
@@ -220,7 +235,7 @@ test("a card is answered by bot, and the answer names no job", async (t) => {
 });
 
 // The bot is deleted from another session just before the named statement of the send runs.
-const CUTS: [name: string, before: RegExp][] = [
+const CUTS: Array<[name: string, before: RegExp]> = [
   ["before its thread is made", /^INSERT INTO conversations/],
   ["after its thread is made", /^SELECT c\.id, c\.company_id, co\.plan AS company_plan/],
   ["before its job is queued", /^SELECT count\(\*\)::int AS n FROM ai_jobs WHERE queue/],
@@ -229,7 +244,7 @@ const CUTS: [name: string, before: RegExp][] = [
 
 for (const [name, before_] of CUTS) {
   test(`a send whose bot is deleted ${name} answers 404 and leaves no row`, async (t) => {
-    if (!db) return t.skip(SKIP);
+    if (!db) {return t.skip(SKIP);}
     const { pg } = db;
     const user = await db.person("PRO");
     const bot = await companyBot(user, `Race ${name}`);
@@ -253,7 +268,7 @@ for (const [name, before_] of CUTS) {
 }
 
 test("find in chat returns the matching messages newest first, each with its turn", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const bot = await companyBot(user, "Find");
   assert.deepEqual((await call(user, "GET", `/bots/${bot.id}/transcript/matches?q=x`)).data, { total: 0, items: [] }, "no thread yet");
@@ -268,13 +283,13 @@ test("find in chat returns the matching messages newest first, each with its tur
   const found = await call(user, "GET", `/bots/${bot.id}/transcript/matches?q=${encodeURIComponent("결제 서버")}`);
 
   assert.equal(found.status, 200);
-  const items = found.data.items as { messageId: string; turnId: string; at: string }[];
+  const items = viaJson<Array<{ messageId: string; turnId: string; at: string }>>(found.data.items);
   assert.deepEqual([found.data.total, items.map((item) => [item.messageId, item.turnId])], [2, [
     [assistantId, jobIdOf(second)],
     [await uuid5Url(`push:chat:${jobIdOf(first)}:user`), jobIdOf(first)],
   ]]);
   assert.ok(items.every((item) => !Number.isNaN(Date.parse(item.at))));
-  const totalFor = async (q: string): Promise<unknown> =>
+  const totalFor = async (q: string): Promise<Json> =>
     (await call(user, "GET", `/bots/${bot.id}/transcript/matches?q=${encodeURIComponent(q)}`)).data.total;
   assert.deepEqual([await totalFor("100%_경험"), await totalFor("결제%강조"), await totalFor("100_")], [1, 0, 0], "% and _ are text, not wildcards");
   assert.equal(await totalFor("서버 경험을 앞에"), 1);

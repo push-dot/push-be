@@ -15,7 +15,7 @@ const sensKeys = (env: SmsEnv): SensKeys | null => {
   const accessKey = (env.SENS_ACCESS_KEY ?? "").trim();
   const secretKey = (env.SENS_SECRET_KEY ?? "").trim();
   const serviceId = (env.SENS_SERVICE_ID ?? "").trim();
-  const from = (env.SMS_FROM ?? "").replace(/\D/g, "");
+  const from = (env.SMS_FROM ?? "").replaceAll(/\D/g, "");
   return accessKey && secretKey && serviceId && from ? { accessKey, secretKey, serviceId, from } : null;
 };
 
@@ -24,7 +24,7 @@ const logMode = (env: SmsEnv): boolean => env.PHONE_SMS_MODE === "log" && env.AP
 export const smsConfigured = (env: SmsEnv): boolean => logMode(env) || sensKeys(env) !== null;
 
 const domesticNumber = (phone: string): string => {
-  if (!phone.startsWith(KR_PREFIX)) throw new Error("sens sends to +82 numbers only");
+  if (!phone.startsWith(KR_PREFIX)) {throw new Error("sens sends to +82 numbers only");}
   return `0${phone.slice(KR_PREFIX.length)}`;
 };
 
@@ -55,7 +55,7 @@ const sendSens = async (keys: SensKeys, phone: string, code: string, fetchImpl: 
     }),
   });
   if (!res.ok) {
-    console.log(`[sms] sens status ${res.status}`);
+    console.info(`[sms] sens status ${res.status}`);
     throw new Error("sens failed");
   }
 };
@@ -63,8 +63,8 @@ const sendSens = async (keys: SensKeys, phone: string, code: string, fetchImpl: 
 export const createSmsSender = (env: SmsEnv, fetchImpl?: typeof fetch): SmsSender => ({
   send: async (phone, code) => {
     const keys = sensKeys(env);
-    if (keys) return sendSens(keys, phone, code, fetchImpl ?? fetch);
-    if (!logMode(env)) throw new Error("sms not configured");
-    console.log(`[sms] ${phone} ${code}`);
+    if (keys) {return sendSens(keys, phone, code, fetchImpl ?? fetch);}
+    if (!logMode(env)) {throw new Error("sms not configured");}
+    console.info(`[sms] ${phone} ${code}`);
   },
 });

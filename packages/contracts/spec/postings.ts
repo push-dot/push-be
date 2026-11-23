@@ -15,7 +15,7 @@ const textList = (maxItems: number, maxLength: number): Schema => ({ type: "arra
 const careerYears: Schema = { type: "integer", minimum: 0, maximum: 80 };
 const facetItem = obj({ id: str, count: int });
 
-const filterParams = (withLocation: boolean): Schema[] => [
+const filterParams = (withLocation: boolean): Array<Schema> => [
   query("q", { type: "string", maxLength: 200 }, "Matches title or company (Hangul choseong/jamo aware)"),
   query("category", csv("Comma-separated job categories: dev, data, design, plan, marketing, sales, hr, ops")),
   query("skills", csv("Comma-separated skill names (each at most 40 characters); matches any")),
@@ -26,7 +26,7 @@ const filterParams = (withLocation: boolean): Schema[] => [
 
 const requiredQuery = (name: string, schema: Schema, description: string): Schema => ({ name, in: "query", required: true, schema, description });
 
-const postingWriteFields: Record<string, Schema> = {
+const postingWriteFields = {
   title: { type: "string", minLength: 1, maxLength: 300 },
   company: { type: "string", minLength: 1, maxLength: 200, description: "Defaults to the verified company name on create" },
   jobCategory,
@@ -34,7 +34,7 @@ const postingWriteFields: Record<string, Schema> = {
   careerMax: { type: ["integer", "null"], minimum: 0, maximum: 80, description: "Must be >= careerMin" },
   location: { type: "string", minLength: 1, maxLength: 80 },
   employmentType,
-  description: { type: "string", minLength: 1, maxLength: 50000 },
+  description: { type: "string", minLength: 1, maxLength: 50_000 },
   skills: textList(30, 40),
   requirements: textList(50, 500),
   preferred: textList(50, 500),
@@ -46,7 +46,7 @@ const postingWriteFields: Record<string, Schema> = {
   draftSource: { ...nullable(enumOf("AGENT", "MANUAL")), description: "Who wrote the draft. Create only; null or omitted stores null. Anything else is 400." },
 };
 
-export const routes: Route[] = [
+export const routes: Array<Route> = [
   get("core", "/api/v1/postings", {
     tag: "postings",
     summary: "List open postings",
@@ -189,7 +189,7 @@ export const routes: Route[] = [
     auth: "optional",
     description: "type=postings returns Posting items, type=people returns Profile items, type=posts returns Post items. people and posts require a bearer token (401 for guests). Results are ranked by relevance; page.total is included. The term is recorded for trending. sort is optional. Omitted and relevance keep that order. latest orders postings and posts by createdAt and people by updatedAt, with no relevance term. The cursor encodes sort; an omitted sort is stored as relevance, so a cursor minted before sort still continues the default page. sort=latest rejects a cursor with no sort or with relevance. sort=relevance and an omitted sort reject a cursor marked latest. latest does not continue a relevance page.",
     params: [
-      requiredQuery("q", { type: "string", minLength: 1, pattern: "\\S" }, "Search term. Whitespace-only is 400. No max length on this route."),
+      requiredQuery("q", { type: "string", minLength: 1, pattern: String.raw`\S` }, "Search term. Whitespace-only is 400. No max length on this route."),
       query("type", { type: "string", enum: ["postings", "people", "posts"], default: "postings" }),
       query("sort", { type: "string", enum: ["relevance", "latest"] }, "Omitted matches relevance. Any other value, including an empty string, is 422."),
       ...pageParams,
@@ -205,7 +205,7 @@ export const routes: Route[] = [
     summary: "Result counts per search type",
     auth: "optional",
     description: "Each count is the page.total of GET /search for that type, so it equals the full list: private profiles, the caller and non-matching hangul forms are left out. Guests get 0 for people and posts, as /search refuses them. Does not record the term. Whitespace-only q is 400. Over 200 code points is 400.",
-    params: [requiredQuery("q", { type: "string", minLength: 1, maxLength: 200, pattern: "\\S" }, "Search term. Whitespace-only is 400. Max 200 code points.")],
+    params: [requiredQuery("q", { type: "string", minLength: 1, maxLength: 200, pattern: String.raw`\S` }, "Search term. Whitespace-only is 400. Max 200 code points.")],
     responses: { 200: ok(obj({ postings: int, people: int, posts: int })) },
   }),
   get("core", "/api/v1/search/trending", {
@@ -217,7 +217,7 @@ export const routes: Route[] = [
   }),
 ];
 
-const memberFields: Record<string, Schema> = {
+const memberFields = {
   status: postingStatus,
   applicantCount: int,
   newApplicantCount: { type: "integer", description: "Applicants the company has not opened yet" },
@@ -225,7 +225,7 @@ const memberFields: Record<string, Schema> = {
   draftSource: { ...nullable(enumOf("AGENT", "MANUAL")), description: "Who wrote the draft. Null for postings made before it was recorded, and on the update and close responses when the column is not deployed." },
 };
 
-export const schemas: Record<string, Schema> = {
+export const schemas = {
   Posting: obj({
     id: uuid,
     company: str,

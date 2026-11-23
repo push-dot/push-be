@@ -1,18 +1,21 @@
 import { createConnection } from "node:net";
-import type { AddressInfo } from "node:net";
 
 import { Pool, neonConfig, types } from "@neondatabase/serverless";
-import { WebSocket, WebSocketServer } from "ws";
+import { WebSocketServer } from "ws";
 
-import { inTransaction, type Query, type Transaction } from "../../src/db.ts";
+import { inTransaction } from '../../src/db.ts';
+import type { Query, Row, Transaction } from '../../src/db.ts';
 
 types.setTypeParser(1114, (value: string) => value);
 types.setTypeParser(1184, (value: string) => value);
 
 export type LivePg = { query: Query; transaction?: Transaction; close: () => Promise<void> };
 
-const rowsOf = (raw: unknown) => {
-  const result = (Array.isArray(raw) ? raw[raw.length - 1] : raw) as { rows: Record<string, unknown>[]; rowCount: number | null };
+type Raw = { rows: Array<Row>; rowCount: number | null };
+
+const rowsOf = (raw: Raw | Array<Raw>) => {
+  const result = Array.isArray(raw) ? raw.at(-1) : raw;
+  if (!result) {throw new Error("query returned no result");}
   return { rows: result.rows, rowCount: result.rowCount ?? result.rows.length };
 };
 
@@ -27,16 +30,18 @@ export const livePg = async (url: string, max = 10): Promise<LivePg> => {
     tcp.on("close", () => socket.close());
     tcp.on("error", () => socket.close());
   });
-  await new Promise<void>((resolve) => server.on("listening", () => resolve()));
-  const port = (server.address() as AddressInfo).port;
-  neonConfig.webSocketConstructor = WebSocket as unknown as typeof neonConfig.webSocketConstructor;
+  await new Promise<void>((resolve) => { server.on("listening", () => { resolve(); }); });
+  const address = server.address();
+  if (address === null || typeof address === "string") {throw new Error("ws server has no port");}
+  const { port } = address;
+  neonConfig.webSocketConstructor = globalThis.WebSocket;
   neonConfig.wsProxy = () => `localhost:${port}/v1`;
   neonConfig.useSecureWebSocket = false;
   neonConfig.pipelineTLS = false;
   neonConfig.pipelineConnect = false;
   const pool = new Pool({ connectionString: url, ssl: false, max });
   return {
-    query: async (text, params = []) => rowsOf(await pool.query(text, params as unknown[])),
+    query: async (text, params = []) => rowsOf(await pool.query(text, params)),
     transaction: async (work) => {
       const client = await pool.connect();
       try {
@@ -47,7 +52,7 @@ export const livePg = async (url: string, max = 10): Promise<LivePg> => {
     },
     close: async () => {
       await pool.end();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => { server.close(() => { resolve(); }); });
     },
   };
 };

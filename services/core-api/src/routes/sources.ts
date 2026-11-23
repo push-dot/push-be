@@ -7,6 +7,8 @@ import type { Ctx } from "../types.ts";
 import { assertUploadQuota, declaredTooLarge } from "./images.ts";
 import { readObject, textOf } from "./recruiting-shared.ts";
 
+type Row = NonNullable<Awaited<ReturnType<typeof one>>>;
+
 const MAX_SOURCE_BYTES = 20 << 20;
 export const SOURCE_QUOTA = { files: 100, bytes: 300 << 20 };
 const SOURCE_USAGE = "SELECT count(*)::int AS files, COALESCE(sum(size), 0)::bigint AS bytes FROM sources WHERE user_id = $1";
@@ -25,22 +27,22 @@ const hex = (buf: ArrayBuffer): string => [...new Uint8Array(buf)].map((b) => b.
 
 const base64 = (bytes: Uint8Array): string => {
   let bin = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  for (let i = 0; i < bytes.length; i += 0x80_00) {bin += String.fromCharCode(...bytes.subarray(i, i + 0x80_00));}
   return btoa(bin);
 };
 
 export const createSource = async (ctx: Ctx): Promise<Response> => {
-  if (declaredTooLarge(ctx.request, MAX_SOURCE_BYTES)) throw tooLarge();
+  if (declaredTooLarge(ctx.request, MAX_SOURCE_BYTES)) {throw tooLarge();}
   const form = await ctx.request.formData();
   const kind = form.get("kind");
-  if (!kind || typeof kind !== "string") throw fieldError("kind", "required");
+  if (!kind || typeof kind !== "string") {throw fieldError("kind", "required");}
   const file = form.get("file");
-  if (!(file instanceof File)) throw fieldError("file", "required");
-  if (file.size > MAX_SOURCE_BYTES) throw tooLarge();
+  if (!(file instanceof File)) {throw fieldError("file", "required");}
+  if (file.size > MAX_SOURCE_BYTES) {throw tooLarge();}
   const bytes = new Uint8Array(await file.arrayBuffer());
-  if (bytes.length > MAX_SOURCE_BYTES) throw tooLarge();
+  if (bytes.length > MAX_SOURCE_BYTES) {throw tooLarge();}
   const mime = file.type || "application/octet-stream";
-  if (!ALLOWED_SOURCE_MIME.has(mime)) throw fieldError("file", "unsupported file type " + mime);
+  if (!ALLOWED_SOURCE_MIME.has(mime)) {throw fieldError("file", "unsupported file type " + mime);}
   await assertUploadQuota(ctx, SOURCE_USAGE, SOURCE_QUOTA, bytes.length);
   const sha = hex(await crypto.subtle.digest("SHA-256", bytes));
   const id = crypto.randomUUID();
@@ -50,8 +52,8 @@ export const createSource = async (ctx: Ctx): Promise<Response> => {
     await query(ctx.deps.query,
       "INSERT INTO sources (id, user_id, file_name, mime_type, size, sha256, path, status, created_at, content, doc_kind) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,decode($10,'base64'),$11)",
       [...stored, docKind]);
-  } catch (err) {
-    if (!isUndefinedColumn(err)) throw err;
+  } catch (error) {
+    if (!isUndefinedColumn(error)) {throw error;}
     await query(ctx.deps.query,
       "INSERT INTO sources (id, user_id, file_name, mime_type, size, sha256, path, status, created_at, content) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,decode($10,'base64'))",
       stored);
@@ -72,18 +74,18 @@ const notFound = (): HttpError => new HttpError(404, "NOT_FOUND", "resource not 
 
 type LibraryItem = { id: string; fileName: string; mimeType: string; size: number; pageCount: number | null; createdAt: string | null; origin: string; kind: string | null; company: string | null; postingTitle: string | null };
 
-const kindOf = (value: unknown): string | null => value == null || value === "" ? null : String(value);
+const kindOf = (value: unknown): string | null => (value === null || value === undefined) || value === "" ? null : String(value);
 
-export const sourceItem = (row: Record<string, unknown>): LibraryItem => ({
+export const sourceItem = (row: Row): LibraryItem => ({
   id: String(row.id), fileName: String(row.file_name), mimeType: String(row.mime_type), size: Number(row.size),
-  pageCount: row.page_count == null ? null : Number(row.page_count), createdAt: ts(row.created_at),
+  pageCount: row.page_count === null || row.page_count === undefined ? null : Number(row.page_count), createdAt: ts(row.created_at),
   origin: row.origin ? String(row.origin) : "UPLOAD", kind: kindOf(row.doc_kind), company: null, postingTitle: null,
 });
 
-export const documentLibraryItem = (row: Record<string, unknown>): LibraryItem => ({
+export const documentLibraryItem = (row: Row): LibraryItem => ({
   id: String(row.id), fileName: String(row.title), mimeType: "application/json", size: 0, pageCount: null,
   createdAt: ts(row.created_at), origin: "AI", kind: kindOf(row.kind),
-  company: row.company == null ? null : String(row.company), postingTitle: row.posting_title == null ? null : String(row.posting_title),
+  company: row.company === null || row.company === undefined ? null : String(row.company), postingTitle: row.posting_title === null || row.posting_title === undefined ? null : String(row.posting_title),
 });
 
 export type DocumentsLibraryRow = LibraryItem;
@@ -102,11 +104,11 @@ const newerFirst = libraryItemsNewerFirst;
 
 export const listSources = async (ctx: Ctx): Promise<Response> => {
   const kind = ctx.url.searchParams.get("kind") || null;
-  if (kind !== null && kind !== "UPLOAD" && kind !== "AI") throw fieldError("kind", "unsupported kind");
+  if (kind !== null && kind !== "UPLOAD" && kind !== "AI") {throw fieldError("kind", "unsupported kind");}
   const page = pageOf(ctx.url);
   // Each side needs at most limit + 1 rows past the cursor; the merged page is cut from their union.
-  const params: unknown[] = [ctx.user.id];
-  if (page.cursor) params.push(page.cursor.createdAt, page.cursor.id);
+  const params: Array<unknown> = [ctx.user.id];
+  if (page.cursor) {params.push(page.cursor.createdAt, page.cursor.id);}
   params.push(page.limit + 1);
   const tail = (a: string): string => `${page.cursor ? ` AND (${a}created_at, ${a}id) < ($2, $3)` : ""} ORDER BY ${a}created_at DESC, ${a}id DESC LIMIT $${params.length}`;
   const [uploads, documents] = await Promise.all([
@@ -120,20 +122,20 @@ export const listSources = async (ctx: Ctx): Promise<Response> => {
     const mime = String(row.mime_type ?? "");
     return !name.toLowerCase().endsWith(".md") && mime.toLowerCase() !== "text/markdown";
   });
-  const items: LibraryItem[] = [
+  const items: Array<LibraryItem> = [
     ...sourceRows.map(sourceItem),
     ...(documents?.rows ?? []).map(documentLibraryItem),
   ].sort(newerFirst);
   const hasMore = items.length > page.limit;
   const slice = items.slice(0, page.limit);
-  const last = slice[slice.length - 1];
+  const last = slice.at(-1);
   return pageBody(slice, hasMore && last ? encodeCursor(last.createdAt, last.id) : null, hasMore, ctx.rid);
 };
 
-const loadSource = async (ctx: Ctx, id: string): Promise<Record<string, unknown>> => {
+const loadSource = async (ctx: Ctx, id: string): Promise<Row> => {
   const row = await one(ctx.deps.query,
     "SELECT id, file_name, mime_type, size, sha256, status, created_at FROM sources WHERE id = $1 AND user_id = $2", [id, ctx.user.id]);
-  if (!row) throw notFound();
+  if (!row) {throw notFound();}
   return row;
 };
 
@@ -152,20 +154,20 @@ export const renameSource = async (ctx: Ctx, idRaw: string): Promise<Response> =
   const row = await one(ctx.deps.query,
     "UPDATE sources SET file_name = $3 WHERE id = $1::uuid AND user_id = $2 RETURNING id, file_name, mime_type, size, page_count, origin, created_at, to_jsonb(sources)->>'doc_kind' AS doc_kind",
     [id, ctx.user.id, fileName]);
-  if (!row) throw notFound();
+  if (!row) {throw notFound();}
   return data(200, sourceItem(row), ctx.rid);
 };
 
-const fromBase64 = (text: string): Uint8Array => Uint8Array.from(atob(text), (ch) => ch.charCodeAt(0));
+const fromBase64 = (text: string): Uint8Array<ArrayBuffer> => Uint8Array.from(atob(text), (ch) => ch.charCodeAt(0));
 
 export const getSourceContent = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const id = requireUuid(idRaw, "id");
   const row = await one(ctx.deps.query,
     "SELECT mime_type, encode(COALESCE(content, ''::bytea), 'base64') AS content FROM sources WHERE id = $1 AND user_id = $2", [id, ctx.user.id]);
-  if (!row) throw notFound();
+  if (!row) {throw notFound();}
   const mime = String(row.mime_type);
-  const body = fromBase64(String(row.content || "").replace(/\s+/g, ""));
-  return new Response(body as unknown as BodyInit, {
+  const body = fromBase64(String(row.content || "").replaceAll(/\s+/g, ""));
+  return new Response(body, {
     status: 200,
     headers: {
       "content-type": mime.startsWith("text/") ? mime + "; charset=utf-8" : mime,
@@ -205,24 +207,24 @@ const DELETE_SOURCE = `WITH src AS (SELECT id FROM sources WHERE id = $2::uuid A
 export const deleteSource = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const id = requireUuid(idRaw, "id");
   const row = await one(ctx.deps.query, DELETE_SOURCE, [ctx.user.id, id]);
-  if (!Number(row?.found)) throw notFound();
+  if (!Number(row?.found)) {throw notFound();}
   refuseCited(row?.used);
-  if (!Number(row?.deleted)) throw notFound();
+  if (!Number(row?.deleted)) {throw notFound();}
   return noContent(ctx.rid);
 };
 
 export const dispatchSources = async (ctx: Ctx, path: string): Promise<Response | null> => {
   const method = ctx.request.method;
   if (path === "/api/v1/sources") {
-    if (method === "GET") return listSources(ctx);
-    if (method === "POST") return createSource(ctx);
+    if (method === "GET") {return listSources(ctx);}
+    if (method === "POST") {return createSource(ctx);}
     return null;
   }
   const m = path.match(/^\/api\/v1\/sources\/([^/]+)(\/content)?$/);
-  if (!m) return null;
-  if (m[2] && method === "GET") return getSourceContent(ctx, m[1]);
-  if (!m[2] && method === "GET") return getSource(ctx, m[1]);
-  if (!m[2] && method === "PATCH") return renameSource(ctx, m[1]);
-  if (!m[2] && method === "DELETE") return deleteSource(ctx, m[1]);
+  if (!m) {return null;}
+  if (m[2] && method === "GET") {return getSourceContent(ctx, m[1]);}
+  if (!m[2] && method === "GET") {return getSource(ctx, m[1]);}
+  if (!m[2] && method === "PATCH") {return renameSource(ctx, m[1]);}
+  if (!m[2] && method === "DELETE") {return deleteSource(ctx, m[1]);}
   return null;
 };

@@ -1,8 +1,11 @@
 import { isUnique, one, query } from "../db.ts";
+import type { Row } from "../db.ts";
 import { HttpError, clientIp, asBool, data, fieldError, noContent, randomToken, sha256Hex } from "../http.ts";
-import { createMailer, type Mailer } from "../mail/mailer.ts";
+import { createMailer } from '../mail/mailer.ts';
+import type { Mailer } from '../mail/mailer.ts';
 import { hashPassword, verifyPassword } from "../mail/password.ts";
 import { allow } from "../ratelimit.ts";
+import type { JsonObject } from "../json.ts";
 import type { Ctx } from "../types.ts";
 import { clearDeletion, emailTaken, issue, revokeAll } from "./auth.ts";
 import { TERMS_VERSION } from "./consents.ts";
@@ -27,9 +30,9 @@ const limitEmail = async (ctx: Ctx, kind: "login" | "login-h" | "login-ip" | "ma
   }
 };
 
-const requireString = (body: Record<string, unknown>, key: string): string => {
+const requireString = (body: JsonObject, key: string): string => {
   const value = body[key];
-  if (typeof value !== "string" || !value) throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
+  if (typeof value !== "string" || !value) {throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");}
   return value;
 };
 
@@ -41,7 +44,7 @@ const requireEmail = (value: unknown): string => {
 };
 
 const requirePassword = (value: unknown): string => {
-  const length = typeof value === "string" ? [...value].length : 0;
+  const length = typeof value === "string" ? Array.from(value).length : 0;
   if (typeof value !== "string" || length < PASSWORD_MIN || length > PASSWORD_MAX) {
     throw fieldError("password", "must be 8 to 128 characters");
   }
@@ -49,14 +52,14 @@ const requirePassword = (value: unknown): string => {
 };
 
 const requireDisplayName = (value: unknown): string => {
-  if (typeof value !== "string" || value.trim().length === 0 || [...value.trim()].length > 80) {
+  if (typeof value !== "string" || value.trim().length === 0 || Array.from(value.trim()).length > 80) {
     throw fieldError("displayName", "must be 1 to 80 characters");
   }
   return value.trim();
 };
 
 const requireAccountType = (value: unknown): "EMPLOYER" => {
-  if (value !== "EMPLOYER") throw fieldError("accountType", "must be EMPLOYER");
+  if (value !== "EMPLOYER") {throw fieldError("accountType", "must be EMPLOYER");}
   return "EMPLOYER";
 };
 
@@ -91,21 +94,21 @@ const consumeToken = async (ctx: Ctx, id: string): Promise<boolean> => {
   return Boolean(row);
 };
 
-const fresh = (row: Record<string, unknown>, now: Date): boolean =>
-  row.used_at == null && now.getTime() <= Date.parse(String(row.expires_at));
+const fresh = (row: Row, now: Date): boolean =>
+  (row.used_at === null || row.used_at === undefined) && now.getTime() <= Date.parse(String(row.expires_at));
 
 // A token that exists, is unused and is past expiry is 410 with the account email; anything else unusable stays 401.
-const requireFresh = async (row: Record<string, unknown> | null, now: Date, emailOf: (row: Record<string, unknown>) => Promise<string>): Promise<Record<string, unknown>> => {
-  if (row && fresh(row, now)) return row;
-  if (row && row.used_at == null) throw new HttpError(410, "TOKEN_EXPIRED", "token expired", { email: await emailOf(row) });
+const requireFresh = async (row: Row | null, now: Date, emailOf: (row: Row) => Promise<string>): Promise<Row> => {
+  if (row && fresh(row, now)) {return row;}
+  if (row && (row.used_at === null || row.used_at === undefined)) {throw new HttpError(410, "TOKEN_EXPIRED", "token expired", { email: await emailOf(row) });}
   throw new HttpError(401, "UNAUTHENTICATED", "invalid token");
 };
 
 const RESET_TOKEN = "SELECT id, user_id, expires_at, used_at FROM email_tokens WHERE token_hash = $1 AND kind = 'RESET'";
 
-const resetRow = async (ctx: Ctx, token: string): Promise<Record<string, unknown>> => {
+const resetRow = async (ctx: Ctx, token: string): Promise<Row> => {
   const row = await one(ctx.deps.query, RESET_TOKEN, [await sha256Hex(token)]);
-  if (row?.user_id == null) throw new HttpError(401, "UNAUTHENTICATED", "invalid token");
+  if ((row?.user_id === null || row?.user_id === undefined)) {throw new HttpError(401, "UNAUTHENTICATED", "invalid token");}
   return requireFresh(row, ctx.now, async (r) => {
     const user = await one(ctx.deps.query, "SELECT email FROM users WHERE id = $1", [String(r.user_id)]);
     return String(user?.email ?? "");
@@ -121,18 +124,18 @@ const signup = async (ctx: Ctx): Promise<Response> => {
   const accountType = requireAccountType(body.accountType);
   const displayName = requireDisplayName(body.displayName);
   // The agreement record (약관·처리방침) needs the client to say yes; a missing box is not a yes.
-  if (body.agreeTerms !== true) throw fieldError("agreeTerms", "must be true");
+  if (body.agreeTerms !== true) {throw fieldError("agreeTerms", "must be true");}
   // Reference data is a personal feature; employer accounts never opt in.
   const consent = false;
   await limitEmail(ctx, "mail", email, MAIL_PER_MINUTE);
   const existing = await one(ctx.deps.query, "SELECT id, is_employer FROM users WHERE lower(email) = lower($1)", [email]);
-  if (existing) throw emailTaken(existing);
+  if (existing) {throw emailTaken(existing);}
   const now = ctx.now.toISOString();
   const id = crypto.randomUUID();
   const values = [id, email, accountType === "EMPLOYER", displayName, consent, now];
-  await query(ctx.deps.query, INSERT_SIGNUP, values).catch(async (err: unknown) => {
+  await query(ctx.deps.query, INSERT_SIGNUP, values).catch(async (error: unknown) => {
     // shortcut: a database without 0066 still has email_signups_email_key; the old replace keeps signup working there. Drop after production runs 0066.
-    if (!isUnique(err)) throw err;
+    if (!isUnique(error)) {throw error;}
     await query(ctx.deps.query, "DELETE FROM email_signups WHERE lower(email) = lower($1)", [email]);
     await query(ctx.deps.query, INSERT_SIGNUP, values);
   });
@@ -152,12 +155,12 @@ const verify = async (ctx: Ctx): Promise<Response> => {
     "SELECT t.id, t.used_at, t.expires_at, t.signup_id, s.email, s.password_hash, s.is_employer, s.display_name, s.consent_reference, s.created_at FROM email_tokens t JOIN email_signups s ON s.id = t.signup_id WHERE t.token_hash = $1 AND t.kind = 'VERIFY'",
     [hash]);
   const row = await requireFresh(found, ctx.now, async (r) => String(r.email).toLowerCase());
-  if (chosen === null && row.password_hash == null) throw fieldError("password", "must be 8 to 128 characters");
+  if (chosen === null && (row.password_hash === null || row.password_hash === undefined)) {throw fieldError("password", "must be 8 to 128 characters");}
   const passwordHash = chosen === null ? String(row.password_hash) : await hashPassword(chosen);
-  if (!(await consumeToken(ctx, String(row.id)))) throw new HttpError(401, "UNAUTHENTICATED", "invalid token");
+  if (!(await consumeToken(ctx, String(row.id)))) {throw new HttpError(401, "UNAUTHENTICATED", "invalid token");}
   const email = String(row.email).toLowerCase();
   const existing = await one(ctx.deps.query, "SELECT id, is_employer FROM users WHERE lower(email) = lower($1)", [email]);
-  if (existing) throw emailTaken(existing);
+  if (existing) {throw emailTaken(existing);}
   const userId = crypto.randomUUID();
   const now = ctx.now.toISOString();
   const employer = asBool(row.is_employer);
@@ -165,11 +168,11 @@ const verify = async (ctx: Ctx): Promise<Response> => {
     await query(ctx.deps.query,
       "INSERT INTO users (id, provider, provider_subject, display_name, locale, created_at, email, email_verified_at, is_employer, password_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
       [userId, "email", email, String(row.display_name), "ko", now, email, now, employer, passwordHash]);
-  } catch (err) {
-    if (!isUnique(err)) throw err;
+  } catch (error) {
+    if (!isUnique(error)) {throw error;}
     const taken = await one(ctx.deps.query, "SELECT id, is_employer FROM users WHERE lower(email) = lower($1)", [email]);
-    if (taken) throw emailTaken(taken);
-    throw err;
+    if (taken) {throw emailTaken(taken);}
+    throw error;
   }
   await Promise.all([
     // agreeTerms: true means 만 14세 이상 + 이용약관 + 개인정보 처리방침, and the signup request (its created_at) is when.
@@ -216,11 +219,11 @@ const login = async (ctx: Ctx): Promise<Response> => {
     [email]);
   const pending = user ? null : await one(ctx.deps.query, "SELECT password_hash FROM email_signups WHERE lower(email) = lower($1) ORDER BY created_at DESC LIMIT 1", [email]);
   const source = user ?? pending;
-  const stored = source?.password_hash == null ? "" : String(source.password_hash);
+  const stored = (source?.password_hash === null || source?.password_hash === undefined) ? "" : String(source.password_hash);
   if (!(await verifyPassword(password, stored || await decoyHash())) || !stored) {
     throw new HttpError(401, "INVALID_CREDENTIALS", "invalid credentials");
   }
-  if (!user || user.email_verified_at == null) throw new HttpError(403, "EMAIL_NOT_VERIFIED", "email is not verified");
+  if (!user || (user.email_verified_at === null || user.email_verified_at === undefined)) {throw new HttpError(403, "EMAIL_NOT_VERIFIED", "email is not verified");}
   await clearDeletion(ctx, String(user.id));
   return data(200, await issue(ctx, String(user.id)), ctx.rid);
 };
@@ -242,7 +245,7 @@ const confirmReset = async (ctx: Ctx): Promise<Response> => {
   const token = requireString(body, "token");
   const password = requirePassword(body.password);
   const row = await resetRow(ctx, token);
-  if (!(await consumeToken(ctx, String(row.id)))) throw new HttpError(401, "UNAUTHENTICATED", "invalid token");
+  if (!(await consumeToken(ctx, String(row.id)))) {throw new HttpError(401, "UNAUTHENTICATED", "invalid token");}
   await query(ctx.deps.query, "UPDATE users SET password_hash = $2 WHERE id = $1", [String(row.user_id), await hashPassword(password)]);
   await revokeAll(ctx, String(row.user_id));
   return noContent(ctx.rid);
@@ -261,12 +264,12 @@ export const dispatchEmailAuth = async (ctx: Ctx, path: string): Promise<Respons
     const peek = path.match(RESET_PEEK);
     return peek ? checkReset(ctx, peek[1]) : null;
   }
-  if (ctx.request.method !== "POST") return null;
-  if (path === "/api/v1/auth/email/signup") return signup(ctx);
-  if (path === "/api/v1/auth/email/verify") return verify(ctx);
-  if (path === "/api/v1/auth/email/verify/resend") return resendVerify(ctx);
-  if (path === "/api/v1/auth/email/login") return login(ctx);
-  if (path === "/api/v1/auth/email/password-reset") return requestReset(ctx);
-  if (path === "/api/v1/auth/email/password-reset/confirm") return confirmReset(ctx);
+  if (ctx.request.method !== "POST") {return null;}
+  if (path === "/api/v1/auth/email/signup") {return signup(ctx);}
+  if (path === "/api/v1/auth/email/verify") {return verify(ctx);}
+  if (path === "/api/v1/auth/email/verify/resend") {return resendVerify(ctx);}
+  if (path === "/api/v1/auth/email/login") {return login(ctx);}
+  if (path === "/api/v1/auth/email/password-reset") {return requestReset(ctx);}
+  if (path === "/api/v1/auth/email/password-reset/confirm") {return confirmReset(ctx);}
   return null;
 };

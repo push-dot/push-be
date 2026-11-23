@@ -4,19 +4,20 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
 import { searchFields } from "../src/hangul.ts";
-import { botsPg, type BotsPg, type Person } from "../test-support/bots-pg.ts";
+import { botsPg } from '../test-support/bots-pg.ts';
+import type { BotsPg, Person } from '../test-support/bots-pg.ts';
 
 const URL_ = process.env.BILLING_PG_URL;
 const SKIP = "set BILLING_PG_URL to a migrated Postgres";
 
 let db: BotsPg | undefined;
-before(async () => { if (URL_) db = await botsPg(URL_); });
+before(async () => { if (URL_) {db = await botsPg(URL_);} });
 after(async () => {
-  if (db) await db.pg.query("DELETE FROM search_queries WHERE term LIKE 'zq%'");
+  if (db) {await db.pg.query("DELETE FROM search_queries WHERE term LIKE 'zq%'");}
   await db?.close();
 });
 
-const sql = async (text: string, params: unknown[] = []) => (await db!.pg.query(text, params)).rows;
+const sql = async (text: string, params: Array<unknown> = []) => (await db!.pg.query(text, params)).rows;
 
 const profile = async (user: Person, headline: string, isPublic = true): Promise<void> => {
   const f = searchFields(headline);
@@ -32,16 +33,20 @@ const post = async (author: Person, title: string): Promise<void> => {
     [crypto.randomUUID(), author.id, title, f.text, f.choseong, f.jamo]);
 };
 
+const seen = async () => Number((await sql("SELECT count(*)::int AS n FROM search_queries WHERE term = 'zqguest'"))[0].n);
+
 const counts = async (user: Person | null, q: string) => {
   const res = await db!.call(user ?? { id: "00000000-0000-0000-0000-000000000000", plan: "FREE" }, "GET", `/search/counts?q=${encodeURIComponent(q)}`);
   assert.equal(res.status, 200);
-  return res.data as { postings: number; people: number; posts: number };
+  return { postings: Number(res.data.postings), people: Number(res.data.people), posts: Number(res.data.posts) };
 };
 
 const listLength = async (user: Person, type: string, q: string): Promise<number> => {
   const res = await db!.call(user, "GET", `/search?type=${type}&limit=100&q=${encodeURIComponent(q)}`);
   assert.equal(res.status, 200);
-  return (res.body.data as unknown[]).length;
+  const list = res.body.data;
+  assert.ok(Array.isArray(list));
+  return list.length;
 };
 
 test("each tab count equals the length of its full list", { skip: URL_ ? false : SKIP }, async () => {
@@ -74,7 +79,6 @@ test("counts leave the term unrecorded and give guests 0 people and posts", { sk
   const a = await db!.person("FREE");
   await profile(a, "zqguest 개발자");
   await post(a, "zqguest 글");
-  const seen = async () => Number((await sql("SELECT count(*)::int AS n FROM search_queries WHERE term = 'zqguest'"))[0].n);
   assert.deepEqual(await counts(null, "zqguest"), { postings: 0, people: 0, posts: 0 });
   assert.deepEqual(await counts(me, "zqguest"), { postings: 0, people: 1, posts: 1 });
   assert.equal(await seen(), 0);

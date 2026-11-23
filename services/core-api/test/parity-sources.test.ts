@@ -5,6 +5,6 @@ import { parityGroup } from "./parity/harness.ts";
 
 test("source, image and career evidence routes answer like the python routes", async (t) => {
   const out = await parityGroup("sources");
-  if (!out.ran) return t.skip("no recorded queries; run with PARITY_PG_URL");
+  if (!out.ran) {return t.skip("no recorded queries; run with PARITY_PG_URL");}
   assert.deepEqual(out.mismatches, []);
 });

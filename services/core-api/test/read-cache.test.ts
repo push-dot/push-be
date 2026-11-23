@@ -41,7 +41,7 @@ test("clear drops every entry", async () => {
 
 test("many distinct keys stay under the entry cap and the oldest goes first", async () => {
   const cache = new ReadCache();
-  for (let i = 0; i < READ_CACHE_MAX_ENTRIES + 50; i += 1) await cache.get(`k${i}`, 0, async () => i);
+  for (let i = 0; i < READ_CACHE_MAX_ENTRIES + 50; i += 1) {await cache.get(`k${i}`, 0, async () => i);}
   assert.equal(cache.size, READ_CACHE_MAX_ENTRIES);
   assert.equal(await cache.get("k0", 0, async () => "reloaded"), "reloaded");
   const newest = READ_CACHE_MAX_ENTRIES + 49;
@@ -58,7 +58,7 @@ test("a key longer than the cap is never stored", async () => {
 
 test("expired entries are swept before a live one is evicted", async () => {
   const cache = new ReadCache();
-  for (let i = 0; i < READ_CACHE_MAX_ENTRIES; i += 1) await cache.get(`old${i}`, 0, async () => i);
+  for (let i = 0; i < READ_CACHE_MAX_ENTRIES; i += 1) {await cache.get(`old${i}`, 0, async () => i);}
   await cache.get("fresh", READ_CACHE_TTL_MS + 1, async () => "f");
   assert.equal(cache.size, 1);
 });

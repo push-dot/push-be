@@ -2,8 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { actAsAllowed } from "../src/internal-auth.ts";
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
+
+const jsonOf = async <T>(res: Response): Promise<T> => {
+  const value: T = await res.json();
+  return value;
+};
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const COMPANY = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -13,7 +19,12 @@ const SECRET = "internal-secret";
 
 const env = (): CoreEnv => ({ APP_ENV: "production", INTERNAL_API_SECRET: SECRET });
 const deps = (query: Deps["query"]): Deps => ({ query, now: () => new Date(NOW) });
-const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
+type Row = Awaited<ReturnType<Deps["query"]>>["rows"][number];
+
+const code = async (res: Response) => (await jsonOf<{ error?: { code: string } }>(res)).error?.code;
+
+const emptyRows: Array<Row> = [];
+const empty = { rows: emptyRows, rowCount: 0 };
 
 const userRow = () => ({
   id: USER, display_name: "Ada", locale: "ko", plan: "PRO", subscription_status: "NONE",
@@ -21,13 +32,13 @@ const userRow = () => ({
   email: "ada@push.app", provider: "email", company_id: COMPANY, company_role: "member",
 });
 
-const queryFor = (memberOf: string | null) => async (sql: string, params: unknown[] = []) => {
-  if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+const queryFor = (memberOf: string | null) => async (sql: string, params: Array<unknown> = []) => {
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
   if (sql.includes("SELECT 1") && sql.includes("company_members")) {
-    return memberOf != null && params[0] === USER && params[1] === memberOf ? { rows: [{ ok: 1 }], rowCount: 1 } : empty;
+    return (memberOf !== null && memberOf !== undefined) && params[0] === USER && params[1] === memberOf ? { rows: [{ ok: 1 }], rowCount: 1 } : empty;
   }
-  if (sql.includes("FROM users") && sql.includes("display_name")) return { rows: [userRow()], rowCount: 1 };
-  if (sql.includes("count(*)")) return { rows: [{ total: 0 }], rowCount: 1 };
+  if (sql.includes("FROM users") && sql.includes("display_name")) {return { rows: [userRow()], rowCount: 1 };}
+  if (sql.includes("count(*)")) {return { rows: [{ total: 0 }], rowCount: 1 };}
   return empty;
 };
 
@@ -40,7 +51,7 @@ test("act-as with the internal secret reads bookmarks", async () => {
     "x-push-act-as": USER,
   }), env(), deps(queryFor(null)));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: unknown[] };
+  const body = await jsonOf<{ data: Array<unknown> }>(res);
   assert.deepEqual(body.data, []);
 });
 
@@ -51,7 +62,7 @@ test("a wrong internal secret is 401 and a non-member company is 403", async () 
     "x-push-act-as": USER,
   }), env(), deps(queryFor(COMPANY)));
   assert.equal(wrong.status, 401);
-  assert.equal((await wrong.json() as { error: { code: string } }).error.code, "UNAUTHORIZED");
+  assert.equal((await jsonOf<{ error: { code: string } }>(wrong)).error.code, "UNAUTHORIZED");
 
   resetLimits();
   const missing = await handle(bookmarks({ "x-push-act-as": USER }), env(), deps(queryFor(COMPANY)));
@@ -64,7 +75,7 @@ test("a wrong internal secret is 401 and a non-member company is 403", async () 
     "x-push-company": OTHER,
   }), env(), deps(queryFor(COMPANY)));
   assert.equal(other.status, 403);
-  assert.equal((await other.json() as { error: { code: string } }).error.code, "FORBIDDEN");
+  assert.equal((await jsonOf<{ error: { code: string } }>(other)).error.code, "FORBIDDEN");
 
   resetLimits();
   const none = await handle(bookmarks({
@@ -81,8 +92,8 @@ test("an unknown act-as user is 401 and a secret without act-as still needs a be
     "x-push-internal-secret": SECRET,
     "x-push-act-as": OTHER,
   }), env(), deps(async (sql) => {
-    if (sql.includes("FROM users") && sql.includes("display_name")) return empty;
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("FROM users") && sql.includes("display_name")) {return empty;}
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     return empty;
   }));
   assert.equal(unknown.status, 401);
@@ -90,7 +101,7 @@ test("an unknown act-as user is 401 and a secret without act-as still needs a be
   resetLimits();
   const secretOnly = await handle(bookmarks({ "x-push-internal-secret": SECRET }), env(), deps(async () => empty));
   assert.equal(secretOnly.status, 401);
-  assert.equal((await secretOnly.json() as { error: { code: string } }).error.code, "UNAUTHENTICATED");
+  assert.equal((await jsonOf<{ error: { code: string } }>(secretOnly)).error.code, "UNAUTHENTICATED");
 });
 
 test("act-as cannot reach routes the ai tools never use", async () => {
@@ -132,8 +143,8 @@ test("act-as apply, offer accept and stage change need the approved card for tha
       { posting_id: posting, application_id: application, stage: "REJECTED" }],
   ] as const;
   for (const [method, path, tool, target] of cases) {
-    const asked: unknown[][] = [];
-    const query = (approved: boolean) => async (sql: string, params: unknown[] = []) => {
+    const asked: Array<Array<unknown>> = [];
+    const query = (approved: boolean) => async (sql: string, params: Array<unknown> = []) => {
       if (sql.includes("UPDATE approvals")) {
         asked.push(params);
         return approved ? { rows: [{ ok: 1 }], rowCount: 1 } : empty;
@@ -151,7 +162,6 @@ test("act-as apply, offer accept and stage change need the approved card for tha
         body: JSON.stringify(method === "PATCH" ? { stage: "REJECTED" } : {}),
       }), env(), deps(query(approved)));
     };
-    const code = async (res: Response) => (await res.json() as { error?: { code: string } }).error?.code;
 
     const bare = await call({}, true);
     assert.equal(bare.status, 403, `${tool} without a card`);
@@ -171,28 +181,28 @@ test("act-as apply, offer accept and stage change need the approved card for tha
 test("act-as writes outside the approval list need no card", async () => {
   resetLimits();
   const posting = "21212121-2121-4121-8121-212121212121";
-  const asked: string[] = [];
+  const asked: Array<string> = [];
   const res = await handle(new Request(`https://core.example/api/v1/postings/${posting}/bookmark`, {
     method: "POST",
     headers: { "idempotency-key": "71717171-7171-4171-8171-717171717171", "x-push-internal-secret": SECRET, "x-push-act-as": USER },
   }), env(), deps(async (sql, params) => {
-    if (sql.includes("approvals")) asked.push(sql);
+    if (sql.includes("approvals")) {asked.push(sql);}
     return queryFor(null)(sql, params);
   }));
-  assert.notEqual((await res.json() as { error?: { code: string } }).error?.code, "APPROVAL_REQUIRED");
+  assert.notEqual((await jsonOf<{ error?: { code: string } }>(res)).error?.code, "APPROVAL_REQUIRED");
   assert.deepEqual(asked, []);
 });
 
 test("an approval card is consumed once, and only the same idempotency key may retry it", async () => {
   const posting = "21212121-2121-4121-8121-212121212121";
   const approval = "51515151-5151-4151-8151-515151515151";
-  const sqls: string[] = [];
+  const sqls: Array<string> = [];
   let consumedKey: unknown;
   let consumed = false;
-  const query = async (sql: string, params: unknown[] = []) => {
-    if (!sql.includes("UPDATE approvals")) return queryFor(COMPANY)(sql, params);
+  const query = async (sql: string, params: Array<unknown> = []) => {
+    if (!sql.includes("UPDATE approvals")) {return queryFor(COMPANY)(sql, params);}
     sqls.push(sql);
-    if (consumed && consumedKey !== params[4]) return empty;
+    if (consumed && consumedKey !== params[4]) {return empty;}
     consumed = true;
     consumedKey = params[4];
     return { rows: [{ id: approval }], rowCount: 1 };
@@ -208,7 +218,6 @@ test("an approval card is consumed once, and only the same idempotency key may r
       body: "{}",
     }), env(), deps(query));
   };
-  const code = async (res: Response) => (await res.json() as { error?: { code: string } }).error?.code;
   const first = "61616161-6161-4161-8161-616161616161";
   assert.notEqual(await code(await apply(first)), "APPROVAL_REQUIRED");
   assert.notEqual(await code(await apply(first)), "APPROVAL_REQUIRED", "same key retries");

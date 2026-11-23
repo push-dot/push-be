@@ -20,9 +20,12 @@ const sendBody = closed({
 // A bot thread is personal, so the employer cards never run in it.
 const { employer_research: _research, posting_draft: _draft, review_report: _report, interview_kit: _kit, ...personalEvents } = chatEvents;
 
-const required = (event: Schema, field: string): Schema => ({ ...event, required: [...(event.required as string[]), field] });
+const required = (event: Schema, field: string) => {
+  const fields: Array<Schema[string]> = Array.isArray(event.required) ? event.required : [];
+  return { ...event, required: [...fields, field] };
+};
 
-const botEvents: Record<string, Schema> = Object.fromEntries(Object.entries({
+const botEvents = Object.fromEntries(Object.entries({
   ...personalEvents,
   status: { oneOf: statusPhases },
   cancelled: required(chatEvents.cancelled, "resumable"),
@@ -34,7 +37,7 @@ const botStreamDescription = "The frames of the conversation stream (POST /conve
   + "The newest status is the run's phase. done, error, and cancelled end every phase but waiting, which ends when its card is answered or expires. "
   + "The stream closes after done, error, or cancelled, and every run ends with one of them. If the connection drops first, follow GET /bots/{id}/stream with ?after=<last seq>.";
 
-export const schemas: Record<string, Schema> = {
+export const schemas = {
   BotSendBody: sendBody,
   StreamEvent: { oneOf: Object.values(botEvents), description: "A frame of a bot stream" },
   TranscriptMatch: obj({
@@ -50,7 +53,7 @@ export const schemas: Record<string, Schema> = {
   }, ["id", "status", "optionId"]),
 };
 
-export const routes: Route[] = [
+export const routes: Array<Route> = [
   post("gateway", "/api/v1/bots/{id}/messages/stream", {
     tag: "bots",
     summary: "Send a message to a bot and stream the reply",

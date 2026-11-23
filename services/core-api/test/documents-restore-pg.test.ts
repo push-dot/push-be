@@ -4,20 +4,22 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
 import type { Query } from "../src/db.ts";
-import { handle, type CoreEnv } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
-import { livePg, type LivePg } from "./parity/pg.ts";
+import { livePg } from './parity/pg.ts';
+import type { LivePg } from './parity/pg.ts';
 
 const URL_ = process.env.BILLING_PG_URL;
 const env: CoreEnv = { APP_ENV: "production" };
 
 let pg: LivePg | undefined;
-before(async () => { if (URL_) pg = await livePg(URL_); });
+before(async () => { if (URL_) {pg = await livePg(URL_);} });
 after(async () => { await pg?.close(); });
 
 const dbFor = (userId: string): Query => async (sql, params = []) => {
-  if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-  if (sql.includes("idempotency_keys")) return sql.includes("INSERT") ? { rows: [{ id: "idem" }], rowCount: 1 } : { rows: [], rowCount: 0 };
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+  if (sql.includes("idempotency_keys")) {return sql.includes("INSERT") ? { rows: [{ id: "idem" }], rowCount: 1 } : { rows: [], rowCount: 0 };}
   if (sql.includes("access_tokens")) {
     return { rows: [{
       id: userId, display_name: "이민아", locale: "ko", plan: "FREE", subscription_status: "NONE",
@@ -28,10 +30,17 @@ const dbFor = (userId: string): Query => async (sql, params = []) => {
   return pg!.query(sql, params);
 };
 
+type Listed = { id: string; archivedAt: string; purgeAt: string; updatedAt: string };
+// call() answers an untyped body; these pick typed rows out of it.
+const listed = (list: unknown): Array<Listed> => (Array.isArray(list) ? list.map((row: Listed) => row) : []);
+const idsOf = (list: unknown): Array<string> => listed(list).map((row) => row.id);
+const documentIdOf = (payload: unknown): string =>
+  typeof payload === "object" && payload !== null && "documentId" in payload ? String(payload.documentId) : "";
+
 const call = async (userId: string, method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> => {
   resetLimits();
-  const headers: Record<string, string> = { authorization: "Bearer restore-test", "idempotency-key": crypto.randomUUID() };
-  if (body !== undefined) headers["content-type"] = "application/json";
+  const headers = new Headers({ authorization: "Bearer restore-test", "idempotency-key": crypto.randomUUID() });
+  if (body !== undefined) {headers.set("content-type", "application/json");}
   const res = await handle(new Request("https://core.example" + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }),
     env, { query: dbFor(userId), now: () => new Date("2026-11-10T00:00:00Z") });
   const text = await res.text();
@@ -66,7 +75,7 @@ const seedNode = async (user: string, doc: string): Promise<void> => {
 };
 
 test("restore returns a draft or a finalized document, bumps revision, and enqueues ingest", async (t) => {
-  if (!pg) return t.skip("set BILLING_PG_URL to a migrated Postgres");
+  if (!pg) {return t.skip("set BILLING_PG_URL to a migrated Postgres");}
   const user = await seedUser();
   const other = await seedUser();
   const draft = await seedDoc(user, "DRAFT", { title: "초안" });
@@ -92,14 +101,11 @@ test("restore returns a draft or a finalized document, bumps revision, and enque
   assert.equal(back.body.data.revision, 3);
 
   const jobs = await pg.query("SELECT payload FROM ai_jobs WHERE user_id = $1 AND type = 'ingest'", [user]);
-  const ids = jobs.rows.map((row) => {
-    const payload = typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload;
-    return payload.documentId;
-  }).sort();
-  assert.deepEqual(ids, [draft, final].sort());
+  const ids = jobs.rows.map((row) => documentIdOf(typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload)).sort((a, b) => a.localeCompare(b));
+  assert.deepEqual(ids, [draft, final].sort((a, b) => a.localeCompare(b)));
 
-  const live = (await call(user, "GET", "/api/v1/documents")).body.data.map((row: { id: string }) => row.id);
-  assert.ok(live.includes(draft) && live.includes(final));
+  const live = new Set(idsOf((await call(user, "GET", "/api/v1/documents")).body.data));
+  assert.ok(live.has(draft) && live.has(final));
 
   const noop = await call(user, "POST", `/api/v1/documents/${draft}/restore`, { expectedRevision: 3 });
   assert.equal(noop.status, 200);
@@ -114,7 +120,7 @@ test("restore returns a draft or a finalized document, bumps revision, and enque
 });
 
 test("archived=1 lists only the caller's documents from the last 30 days, newest first, with purgeAt", async (t) => {
-  if (!pg) return t.skip("set BILLING_PG_URL to a migrated Postgres");
+  if (!pg) {return t.skip("set BILLING_PG_URL to a migrated Postgres");}
   const user = await seedUser();
   const other = await seedUser();
   const recent = await seedDoc(user, "ARCHIVED", { updated: "now() - interval '2 days'", title: "최근" });
@@ -125,7 +131,7 @@ test("archived=1 lists only the caller's documents from the last 30 days, newest
 
   const page = await call(user, "GET", "/api/v1/documents?archived=1");
   assert.equal(page.status, 200);
-  const items = page.body.data as { id: string; archivedAt: string; purgeAt: string; updatedAt: string }[];
+  const items = listed(page.body.data);
   assert.deepEqual(items.map((row) => row.id), [recent, older]);
   for (const row of items) {
     assert.equal(row.archivedAt, row.updatedAt);
@@ -133,21 +139,21 @@ test("archived=1 lists only the caller's documents from the last 30 days, newest
   }
   assert.equal(items.some((row) => row.id === expired || row.id === live), false);
 
-  const plain = (await call(user, "GET", "/api/v1/documents")).body.data as { id: string; archivedAt?: string }[];
+  const plain = listed((await call(user, "GET", "/api/v1/documents")).body.data);
   assert.deepEqual(plain.map((row) => row.id), [live]);
   assert.equal(plain[0].archivedAt, undefined);
 
   const brought = await call(user, "POST", `/api/v1/documents/${recent}/restore`, { expectedRevision: 1 });
   assert.equal(brought.status, 200);
   assert.equal(brought.body.data.status, "DRAFT");
-  const after = (await call(user, "GET", "/api/v1/documents?archived=1")).body.data.map((row: { id: string }) => row.id);
+  const after = idsOf((await call(user, "GET", "/api/v1/documents?archived=1")).body.data);
   assert.deepEqual(after, [older]);
-  const visible = (await call(user, "GET", "/api/v1/documents")).body.data.map((row: { id: string }) => row.id);
-  assert.ok(visible.includes(recent) && visible.includes(live));
+  const visible = new Set(idsOf((await call(user, "GET", "/api/v1/documents")).body.data));
+  assert.ok(visible.has(recent) && visible.has(live));
 });
 
 test("deleting a source that evidence cites returns REFERENCED_BY_EVIDENCE", async (t) => {
-  if (!pg) return t.skip("set BILLING_PG_URL to a migrated Postgres");
+  if (!pg) {return t.skip("set BILLING_PG_URL to a migrated Postgres");}
   const user = await seedUser();
   const source = crypto.randomUUID();
   await pg.query(
@@ -166,7 +172,7 @@ test("deleting a source that evidence cites returns REFERENCED_BY_EVIDENCE", asy
 });
 
 test("deleting a document deletes its posting_fit_cache rows", async (t) => {
-  if (!pg) return t.skip("set BILLING_PG_URL to a migrated Postgres");
+  if (!pg) {return t.skip("set BILLING_PG_URL to a migrated Postgres");}
   const user = await seedUser();
   const company = crypto.randomUUID();
   const posting = crypto.randomUUID();

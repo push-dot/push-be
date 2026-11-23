@@ -1,8 +1,10 @@
 import { DISPLAY_MICRO, boundTransaction, ensureMonthlyGrant, grantMicro, grantPeriod, iapTopupMicro, keyLevel, lockOwner, monthGranted, monthKey, periodKey, subscriptionLevel } from "../billing/credits.ts";
 import { availableMicro, reservedMicro } from "../jobs/credits.ts";
-import { createStoreReceipts, googlePlayPubsub, type StoreReceipts } from "../billing/stores.ts";
+import { createStoreReceipts, googlePlayPubsub } from '../billing/stores.ts';
+import type { StoreReceipts } from '../billing/stores.ts';
 import { hmacSha256Hex } from "../crypto.ts";
-import { isLockTimeout, isMissingRelation, one, query, type Transaction } from "../db.ts";
+import { isLockTimeout, isMissingRelation, one, query } from '../db.ts';
+import type { Transaction } from '../db.ts';
 import { HttpError, data, pageBody } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { CoreEnv, Ctx } from "../types.ts";
@@ -21,11 +23,34 @@ const ENDED = new Set(["canceled", "unpaid", "incomplete_expired"]);
 const REFUNDED = "push: replaced, unused time refunded";
 const UUID = /^[0-9a-f-]{36}$/i;
 
+type Item = { price?: { id?: string }; current_period_start?: number; current_period_end?: number };
+type Line = {
+  amount?: number; price?: { id?: string } | null; pricing?: { price_details?: { price?: string } }; period?: { start?: number };
+  parent?: { subscription_item_details?: { proration?: boolean } | null } | null;
+};
+// The Stripe fields this file reads. Every one is optional: Stripe sends a different subset per object.
+type StripeObject = {
+  id?: string; type?: string; url?: string; expires_at?: number; status?: string; created?: number; currency?: string;
+  customer?: string; subscription?: string; invoice?: string; payment_intent?: string; client_reference_id?: string;
+  payment_status?: string; amount_total?: number; total?: number; billing_reason?: string; hosted_invoice_url?: string; refunded?: boolean;
+  metadata?: Record<string, string>;
+  items?: { data?: Array<Item> };
+  lines?: { data?: Array<Line> };
+  data?: Array<StripeObject>;
+  latest_invoice?: StripeObject | string | null;
+  latest_charge?: { receipt_url?: string } | null;
+  cancellation_details?: { comment?: string } | null;
+  parent?: { subscription_details?: { subscription?: string } } | null;
+};
+type StripeEvent = { id?: string; type?: string; data?: { object?: StripeObject } };
+const isStripeObject = (value: unknown): value is StripeObject => typeof value === "object" && value !== null;
+const isStripeEvent = (value: unknown): value is StripeEvent => typeof value === "object" && value !== null;
+
 function configured(ctx: Ctx): boolean {
   return Boolean(ctx.env.STRIPE_SECRET_KEY);
 }
 
-const utcMonth = (now: Date): { monthStart: string; monthEnd: string } => {
+const utcMonth = (now: Date) => {
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
   const monthEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString();
   return { monthStart, monthEnd };
@@ -35,11 +60,11 @@ const utcMonth = (now: Date): { monthStart: string; monthEnd: string } => {
 // A company has no such date once it is on a Stripe period: grantPeriod pays out when a renewal invoice is paid, at a time
 // only Stripe knows. Without a plan it is granted nothing. The key is left out then, because pyJson writes undefined as null.
 const creditsRefill = (now: Date, company?: { plan: string | null; periodStart: unknown }): { creditsRefillAt?: string } =>
-  company && (company.plan == null || company.periodStart != null) ? {} : { creditsRefillAt: utcMonth(now).monthEnd };
+  company && (company.plan === null || (company.periodStart !== null && company.periodStart !== undefined)) ? {} : { creditsRefillAt: utcMonth(now).monthEnd };
 
 const monthlyMicro = (audience: "PERSONAL" | "EMPLOYER", plan: string | null): number => {
   const named = plan?.trim() ?? "";
-  if (audience === "PERSONAL" && named === "") return grantMicro("PERSONAL", "FREE");
+  if (audience === "PERSONAL" && named === "") {return grantMicro("PERSONAL", "FREE");}
   return grantMicro(audience, named);
 };
 
@@ -48,13 +73,13 @@ const monthlyMicro = (audience: "PERSONAL" | "EMPLOYER", plan: string | null): n
 const EMPLOYER_SPEND = "SELECT GREATEST(COALESCE((SELECT SUM(ai_usage.cost_micro_credits) FROM ai_usage WHERE status = 'SETTLED' AND created_at >= $1 AND created_at < $2 AND user_id IN (SELECT user_id FROM company_members WHERE company_id = $3)), 0) - COALESCE((SELECT SUM(amount_micro_credits) FROM billing_ledger WHERE company_id = $3 AND type = 'WRITE_OFF' AND created_at >= $1 AND created_at < $2), 0), 0) AS spent";
 const PERSONAL_SPEND = "SELECT GREATEST(COALESCE((SELECT SUM(ai_usage.cost_micro_credits) FROM ai_usage WHERE status = 'SETTLED' AND created_at >= $1 AND created_at < $2 AND user_id = $3), 0) - COALESCE((SELECT SUM(amount_micro_credits) FROM billing_ledger WHERE user_id = $3 AND type = 'WRITE_OFF' AND created_at >= $1 AND created_at < $2), 0), 0) AS spent";
 
-const spentInMonth = async (ctx: Ctx, sql: string, params: unknown[]): Promise<number> => {
+const spentInMonth = async (ctx: Ctx, sql: string, params: Array<unknown>): Promise<number> => {
   try {
     const row = await one(ctx.deps.query, sql, params);
     return Number(row?.spent ?? 0);
-  } catch (err) {
-    if (isMissingRelation(err)) return 0;
-    throw err;
+  } catch (error) {
+    if (isMissingRelation(error)) {return 0;}
+    throw error;
   }
 };
 
@@ -70,14 +95,14 @@ const USAGE_BY_BOT = `SELECT b.id, b.display_name, SUM(u.cost_micro_credits)::fl
   HAVING SUM(u.cost_micro_credits) > 0
   ORDER BY used DESC, b.display_name, b.id`;
 
-const usageByBot = async (ctx: Ctx, monthStart: string, monthEnd: string): Promise<{ id: string; name: string; usedMicroCredits: number }[]> => {
+const usageByBot = async (ctx: Ctx, monthStart: string, monthEnd: string): Promise<Array<{ id: string; name: string; usedMicroCredits: number }>> => {
   const rows = await query(ctx.deps.query, USAGE_BY_BOT, [monthStart, monthEnd, ctx.user.id]);
   return rows.rows.map((row) => ({ id: String(row.id), name: String(row.display_name), usedMicroCredits: Number(row.used) }));
 };
 
 export const employerPlanOf = (value: unknown): "BASIC" | "PRO" | "ULTRA" | null => {
-  const plan = value == null ? "" : String(value);
-  if (plan === "BASIC" || plan === "PRO" || plan === "ULTRA") return plan;
+  const plan = (value === null || value === undefined) ? "" : String(value);
+  if (plan === "BASIC" || plan === "PRO" || plan === "ULTRA") {return plan;}
   return null;
 };
 
@@ -104,22 +129,23 @@ const TOPUP_REFUND_DESCRIPTION = "크레딧 구매 환불";
 // The REFUND row's reference is the purchase's, so a repeated refund notice writes nothing.
 const takeBack = async (ctx: Ctx, owner: { userId: string } | { companyId: string }, micro: number, referenceId: string): Promise<void> => {
   const companyId = "companyId" in owner ? owner.companyId : undefined;
-  const left = await availableMicro(ctx.deps.query, "userId" in owner ? owner.userId : "", companyId);
+  const userId = "userId" in owner ? owner.userId : "";
+  const left = await availableMicro(ctx.deps.query, userId, companyId);
   let deduct: bigint;
-  if (left <= 0n) deduct = 0n;
-  else if (left < BigInt(micro)) deduct = left;
-  else deduct = BigInt(micro);
+  if (left <= 0n) {deduct = 0n;}
+  else if (left < BigInt(micro)) {deduct = left;}
+  else {deduct = BigInt(micro);}
   const amount = -Number(deduct);
   if (companyId) {
     await companyLedger(ctx, companyId, amount, referenceId, { description: TOPUP_REFUND_DESCRIPTION, amountUsdCents: null, receiptUrl: null }, "REFUND");
   }
-  else await userLedger(ctx, (owner as { userId: string }).userId, amount, referenceId, "REFUND");
+  else {await userLedger(ctx, userId, amount, referenceId, "REFUND");}
 };
 const REFUND_DESCRIPTION = "요금제 변경 환급";
 
 type Alert = { companyId: string; kind: "CANCEL_FAILED" | "NOT_ADOPTED" | "NOT_GRANTED" | "REFUND_SKIPPED"; referenceId: string; detail: string };
 // A webhook's transaction ctx carries `alerts`: what it raised is raised again outside the transaction if that rolls back.
-type AlertCtx = Ctx & { alerts?: Alert[] };
+type AlertCtx = Ctx & { alerts?: Array<Alert> };
 
 // Operator-only: the dispatcher alerts (Discord, else email) while a billing_alerts row is open.
 const raiseAlert = async (ctx: AlertCtx, companyId: string, kind: Alert["kind"], referenceId: string, detail: string): Promise<void> => {
@@ -139,9 +165,11 @@ class AlertingError extends Error {
   }
 }
 
-const resolveCancelAlert = (ctx: Ctx, subscriptionId: string): Promise<unknown> => query(ctx.deps.query,
-  "UPDATE billing_alerts SET resolved_at = $2 WHERE kind = 'CANCEL_FAILED' AND reference_id = $1 AND resolved_at IS NULL",
-  [subscriptionId, ctx.now.toISOString()]);
+const resolveCancelAlert = async (ctx: Ctx, subscriptionId: string): Promise<void> => {
+  await query(ctx.deps.query,
+    "UPDATE billing_alerts SET resolved_at = $2 WHERE kind = 'CANCEL_FAILED' AND reference_id = $1 AND resolved_at IS NULL",
+    [subscriptionId, ctx.now.toISOString()]);
+};
 
 // Allowlist, never echo the Origin header: success_url must not carry an attacker-chosen origin.
 const returnOrigin = (ctx: Ctx): string => {
@@ -154,28 +182,28 @@ const returnOrigin = (ctx: Ctx): string => {
     }
   });
   const origin = ctx.request.headers.get("origin") ?? "";
-  if (allowed.includes(origin)) return origin;
-  if (!allowed[0]) throw new HttpError(503, "NOT_CONFIGURED", "billing return origin is not configured");
+  if (allowed.includes(origin)) {return origin;}
+  if (!allowed[0]) {throw new HttpError(503, "NOT_CONFIGURED", "billing return origin is not configured");}
   return allowed[0];
 };
 
-const returnUrls = (ctx: Ctx, success: "success" | "credits"): Record<string, string> => {
+const returnUrls = (ctx: Ctx, success: "success" | "credits") => {
   const plans = returnOrigin(ctx) + "/employer/plans?checkout=";
   return { success_url: plans + success + "&session_id={CHECKOUT_SESSION_ID}", cancel_url: plans + "canceled" };
 };
 
 // Most reads find the month already granted and skip the owner lock, so they never wait on a webhook.
 const grantMonthly = async (ctx: Ctx, audience: "PERSONAL" | "EMPLOYER", plan: string | null, ownerId: string): Promise<void> => {
-  if (!plan || await monthGranted(ctx.deps.query, { audience, plan, ownerId, now: ctx.now })) return;
+  if (!plan || await monthGranted(ctx.deps.query, { audience, plan, ownerId, now: ctx.now })) {return;}
   try {
     await inTransactionOf(ctx)(async (q) => {
       await boundTransaction(q, "3s");
       await lockOwner(q, audience, ownerId);
       await ensureMonthlyGrant(q, { audience, plan, ownerId, now: ctx.now });
     });
-  } catch (err) {
+  } catch (error) {
     // A webhook holds the owner row: show the balance now, the month's grant lands on the next read or enqueue.
-    if (!isLockTimeout(err)) throw err;
+    if (!isLockTimeout(error)) {throw error;}
   }
 };
 
@@ -185,20 +213,23 @@ export const inTransactionOf = (ctx: Ctx): Transaction => ctx.deps.transaction ?
 // Same switch as the payment gate in handler.ts: apps hide buy buttons while it is off, since a store charges before verify.
 const paymentsEnabled = (ctx: Ctx): boolean => ctx.env.PAYMENTS_ENABLED === "1";
 
-const tossStatus = async (ctx: Ctx, companyId: string): Promise<Record<string, unknown> | null> => {
+type TossStatus = { plan: unknown; period_end: unknown; next_charge_at: unknown; canceled_at: unknown; failures: unknown };
+
+const tossStatus = async (ctx: Ctx, companyId: string): Promise<TossStatus | null> => {
   try {
-    return await one(ctx.deps.query, "SELECT plan, period_end, next_charge_at, canceled_at, failures FROM toss_billing WHERE company_id = $1", [companyId]);
-  } catch (err) {
-    if (isMissingRelation(err)) return null;
-    throw err;
+    const row = await one(ctx.deps.query, "SELECT plan, period_end, next_charge_at, canceled_at, failures FROM toss_billing WHERE company_id = $1", [companyId]);
+    return row && { plan: row.plan, period_end: row.period_end, next_charge_at: row.next_charge_at, canceled_at: row.canceled_at, failures: row.failures };
+  } catch (error) {
+    if (isMissingRelation(error)) {return null;}
+    throw error;
   }
 };
 
 export async function billingStatus(ctx: Ctx): Promise<Response> {
   if (ctx.user.accountType === "EMPLOYER") {
-    if (!ctx.user.companyId) throw new HttpError(404, "NOT_FOUND", "resource not found");
+    if (!ctx.user.companyId) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
     const company = await one(ctx.deps.query, "SELECT plan, credit_period_start FROM companies WHERE id = $1", [ctx.user.companyId]);
-    if (!company) throw new HttpError(404, "NOT_FOUND", "resource not found");
+    if (!company) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
     const plan = employerPlanOf(company.plan);
     await grantMonthly(ctx, "EMPLOYER", plan, ctx.user.companyId);
     const { monthStart, monthEnd } = utcMonth(ctx.now);
@@ -208,8 +239,8 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
       reservedMicro(ctx.deps.query, ctx.user.id, ctx.user.companyId),
     ]);
     const toss = await tossStatus(ctx, ctx.user.companyId);
-    const tossActive = toss?.plan != null && plan != null;
-    const tossRenewal = tossActive && toss.next_charge_at != null && toss.canceled_at == null;
+    const tossActive = (toss?.plan !== null && toss?.plan !== undefined) && (plan !== null && plan !== undefined);
+    const tossRenewal = tossActive && (toss.next_charge_at !== null && toss.next_charge_at !== undefined) && (toss.canceled_at === null || toss.canceled_at === undefined);
     return data(200, {
       subscriptionStatus: plan ? (tossActive && Number(toss.failures) > 0 ? "PAST_DUE" : "ACTIVE") : "NONE",
       plan,
@@ -224,7 +255,7 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
       currency: "KRW",
       prices: TOSS_PRICES,
       renewsAt: tossRenewal ? ts(toss.next_charge_at) : null,
-      canceled: tossActive && toss.canceled_at != null,
+      canceled: tossActive && (toss.canceled_at !== null && toss.canceled_at !== undefined),
       paymentsEnabled: paymentsEnabled(ctx),
       ...creditsRefill(ctx.now, { plan, periodStart: company.credit_period_start }),
     }, ctx.rid);
@@ -239,7 +270,7 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
     one(ctx.deps.query, "SELECT platform FROM iap_subscriptions WHERE user_id = $1 AND status = 'ACTIVE' LIMIT 1", [ctx.user.id]),
     usageByBot(ctx, monthStart, monthEnd),
   ]);
-  const platform = iap?.platform == null ? "" : String(iap.platform);
+  const platform = (iap?.platform === null || iap?.platform === undefined) ? "" : String(iap.platform);
   const source = platform === "APP_STORE" || platform === "GOOGLE_PLAY"
     ? platform
     : ctx.user.subscriptionStatus === "ACTIVE" ? "STRIPE" : null;
@@ -262,7 +293,7 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
 // A webhook calls Stripe while it holds the company row lock, so a hung call must fail the event (Stripe retries it) rather than hold the lock.
 const STRIPE_TIMEOUT_MS = 10_000;
 
-async function stripe(ctx: Ctx, method: string, path: string, form?: URLSearchParams): Promise<Record<string, unknown>> {
+async function stripe(ctx: Ctx, method: string, path: string, form?: URLSearchParams): Promise<StripeObject> {
   const fetchImpl = ctx.deps.fetch ?? fetch;
   const secret = ctx.env.STRIPE_SECRET_KEY || "";
   const res = await fetchImpl("https://api.stripe.com" + path, {
@@ -274,46 +305,45 @@ async function stripe(ctx: Ctx, method: string, path: string, form?: URLSearchPa
     body: form,
     signal: AbortSignal.timeout(STRIPE_TIMEOUT_MS),
   });
-  const body = await res.json() as Record<string, unknown>;
-  if (!res.ok) throw new Error("stripe");
+  const body: unknown = await res.json();
+  if (!res.ok || !isStripeObject(body)) {throw new Error("stripe");}
   return body;
 }
 
-const subscriptionsOf = (list: Record<string, unknown>): Record<string, unknown>[] =>
-  Array.isArray(list.data) ? list.data as Record<string, unknown>[] : [];
+const subscriptionsOf = (list: StripeObject): Array<StripeObject> => (Array.isArray(list.data) ? list.data : []);
 
 const employerPrice = (env: CoreEnv, planId: string): string => {
-  if (planId === "BASIC") return env.STRIPE_PRICE_EMPLOYER_BASIC || "";
-  if (planId === "PRO") return env.STRIPE_PRICE_EMPLOYER_PRO || "";
+  if (planId === "BASIC") {return env.STRIPE_PRICE_EMPLOYER_BASIC || "";}
+  if (planId === "PRO") {return env.STRIPE_PRICE_EMPLOYER_PRO || "";}
   return env.STRIPE_PRICE_EMPLOYER_ULTRA || "";
 };
 
 const checkoutSession = async (ctx: Ctx, form: URLSearchParams): Promise<Response> => {
   try {
     const session = await stripe(ctx, "POST", "/v1/checkout/sessions", form);
-    if (typeof session.url !== "string" || !session.url) throw new Error("url");
+    if (typeof session.url !== "string" || !session.url) {throw new Error("url");}
     return data(200, {
       url: session.url,
       expiresAt: session.expires_at ? ts(new Date(Number(session.expires_at) * 1000)) : null,
     }, ctx.rid);
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
+  } catch (error) {
+    if (error instanceof HttpError) {throw error;}
     throw new HttpError(502, "PROVIDER_ERROR", "stripe checkout session failed");
   }
 };
 
 export async function checkout(ctx: Ctx): Promise<Response> {
-  if (!configured(ctx)) throw new HttpError(503, "NOT_CONFIGURED", "billing is not configured");
+  if (!configured(ctx)) {throw new HttpError(503, "NOT_CONFIGURED", "billing is not configured");}
   const body = await readObject(ctx.request);
-  if (typeof body.planId !== "string") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-  if (ctx.user.accountType !== "EMPLOYER") throw new HttpError(403, "FORBIDDEN", "admin required");
-  if (!ctx.user.companyId) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  if (ctx.user.companyRole !== "ADMIN") throw new HttpError(403, "FORBIDDEN", "admin required");
-  if (!EMPLOYER_PLANS.has(body.planId)) throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan", { field: "planId" });
+  if (typeof body.planId !== "string") {throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");}
+  if (ctx.user.accountType !== "EMPLOYER") {throw new HttpError(403, "FORBIDDEN", "admin required");}
+  if (!ctx.user.companyId) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
+  if (ctx.user.companyRole !== "ADMIN") {throw new HttpError(403, "FORBIDDEN", "admin required");}
+  if (!EMPLOYER_PLANS.has(body.planId)) {throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan", { field: "planId" });}
   const price = employerPrice(ctx.env, body.planId);
-  if (!price) throw new HttpError(503, "NOT_CONFIGURED", "plan price is not configured");
+  if (!price) {throw new HttpError(503, "NOT_CONFIGURED", "plan price is not configured");}
   const company = await one(ctx.deps.query, "SELECT stripe_customer_id FROM companies WHERE id = $1", [ctx.user.companyId]);
-  if (!company) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (!company) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   const form = new URLSearchParams({
     mode: "subscription",
     "line_items[0][price]": price,
@@ -323,20 +353,20 @@ export async function checkout(ctx: Ctx): Promise<Response> {
     "metadata[audience]": "EMPLOYER",
     "metadata[plan]": body.planId,
   });
-  const customer = company.stripe_customer_id == null ? "" : String(company.stripe_customer_id);
-  if (customer) form.set("customer", customer);
+  const customer = (company.stripe_customer_id === null || company.stripe_customer_id === undefined) ? "" : String(company.stripe_customer_id);
+  if (customer) {form.set("customer", customer);}
   return checkoutSession(ctx, form);
 }
 
 /** Cancels every live subscription now (no refund). Called before an account is marked for deletion. */
 export async function cancelSubscriptions(ctx: Ctx, customerId?: string): Promise<void> {
   const customer = customerId ?? ctx.user.stripeCustomerId;
-  if (!configured(ctx) || !customer) return;
+  if (!configured(ctx) || !customer) {return;}
   try {
     // Without a status filter Stripe lists every subscription that is not already canceled.
     const list = await stripe(ctx, "GET", "/v1/subscriptions?limit=100&customer=" + encodeURIComponent(customer));
     for (const sub of subscriptionsOf(list)) {
-      if (CANCELLABLE.has(String(sub.status))) await stripe(ctx, "DELETE", "/v1/subscriptions/" + encodeURIComponent(String(sub.id)));
+      if (CANCELLABLE.has(String(sub.status))) {await stripe(ctx, "DELETE", "/v1/subscriptions/" + encodeURIComponent(String(sub.id)));}
     }
   } catch {
     throw new HttpError(502, "PROVIDER_ERROR", "stripe subscription cancel failed");
@@ -344,27 +374,32 @@ export async function cancelSubscriptions(ctx: Ctx, customerId?: string): Promis
 }
 
 export async function portal(ctx: Ctx): Promise<Response> {
-  if (!configured(ctx)) throw new HttpError(503, "NOT_CONFIGURED", "billing is not configured");
-  if (!ctx.user.stripeCustomerId) throw new HttpError(409, "INVALID_TRANSITION", "no billing account");
+  if (!configured(ctx)) {throw new HttpError(503, "NOT_CONFIGURED", "billing is not configured");}
+  if (!ctx.user.stripeCustomerId) {throw new HttpError(409, "INVALID_TRANSITION", "no billing account");}
   try {
     const form = new URLSearchParams({
       customer: ctx.user.stripeCustomerId,
       return_url: ctx.env.STRIPE_PORTAL_RETURN_URL || "",
     });
     const session = await stripe(ctx, "POST", "/v1/billing_portal/sessions", form);
-    if (typeof session.url !== "string" || !session.url) throw new Error("url");
+    if (typeof session.url !== "string" || !session.url) {throw new Error("url");}
     return data(200, { url: session.url }, ctx.rid);
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
+  } catch (error) {
+    if (error instanceof HttpError) {throw error;}
     throw new HttpError(502, "PROVIDER_ERROR", "stripe portal session failed");
   }
 }
 
+type LedgerItem = {
+  id: string; type: string; amountMicroCredits: number; balanceAfter: number; referenceId: string | null; createdAt: ReturnType<typeof ts>;
+  description: string | null; amountUsd: number | null; receiptUrl: string | null; amountKrw?: number; currency?: string;
+};
+
 export async function ledger(ctx: Ctx): Promise<Response> {
   const employer = ctx.user.accountType === "EMPLOYER";
-  if (employer && !ctx.user.companyId) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (employer && !ctx.user.companyId) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   const page = pageOf(ctx.url);
-  const params: unknown[] = [employer ? ctx.user.companyId : ctx.user.id];
+  const params: Array<unknown> = [employer ? ctx.user.companyId : ctx.user.id];
   let sql = "SELECT id, type, amount_micro_credits, balance_after, reference_id, created_at, description, amount_usd_cents, receipt_url, amount_krw FROM billing_ledger WHERE "
     + (employer ? "company_id = $1 AND user_id IS NULL" : "user_id = $1");
   // Commit order (seq), as balance_after runs: a row that waited for the owner lock can carry an earlier created_at.
@@ -376,54 +411,56 @@ export async function ledger(ctx: Ctx): Promise<Response> {
   params.push(page.limit + 1);
   sql += ` ORDER BY seq DESC LIMIT $${params.length}`;
   const rows = await query(ctx.deps.query, sql, params);
-  const mapped = rows.rows.map((row) => ({
-    item: {
+  const mapped = rows.rows.map((row) => {
+    const item: LedgerItem = {
       id: String(row.id),
       type: String(row.type),
       amountMicroCredits: Number(row.amount_micro_credits),
       balanceAfter: Number(row.balance_after),
-      referenceId: row.reference_id == null ? null : String(row.reference_id),
+      referenceId: (row.reference_id === null || row.reference_id === undefined) ? null : String(row.reference_id),
       createdAt: ts(row.created_at),
-      description: row.description == null ? null : String(row.description),
-      amountUsd: row.amount_usd_cents == null ? null : Number(row.amount_usd_cents) / 100,
-      receiptUrl: row.receipt_url == null ? null : String(row.receipt_url),
-      ...(row.amount_krw == null ? {} : { amountKrw: Number(row.amount_krw), currency: "KRW" }),
-    },
-    createdAt: row.created_at,
-    id: String(row.id),
-  }));
+      description: (row.description === null || row.description === undefined) ? null : String(row.description),
+      amountUsd: (row.amount_usd_cents === null || row.amount_usd_cents === undefined) ? null : Number(row.amount_usd_cents) / 100,
+      receiptUrl: (row.receipt_url === null || row.receipt_url === undefined) ? null : String(row.receipt_url),
+    };
+    if (row.amount_krw !== null && row.amount_krw !== undefined) {
+      item.amountKrw = Number(row.amount_krw);
+      item.currency = "KRW";
+    }
+    return { item, createdAt: row.created_at, id: String(row.id) };
+  });
   const paged = pageResult(mapped, page.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
   return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid);
 }
 
 export async function verifyStripe(payload: Uint8Array, header: string, secret: string, now: Date): Promise<void> {
   let stamp = 0;
-  const sigs: string[] = [];
+  const sigs: Array<string> = [];
   for (const part of header.split(",")) {
     const kv = part.trim().split("=");
-    if (kv.length < 2) continue;
-    if (kv[0] === "t") stamp = Number(kv[1]);
-    else if (kv[0] === "v1") sigs.push(kv.slice(1).join("="));
+    if (kv.length < 2) {continue;}
+    if (kv[0] === "t") {stamp = Number(kv[1]);}
+    else if (kv[0] === "v1") {sigs.push(kv.slice(1).join("="));}
   }
-  if (!stamp || sigs.length === 0) throw new Error("missing signature");
-  if (Math.abs(Math.floor(now.getTime() / 1000) - stamp) > TOLERANCE) throw new Error("stale timestamp");
+  if (!stamp || sigs.length === 0) {throw new Error("missing signature");}
+  if (Math.abs(Math.floor(now.getTime() / 1000) - stamp) > TOLERANCE) {throw new Error("stale timestamp");}
   const prefix = new TextEncoder().encode(`${stamp}.`);
   const signed = new Uint8Array(prefix.length + payload.length);
   signed.set(prefix);
   signed.set(payload, prefix.length);
   const expected = await hmacSha256Hex(secret, signed);
   const ok = sigs.some((sig) => {
-    if (sig.length !== expected.length) return false;
+    if (sig.length !== expected.length) {return false;}
     let diff = 0;
-    for (let i = 0; i < sig.length; i++) diff |= sig.charCodeAt(i) ^ expected.charCodeAt(i);
+    for (let i = 0; i < sig.length; i++) {diff |= sig.charCodeAt(i) ^ expected.charCodeAt(i);}
     return diff === 0;
   });
-  if (!ok) throw new Error("signature mismatch");
+  if (!ok) {throw new Error("signature mismatch");}
 }
 
 export async function webhook(ctx: Ctx): Promise<Response> {
   const raw = new Uint8Array(await ctx.request.arrayBuffer());
-  if (raw.length === 0) throw new HttpError(400, "VALIDATION_ERROR", "unreadable body");
+  if (raw.length === 0) {throw new HttpError(400, "VALIDATION_ERROR", "unreadable body");}
   if (!configured(ctx) || !ctx.env.STRIPE_WEBHOOK_SECRET) {
     throw new HttpError(503, "NOT_CONFIGURED", "billing is not configured");
   }
@@ -432,13 +469,16 @@ export async function webhook(ctx: Ctx): Promise<Response> {
   } catch {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid webhook signature");
   }
-  let event: Record<string, unknown> = {};
-  try { event = JSON.parse(new TextDecoder().decode(raw)) as Record<string, unknown>; } catch { event = {}; }
-  if (!event.id) throw new HttpError(400, "VALIDATION_ERROR", "invalid webhook payload");
-  const obj = ((event.data as { object?: Record<string, unknown> } | undefined)?.object) || {};
+  let event: StripeEvent = {};
+  try {
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(raw));
+    event = isStripeEvent(parsed) ? parsed : {};
+  } catch { event = {}; }
+  if (!event.id) {throw new HttpError(400, "VALIDATION_ERROR", "invalid webhook payload");}
+  const obj = event.data?.object ?? {};
   // One transaction per event: each handler locks the company (or user) row first, so the billing changes of one owner run one
   // at a time and a failure rolls back the event row with the rest.
-  const alerts: Alert[] = [];
+  const alerts: Array<Alert> = [];
   try {
     await inTransactionOf(ctx)(async (q) => {
       // A timeout fails the event and Stripe retries it.
@@ -447,43 +487,43 @@ export async function webhook(ctx: Ctx): Promise<Response> {
       const fresh = await one(q,
         "INSERT INTO stripe_events (event_id, type, processed_at) VALUES ($1,$2,$3) ON CONFLICT (event_id) DO NOTHING RETURNING event_id",
         [String(event.id), String(event.type || ""), ctx.now.toISOString()]);
-      if (!fresh) return;
+      if (!fresh) {return;}
       if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
         await checkoutCompleted(tx, obj);
       }
       else if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") {
         await subscriptionChanged(tx, String(event.type), obj);
       }
-      else if (event.type === "invoice.paid") await invoicePaid(tx, obj);
-      else if (event.type === "charge.refunded") await chargeRefunded(tx, obj);
+      else if (event.type === "invoice.paid") {await invoicePaid(tx, obj);}
+      else if (event.type === "charge.refunded") {await chargeRefunded(tx, obj);}
     });
-  } catch (err) {
+  } catch (error) {
     await query(ctx.deps.query, "DELETE FROM stripe_events WHERE event_id = $1", [String(event.id)]);
     // A retry may not raise them again: a replaced subscription canceled before the failure is no longer listed.
-    for (const alert of err instanceof AlertingError ? [...alerts, err.alert] : alerts) {
+    for (const alert of error instanceof AlertingError ? [...alerts, error.alert] : alerts) {
       await raiseAlert(ctx, alert.companyId, alert.kind, alert.referenceId, alert.detail);
     }
-    throw err;
+    throw error;
   }
   return data(200, { received: true }, ctx.rid);
 }
 
-const metaOf = (obj: Record<string, unknown>): Record<string, unknown> => {
+const metaOf = (obj: StripeObject): Record<string, string> => {
   const meta = obj.metadata;
-  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return {};
-  return meta as Record<string, unknown>;
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) {return {};}
+  return meta;
 };
 
 const positiveInt = (value: unknown): number | null => {
   const parsed = typeof value === "number" ? value : Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) return null;
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {return null;}
   return parsed;
 };
 
 const httpsUrl = (value: unknown): string | null => typeof value === "string" && value.startsWith("https://") ? value : null;
 
 // The receipt link is display data: a Stripe read failure must not block the credit grant.
-const receiptOf = async (ctx: Ctx, path: string, pick: (body: Record<string, unknown>) => unknown): Promise<string | null> => {
+const receiptOf = async (ctx: Ctx, path: string, pick: (body: StripeObject) => string | undefined): Promise<string | null> => {
   try {
     return httpsUrl(pick(await stripe(ctx, "GET", path)));
   } catch {
@@ -497,29 +537,28 @@ const invoiceReceipt = (ctx: Ctx, invoice: unknown): Promise<string | null> => t
 
 const chargeReceipt = (ctx: Ctx, intent: unknown): Promise<string | null> => typeof intent === "string" && intent
   ? receiptOf(ctx, "/v1/payment_intents/" + encodeURIComponent(intent) + "?expand[]=latest_charge",
-    (body) => (body.latest_charge as { receipt_url?: unknown } | null | undefined)?.receipt_url)
+    (body) => body.latest_charge?.receipt_url)
   : Promise.resolve(null);
 
-const usdCents = (obj: Record<string, unknown>, cents: number | null): number | null => {
-  if (cents == null || obj.currency === "usd") return cents;
+const usdCents = (obj: StripeObject, cents: number | null): number | null => {
+  if ((cents === null || cents === undefined) || obj.currency === "usd") {return cents;}
   console.error(`billing: ${String(obj.id)} paid in ${String(obj.currency)}, amount not stored`);
   return null;
 };
 
-type Item = { price?: { id?: string }; current_period_start?: number; current_period_end?: number };
-const itemOf = (sub: Record<string, unknown>): Item | undefined => (sub.items as { data?: Item[] } | undefined)?.data?.[0];
-const priceOf = (sub: Record<string, unknown>): string => itemOf(sub)?.price?.id || "";
+const itemOf = (sub: StripeObject): Item | undefined => sub.items?.data?.[0];
+const priceOf = (sub: StripeObject): string => itemOf(sub)?.price?.id || "";
 
 // Subscriptions are ordered by (created, id), so two created in the same second still have one survivor.
-const olderThan = (sub: Record<string, unknown>, keep: { id: string; created: number }): boolean =>
+const olderThan = (sub: StripeObject, keep: { id: string; created: number }): boolean =>
   Number(sub.created) < keep.created || (Number(sub.created) === keep.created && String(sub.id) < keep.id);
 
 // The expanded latest invoice is paid and bills the period the subscription is in now.
-const currentPeriodPaid = (env: CoreEnv, sub: Record<string, unknown>): boolean => {
+const currentPeriodPaid = (env: CoreEnv, sub: StripeObject): boolean => {
   const invoice = sub.latest_invoice;
-  if (!invoice || typeof invoice !== "object" || (invoice as Record<string, unknown>).status !== "paid") return false;
-  const start = planLine(env, invoice as Record<string, unknown>)?.start;
-  return start != null && start === positiveInt(itemOf(sub)?.current_period_start);
+  if (!invoice || typeof invoice !== "object" || invoice.status !== "paid") {return false;}
+  const start = planLine(env, invoice)?.start;
+  return (start !== null && start !== undefined) && start === positiveInt(itemOf(sub)?.current_period_start);
 };
 
 // A plan change is a new Checkout subscription; end every older one so the company never pays twice. Newer ones wait for their own checkout event.
@@ -529,31 +568,31 @@ const currentPeriodPaid = (env: CoreEnv, sub: Record<string, unknown>): boolean 
 // Any other cancel voids the open invoices first, so a late payment cannot land on a subscription the company left. Stripe itself turns off
 // auto_advance on the open and draft invoices of a canceled subscription, so the draft is never finalized or charged.
 // `calendar` is the company's subscription from before credit periods, whose credits are the month's.
-async function cancelReplaced(ctx: Ctx, companyId: string, customers: string[], keep: { id: string; created: number; plan: "BASIC" | "PRO" | "ULTRA" }, calendar: string): Promise<void> {
+async function cancelReplaced(ctx: Ctx, companyId: string, customers: Array<string>, keep: { id: string; created: number; plan: "BASIC" | "PRO" | "ULTRA" }, calendar: string): Promise<void> {
   for (const customer of customers) {
     const list = await stripe(ctx, "GET", "/v1/subscriptions?limit=100&expand[]=data.latest_invoice&customer=" + encodeURIComponent(customer));
     for (const sub of subscriptionsOf(list)) {
-      if (sub.id === keep.id || !CANCELLABLE.has(String(sub.status)) || !olderThan(sub, keep)) continue;
+      if (sub.id === keep.id || !CANCELLABLE.has(String(sub.status)) || !olderThan(sub, keep)) {continue;}
       const id = String(sub.id);
       const refundable = LIVE.has(String(sub.status))
         && await subscriptionLevel(ctx.deps.query, companyId, id, ctx.now, id === calendar) <= grantMicro("EMPLOYER", keep.plan);
       const refund = refundable && currentPeriodPaid(ctx.env, sub);
       // Fail closed: with no readable invoice the period may be paid, so an operator checks it and refunds by hand.
-      const unread = refundable && (sub.latest_invoice == null || typeof sub.latest_invoice !== "object");
+      const unread = refundable && ((sub.latest_invoice === null || sub.latest_invoice === undefined) || typeof sub.latest_invoice !== "object");
       const path = "/v1/subscriptions/" + encodeURIComponent(id);
       try {
         if (refund) {
           await stripe(ctx, "DELETE", path + "?" + new URLSearchParams({ prorate: "true", invoice_now: "true", "cancellation_details[comment]": REFUNDED }));
         } else {
           const open = await stripe(ctx, "GET", "/v1/invoices?status=open&limit=100&subscription=" + encodeURIComponent(id));
-          for (const invoice of subscriptionsOf(open)) await stripe(ctx, "POST", "/v1/invoices/" + encodeURIComponent(String(invoice.id)) + "/void");
+          for (const invoice of subscriptionsOf(open)) {await stripe(ctx, "POST", "/v1/invoices/" + encodeURIComponent(String(invoice.id)) + "/void");}
           await stripe(ctx, "DELETE", path);
         }
       } catch {
         throw new AlertingError({ companyId, kind: "CANCEL_FAILED", referenceId: id, detail: `replaced subscription still billing, kept ${keep.id}` });
       }
       await resolveCancelAlert(ctx, id);
-      if (unread) await raiseAlert(ctx, companyId, "REFUND_SKIPPED", id, `latest_invoice unreadable (${typeof sub.latest_invoice}), canceled without refund, kept ${keep.id}`);
+      if (unread) {await raiseAlert(ctx, companyId, "REFUND_SKIPPED", id, `latest_invoice unreadable (${typeof sub.latest_invoice}), canceled without refund, kept ${keep.id}`);}
     }
   }
 }
@@ -561,17 +600,17 @@ async function cancelReplaced(ctx: Ctx, companyId: string, customers: string[], 
 // The period whose unused time a replacing checkout refunded, read back from Stripe so a retry after a crash finds it too.
 async function refundedStart(ctx: Ctx, subscriptionId: string): Promise<number | null> {
   const sub = await stripe(ctx, "GET", "/v1/subscriptions/" + encodeURIComponent(subscriptionId));
-  const details = sub.cancellation_details as { comment?: unknown } | null | undefined;
+  const details = sub.cancellation_details;
   return sub.status === "canceled" && details?.comment === REFUNDED ? positiveInt(itemOf(sub)?.current_period_start) : null;
 }
 
 // Acts on a live subscription of the paid plan only, and never moves the company to an older one than it has,
 // so a late or replayed checkout can neither point the company at an ended subscription nor cancel the live one.
 async function adoptSubscription(ctx: Ctx, companyId: string, planId: "BASIC" | "PRO" | "ULTRA", customer: string, subscriptionId: string): Promise<void> {
-  if (!customer || !subscriptionId) return;
+  if (!customer || !subscriptionId) {return;}
   const q = ctx.deps.query;
   const before = await one(q, "SELECT plan, stripe_customer_id, stripe_subscription_id, extract(epoch FROM stripe_subscription_created_at)::bigint AS created_unix, extract(epoch FROM credit_period_start)::bigint AS period_unix FROM companies WHERE id = $1 FOR NO KEY UPDATE", [companyId]);
-  if (!before) return;
+  if (!before) {return;}
   const sub = await stripe(ctx, "GET", "/v1/subscriptions/" + encodeURIComponent(subscriptionId));
   if (!LIVE.has(String(sub.status)) || priceOf(sub) !== employerPrice(ctx.env, planId) || sub.customer !== customer) {
     console.error(`billing: company ${companyId} checkout subscription ${subscriptionId} not adopted (${String(sub.status)})`);
@@ -590,28 +629,24 @@ async function adoptSubscription(ctx: Ctx, companyId: string, planId: "BASIC" | 
       "UPDATE companies SET plan = $2, stripe_customer_id = $3, stripe_subscription_id = $4, stripe_subscription_created_at = $5::timestamptz, credit_period_start = $6::timestamptz WHERE id = $1",
       [companyId, planId, customer, subscriptionId, new Date(Number(sub.created) * 1000).toISOString(), start.toISOString()]);
   }
-  const previous = before.stripe_customer_id == null ? "" : String(before.stripe_customer_id);
-  if (keepPlan && keep.id) await cancelReplaced(ctx, companyId, previous && previous !== customer ? [customer, previous] : [customer], { ...keep, plan: keepPlan }, before.period_unix == null ? current : "");
-  if (!switching) return;
+  const previous = (before.stripe_customer_id === null || before.stripe_customer_id === undefined) ? "" : String(before.stripe_customer_id);
+  if (keepPlan && keep.id) {await cancelReplaced(ctx, companyId, previous && previous !== customer ? [customer, previous] : [customer], { ...keep, plan: keepPlan }, (before.period_unix === null || before.period_unix === undefined) ? current : "");}
+  if (!switching) {return;}
   // An upgrade or same-plan swap keeps the tiers of the period whose unused time was just refunded; a downgrade, or a replaced
   // subscription that was not refunded, starts the new plan fresh. A company on calendar months carries the month its period starts in.
-  const refunded = before.period_unix == null ? null : current ? await refundedStart(ctx, current) : null;
-  const from = before.period_unix == null ? monthKey(start) : refunded ? periodKey(current, new Date(refunded * 1000)) : null;
+  const refunded = (before.period_unix === null || before.period_unix === undefined) ? null : current ? await refundedStart(ctx, current) : null;
+  const from = (before.period_unix === null || before.period_unix === undefined) ? monthKey(start) : refunded ? periodKey(current, new Date(refunded * 1000)) : null;
   const level = from ? await keyLevel(q, companyId, from) : 0;
   await grantPeriod(q, { companyId, subscriptionId, periodStart: start, plan: planId, carry: level <= grantMicro("EMPLOYER", planId) ? level : 0, now: ctx.now });
 }
 
-const planLine = (env: CoreEnv, obj: Record<string, unknown>): { plan: "BASIC" | "PRO" | "ULTRA"; start: number | null } | null => {
-  type Line = {
-    amount?: number; price?: { id?: string } | null; pricing?: { price_details?: { price?: string } }; period?: { start?: number };
-    parent?: { subscription_item_details?: { proration?: boolean } | null } | null;
-  };
-  const lines = ((obj.lines as { data?: Line[] } | undefined)?.data) || [];
+const planLine = (env: CoreEnv, obj: StripeObject): { plan: "BASIC" | "PRO" | "ULTRA"; start: number | null } | null => {
+  const lines = obj.lines?.data ?? [];
   for (const line of lines) {
     // A proration line starts mid-period, so it never names the period the renewal opens.
-    if (!(Number(line.amount) > 0) || line.parent?.subscription_item_details?.proration) continue;
+    if (!(Number(line.amount) > 0) || line.parent?.subscription_item_details?.proration) {continue;}
     const plan = employerPlanByPrice(env, line.price?.id || line.pricing?.price_details?.price || "");
-    if (plan) return { plan, start: positiveInt(line.period?.start) };
+    if (plan) {return { plan, start: positiveInt(line.period?.start) };}
   }
   return null;
 };
@@ -620,13 +655,13 @@ const planLine = (env: CoreEnv, obj: Record<string, unknown>): { plan: "BASIC" |
 // subscription the company has since left, unless that period is the one the replacing checkout refunded (its credits carried).
 // The total, not amount_paid, is the charge: a renewal paid from the Stripe balance has amount_paid 0.
 // The first invoice is the checkout row. A replaced subscription's final invoice is negative and becomes Stripe balance.
-async function invoicePaid(ctx: Ctx, obj: Record<string, unknown>): Promise<void> {
-  if (obj.billing_reason !== "subscription_cycle") return;
+async function invoicePaid(ctx: Ctx, obj: StripeObject): Promise<void> {
+  if (obj.billing_reason !== "subscription_cycle") {return;}
   const total = Number(obj.total);
   const customer = String(obj.customer || "");
-  if (!Number.isSafeInteger(total) || !customer || !obj.id) return;
+  if (!Number.isSafeInteger(total) || !customer || !obj.id) {return;}
   const company = await one(ctx.deps.query, "SELECT id, plan, stripe_subscription_id FROM companies WHERE stripe_customer_id = $1 FOR NO KEY UPDATE", [customer]);
-  if (!company) return;
+  if (!company) {return;}
   const companyId = String(company.id);
   const line = planLine(ctx.env, obj);
   const plan = line?.plan ?? employerPlanOf(company.plan);
@@ -635,14 +670,14 @@ async function invoicePaid(ctx: Ctx, obj: Record<string, unknown>): Promise<void
     amountUsdCents: usdCents(obj, total),
     receiptUrl: httpsUrl(obj.hosted_invoice_url),
   });
-  const subscriptionId = String((obj.parent as { subscription_details?: { subscription?: unknown } } | null | undefined)?.subscription_details?.subscription ?? "");
+  const subscriptionId = String(obj.parent?.subscription_details?.subscription ?? "");
   const current = subscriptionId === String(company.stripe_subscription_id ?? "");
-  if (total < 0 || !subscriptionId || (!current && total === 0)) return;
+  if (total < 0 || !subscriptionId || (!current && total === 0)) {return;}
   if (!line?.start) {
     await raiseAlert(ctx, companyId, "NOT_GRANTED", String(obj.id), `paid renewal of ${subscriptionId} has no employer plan line`);
     return;
   }
-  if (!current && await refundedStart(ctx, subscriptionId) === line.start) return;
+  if (!current && await refundedStart(ctx, subscriptionId) === line.start) {return;}
   const periodStart = new Date(line.start * 1000);
   await query(ctx.deps.query,
     "UPDATE companies SET credit_period_start = $2::timestamptz WHERE id = $1 AND stripe_subscription_id = $3 AND (credit_period_start IS NULL OR credit_period_start < $2::timestamptz)",
@@ -652,15 +687,15 @@ async function invoicePaid(ctx: Ctx, obj: Record<string, unknown>): Promise<void
 
 // A fully refunded top-up checkout takes its credits back. Subscription refunds keep their credits (the replaced-period refund
 // in checkout carries them). shortcut: a partial refund changes nothing; the operator adjusts by hand until partial refunds are offered.
-async function chargeRefunded(ctx: Ctx, obj: Record<string, unknown>): Promise<void> {
-  if (obj.refunded !== true || typeof obj.payment_intent !== "string" || !obj.payment_intent) return;
+async function chargeRefunded(ctx: Ctx, obj: StripeObject): Promise<void> {
+  if (obj.refunded !== true || typeof obj.payment_intent !== "string" || !obj.payment_intent) {return;}
   const list = await stripe(ctx, "GET", "/v1/checkout/sessions?payment_intent=" + encodeURIComponent(obj.payment_intent));
-  const session = (Array.isArray(list.data) ? list.data[0] : null) as Record<string, unknown> | null;
+  const session = Array.isArray(list.data) ? list.data[0] : null;
   const meta = session ? metaOf(session) : {};
   const micro = positiveInt(meta.amountMicroCredits);
-  if (!session || micro == null) return;
+  if (!session || (micro === null || micro === undefined)) {return;}
   const ownerId = String(meta.ownerId || session.client_reference_id || "");
-  if (!UUID.test(ownerId)) throw new HttpError(400, "VALIDATION_ERROR", "invalid session reference");
+  if (!UUID.test(ownerId)) {throw new HttpError(400, "VALIDATION_ERROR", "invalid session reference");}
   if (String(meta.audience || "") === "EMPLOYER") {
     await lockOwner(ctx.deps.query, "EMPLOYER", ownerId);
     await takeBack(ctx, { companyId: ownerId }, micro, String(session.id));
@@ -671,14 +706,14 @@ async function chargeRefunded(ctx: Ctx, obj: Record<string, unknown>): Promise<v
   }
 }
 
-async function checkoutCompleted(ctx: Ctx, obj: Record<string, unknown>): Promise<void> {
-  if (obj.payment_status === "unpaid") return;
+async function checkoutCompleted(ctx: Ctx, obj: StripeObject): Promise<void> {
+  if (obj.payment_status === "unpaid") {return;}
   const meta = metaOf(obj);
-  if (meta.amountMicroCredits != null && String(meta.amountMicroCredits) !== "") {
+  if ((meta.amountMicroCredits !== null && meta.amountMicroCredits !== undefined) && String(meta.amountMicroCredits) !== "") {
     const micro = positiveInt(meta.amountMicroCredits);
-    if (micro == null) throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan");
+    if ((micro === null || micro === undefined)) {throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan");}
     const ownerId = String(meta.ownerId || obj.client_reference_id || "");
-    if (!UUID.test(ownerId)) throw new HttpError(400, "VALIDATION_ERROR", "invalid session reference");
+    if (!UUID.test(ownerId)) {throw new HttpError(400, "VALIDATION_ERROR", "invalid session reference");}
     const reference = String(obj.id || "");
     if (String(meta.audience || "") === "EMPLOYER") {
       await lockOwner(ctx.deps.query, "EMPLOYER", ownerId);
@@ -696,9 +731,9 @@ async function checkoutCompleted(ctx: Ctx, obj: Record<string, unknown>): Promis
   }
   if (String(meta.audience || "") === "EMPLOYER") {
     const companyId = String(meta.ownerId || obj.client_reference_id || "");
-    if (!UUID.test(companyId)) throw new HttpError(400, "VALIDATION_ERROR", "invalid session reference");
+    if (!UUID.test(companyId)) {throw new HttpError(400, "VALIDATION_ERROR", "invalid session reference");}
     const planId = employerPlanOf(meta.plan || meta.planId);
-    if (!planId) throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan");
+    if (!planId) {throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan");}
     await lockOwner(ctx.deps.query, "EMPLOYER", companyId);
     await companyLedger(ctx, companyId, 0, String(obj.id || ""), {
       description: planDescription(planId),
@@ -709,11 +744,11 @@ async function checkoutCompleted(ctx: Ctx, obj: Record<string, unknown>): Promis
     return;
   }
   const userId = String(obj.client_reference_id || "");
-  if (!UUID.test(userId)) throw new HttpError(400, "VALIDATION_ERROR", "invalid session reference");
+  if (!UUID.test(userId)) {throw new HttpError(400, "VALIDATION_ERROR", "invalid session reference");}
   const planId = String(meta.planId || "");
-  if (!PLANS.has(planId) || planId === "FREE") throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan");
+  if (!PLANS.has(planId) || planId === "FREE") {throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan");}
   // The lock is its own statement: a lock taken inside the INSERT would read the balance from the snapshot before the wait.
-  if (!await lockOwner(ctx.deps.query, "PERSONAL", userId)) return;
+  if (!await lockOwner(ctx.deps.query, "PERSONAL", userId)) {return;}
   await query(ctx.deps.query,
     "UPDATE users SET plan = $2, subscription_status = 'ACTIVE', stripe_customer_id = COALESCE(NULLIF($3, ''), stripe_customer_id) WHERE id = $1",
     [userId, planId, String(obj.customer || "")]);
@@ -724,11 +759,11 @@ async function checkoutCompleted(ctx: Ctx, obj: Record<string, unknown>): Promis
 // the company's current subscription, so a stale copy can neither revive the plan of an ended one nor end a live one.
 async function companySubscriptionChanged(ctx: Ctx, type: string, companyId: string, currentId: string, subscriptionId: string): Promise<void> {
   if (type !== "customer.subscription.deleted") {
-    if (!subscriptionId || subscriptionId !== currentId) return;
+    if (!subscriptionId || subscriptionId !== currentId) {return;}
     const sub = await stripe(ctx, "GET", "/v1/subscriptions/" + encodeURIComponent(subscriptionId));
     if (!ENDED.has(String(sub.status))) {
       const plan = LIVE.has(String(sub.status)) ? employerPlanByPrice(ctx.env, priceOf(sub)) : null;
-      if (plan) await query(ctx.deps.query, "UPDATE companies SET plan = $3 WHERE id = $1 AND stripe_subscription_id = $2", [companyId, subscriptionId, plan]);
+      if (plan) {await query(ctx.deps.query, "UPDATE companies SET plan = $3 WHERE id = $1 AND stripe_subscription_id = $2", [companyId, subscriptionId, plan]);}
       return;
     }
   }
@@ -741,10 +776,10 @@ async function companySubscriptionChanged(ctx: Ctx, type: string, companyId: str
 // Personal Stripe subscriptions are legacy; they follow the employer rules: an update is read back from Stripe, a delete is final.
 // An active, unexpired App Store or Google Play subscription owns the user's plan, so a late Stripe event leaves it alone. A store row
 // whose EXPIRED notification never arrived stops guarding at its expires_at.
-async function subscriptionChanged(ctx: Ctx, type: string, obj: Record<string, unknown>): Promise<void> {
+async function subscriptionChanged(ctx: Ctx, type: string, obj: StripeObject): Promise<void> {
   const customer = String(obj.customer || "");
   const subscriptionId = String(obj.id || "");
-  if (!customer || !subscriptionId) throw new HttpError(400, "VALIDATION_ERROR", "invalid subscription payload");
+  if (!customer || !subscriptionId) {throw new HttpError(400, "VALIDATION_ERROR", "invalid subscription payload");}
   const company = await one(ctx.deps.query, "SELECT id, stripe_subscription_id FROM companies WHERE stripe_customer_id = $1 FOR NO KEY UPDATE", [customer]);
   if (company) {
     await companySubscriptionChanged(ctx, type, String(company.id), String(company.stripe_subscription_id ?? ""), subscriptionId);
@@ -754,7 +789,7 @@ async function subscriptionChanged(ctx: Ctx, type: string, obj: Record<string, u
   if (!user) {
     // An employer subscription whose customer no company holds: its checkout is not adopted yet (adoption reads the subscription
     // itself), or the company moved to a newer customer and left it. Neither needs the event, and a retry would never find an owner.
-    if (employerPlanByPrice(ctx.env, priceOf(obj))) return;
+    if (employerPlanByPrice(ctx.env, priceOf(obj))) {return;}
     throw new HttpError(500, "INTERNAL", "internal error");
   }
   const deleted = type === "customer.subscription.deleted";
@@ -773,35 +808,35 @@ async function subscriptionChanged(ctx: Ctx, type: string, obj: Record<string, u
 // planLine reads them, so a price rotation still refunds and grants invoices
 // created on the previous id. Add the old id here when the env value changes;
 // do not delete it. These are test-mode ids, never a live charge.
-const LEGACY_EMPLOYER_PRICES: Record<"BASIC" | "PRO" | "ULTRA", readonly string[]> = {
+const LEGACY_EMPLOYER_PRICES: Record<"BASIC" | "PRO" | "ULTRA", ReadonlyArray<string>> = {
   BASIC: [],
   PRO: ["price_retired_employer_pro"],
   ULTRA: [],
 };
 
 const employerPlanByPrice = (env: CoreEnv, priceId: string): "BASIC" | "PRO" | "ULTRA" | null => {
-  if (priceId === env.STRIPE_PRICE_EMPLOYER_BASIC || LEGACY_EMPLOYER_PRICES.BASIC.includes(priceId)) return "BASIC";
-  if (priceId === env.STRIPE_PRICE_EMPLOYER_PRO || LEGACY_EMPLOYER_PRICES.PRO.includes(priceId)) return "PRO";
-  if (priceId === env.STRIPE_PRICE_EMPLOYER_ULTRA || LEGACY_EMPLOYER_PRICES.ULTRA.includes(priceId)) return "ULTRA";
+  if (priceId === env.STRIPE_PRICE_EMPLOYER_BASIC || LEGACY_EMPLOYER_PRICES.BASIC.includes(priceId)) {return "BASIC";}
+  if (priceId === env.STRIPE_PRICE_EMPLOYER_PRO || LEGACY_EMPLOYER_PRICES.PRO.includes(priceId)) {return "PRO";}
+  if (priceId === env.STRIPE_PRICE_EMPLOYER_ULTRA || LEGACY_EMPLOYER_PRICES.ULTRA.includes(priceId)) {return "ULTRA";}
   return null;
 };
 
 const personalPlanByPrice = (env: CoreEnv, priceId: string): "PRO" | "ULTRA" | null => {
-  if (priceId === env.STRIPE_PRICE_PRO) return "PRO";
-  if (priceId === env.STRIPE_PRICE_ULTRA) return "ULTRA";
+  if (priceId === env.STRIPE_PRICE_PRO) {return "PRO";}
+  if (priceId === env.STRIPE_PRICE_ULTRA) {return "ULTRA";}
   return null;
 };
 
 const productKind = (env: CoreEnv, productId: string): "PRO" | "ULTRA" | "TOPUP" | "UNKNOWN" | "MISSING" => {
-  if (!env.IAP_PRODUCT_PRO && !env.IAP_PRODUCT_ULTRA && !env.IAP_PRODUCT_TOPUP) return "MISSING";
-  if (env.IAP_PRODUCT_PRO && productId === env.IAP_PRODUCT_PRO) return "PRO";
-  if (env.IAP_PRODUCT_ULTRA && productId === env.IAP_PRODUCT_ULTRA) return "ULTRA";
-  if (env.IAP_PRODUCT_TOPUP && productId === env.IAP_PRODUCT_TOPUP) return "TOPUP";
+  if (!env.IAP_PRODUCT_PRO && !env.IAP_PRODUCT_ULTRA && !env.IAP_PRODUCT_TOPUP) {return "MISSING";}
+  if (env.IAP_PRODUCT_PRO && productId === env.IAP_PRODUCT_PRO) {return "PRO";}
+  if (env.IAP_PRODUCT_ULTRA && productId === env.IAP_PRODUCT_ULTRA) {return "ULTRA";}
+  if (env.IAP_PRODUCT_TOPUP && productId === env.IAP_PRODUCT_TOPUP) {return "TOPUP";}
   return "UNKNOWN";
 };
 
 const sandboxAllowed = (ctx: Ctx, userId: string): boolean => {
-  if (ctx.env.APP_ENV === "development") return true;
+  if (ctx.env.APP_ENV === "development") {return true;}
   const allowed = ctx.env.STORE_SANDBOX_USER_IDS ?? "";
   return allowed.split(",").some((id) => id.trim() === userId);
 };
@@ -819,31 +854,31 @@ const claimPurchase = async (
 ): Promise<void> => {
   const row = await one(ctx.deps.query, CLAIM_PURCHASE,
     [crypto.randomUUID(), ctx.user.id, platform, receipt.originalTransactionId, receipt.productId, receipt.expiresAt, status, receipt.sandbox === true]);
-  if (!row) throw new HttpError(409, "CONFLICT", "purchase belongs to another account");
+  if (!row) {throw new HttpError(409, "CONFLICT", "purchase belongs to another account");}
 };
 
 const requireKind = (env: CoreEnv, productId: string): "PRO" | "ULTRA" | "TOPUP" => {
   const kind = productKind(env, productId);
-  if (kind === "MISSING") throw new HttpError(503, "NOT_CONFIGURED", "iap products are not configured");
-  if (kind === "UNKNOWN") throw new HttpError(400, "VALIDATION_ERROR", "unknown product", { field: "productId" });
+  if (kind === "MISSING") {throw new HttpError(503, "NOT_CONFIGURED", "iap products are not configured");}
+  if (kind === "UNKNOWN") {throw new HttpError(400, "VALIDATION_ERROR", "unknown product", { field: "productId" });}
   return kind;
 };
 
 export const topup = async (ctx: Ctx): Promise<Response> => {
-  if (!configured(ctx)) throw new HttpError(503, "NOT_CONFIGURED", "billing is not configured");
+  if (!configured(ctx)) {throw new HttpError(503, "NOT_CONFIGURED", "billing is not configured");}
   const body = await readObject(ctx.request);
   const packs = body.packs;
   if (typeof packs !== "number" || !Number.isSafeInteger(packs) || packs < 1 || packs > MAX_PACKS) {
     throw new HttpError(400, "VALIDATION_ERROR", "must be an integer from 1 to " + MAX_PACKS, { field: "packs" });
   }
-  if (ctx.user.accountType !== "EMPLOYER") throw new HttpError(403, "FORBIDDEN", "admin required");
-  if (!ctx.user.companyId) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  if (ctx.user.companyRole !== "ADMIN") throw new HttpError(403, "FORBIDDEN", "admin required");
+  if (ctx.user.accountType !== "EMPLOYER") {throw new HttpError(403, "FORBIDDEN", "admin required");}
+  if (!ctx.user.companyId) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
+  if (ctx.user.companyRole !== "ADMIN") {throw new HttpError(403, "FORBIDDEN", "admin required");}
   const price = ctx.env.STRIPE_PRICE_TOPUP;
-  if (!price) throw new HttpError(503, "NOT_CONFIGURED", "plan price is not configured");
+  if (!price) {throw new HttpError(503, "NOT_CONFIGURED", "plan price is not configured");}
   const company = await one(ctx.deps.query, "SELECT stripe_customer_id FROM companies WHERE id = $1", [ctx.user.companyId]);
-  if (!company) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  const customer = company.stripe_customer_id == null ? null : String(company.stripe_customer_id);
+  if (!company) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
+  const customer = (company.stripe_customer_id === null || company.stripe_customer_id === undefined) ? null : String(company.stripe_customer_id);
   const ownerId = ctx.user.companyId;
   try {
     const form = new URLSearchParams({
@@ -856,12 +891,12 @@ export const topup = async (ctx: Ctx): Promise<Response> => {
       "metadata[audience]": "EMPLOYER",
       "metadata[ownerId]": ownerId,
     });
-    if (customer) form.set("customer", customer);
+    if (customer) {form.set("customer", customer);}
     const session = await stripe(ctx, "POST", "/v1/checkout/sessions", form);
-    if (typeof session.url !== "string" || !session.url) throw new Error("url");
+    if (typeof session.url !== "string" || !session.url) {throw new Error("url");}
     return data(200, { url: session.url }, ctx.rid);
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
+  } catch (error) {
+    if (error instanceof HttpError) {throw error;}
     throw new HttpError(502, "PROVIDER_ERROR", "stripe checkout session failed");
   }
 };
@@ -895,7 +930,7 @@ export const verifyIap = async (ctx: Ctx): Promise<Response> => {
   if (requireKind(ctx.env, receipt.productId) !== kind) {
     throw new HttpError(400, "VALIDATION_ERROR", "unknown product", { field: "productId" });
   }
-  if (kind !== "TOPUP" && receipt.expiresAt != null && Date.parse(receipt.expiresAt) <= ctx.now.getTime()) {
+  if (kind !== "TOPUP" && (receipt.expiresAt !== null && receipt.expiresAt !== undefined) && Date.parse(receipt.expiresAt) <= ctx.now.getTime()) {
     throw new HttpError(400, "VALIDATION_ERROR", "purchase is not valid");
   }
   await inTransactionOf(ctx)(async (q) => {
@@ -911,7 +946,7 @@ export const verifyIap = async (ctx: Ctx): Promise<Response> => {
       [ctx.user.id, kind, receipt.expiresAt]);
     await userLedger(tx, ctx.user.id, grantMicro("PERSONAL", kind), receipt.originalTransactionId);
   });
-  if (kind === "TOPUP") return data(200, { plan: ctx.user.plan || null, periodEndsAt: ts(ctx.user.periodEndsAt) }, ctx.rid);
+  if (kind === "TOPUP") {return data(200, { plan: ctx.user.plan || null, periodEndsAt: ts(ctx.user.periodEndsAt) }, ctx.rid);}
   return data(200, { plan: kind, periodEndsAt: ts(receipt.expiresAt) }, ctx.rid);
 };
 
@@ -934,7 +969,7 @@ const currentStoreSubscription = async (ctx: Ctx, userId: string): Promise<strin
   const row = await one(ctx.deps.query,
     "SELECT original_transaction_id FROM iap_subscriptions WHERE user_id = $1 AND status = 'ACTIVE' ORDER BY expires_at DESC NULLS FIRST LIMIT 1",
     [userId]);
-  return row?.original_transaction_id == null ? null : String(row.original_transaction_id);
+  return (row?.original_transaction_id === null || row?.original_transaction_id === undefined) ? null : String(row.original_transaction_id);
 };
 
 const storeNote = async (
@@ -951,7 +986,7 @@ const storeNote = async (
     const row = await one(ctx.deps.query,
       "SELECT user_id, status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions WHERE original_transaction_id = $1",
       [transactionId]);
-    if (row?.user_id) await lockUser(ctx, row.user_id);
+    if (row?.user_id) {await lockUser(ctx, row.user_id);}
     let drivesPlan = false;
     if (row?.user_id && row.topup !== true) {
       drivesPlan = (await currentStoreSubscription(ctx, String(row.user_id))) === transactionId;
@@ -959,7 +994,7 @@ const storeNote = async (
     await query(ctx.deps.query,
       "UPDATE iap_subscriptions SET status = CASE WHEN status IN ('CONSUMED', 'REFUNDED') THEN 'REFUNDED' ELSE 'CANCELED' END, expires_at = COALESCE($2::timestamptz, expires_at), sandbox = $3 WHERE original_transaction_id = $1",
       [transactionId, expiresAt, sandbox]);
-    if (!row?.user_id) return;
+    if (!row?.user_id) {return;}
     // A refunded credit top-up is not the subscription: the plan stays and the pack's credits go.
     if (row.topup === true) {
       await takeBack(ctx, { userId: String(row.user_id) }, iapTopupMicro(ctx.env.IAP_TOPUP_CREDITS), transactionId);
@@ -973,14 +1008,14 @@ const storeNote = async (
     return;
   }
   const grants = upper === "PURCHASE" || upper === "RENEWAL" || upper === "SUBSCRIBED" || upper === "DID_RENEW";
-  if (!grants || !transactionId) return;
+  if (!grants || !transactionId) {return;}
   const kind = requireKind(ctx.env, productId);
   const row = await one(ctx.deps.query,
     "SELECT user_id FROM iap_subscriptions WHERE original_transaction_id = $1",
     [transactionId]);
-  if (!row) return;
+  if (!row) {return;}
   const userId = String(row.user_id);
-  if (sandbox && !sandboxAllowed(ctx, userId)) return;
+  if (sandbox && !sandboxAllowed(ctx, userId)) {return;}
   await lockUser(ctx, userId);
   if (kind === "TOPUP") {
     await userLedger(ctx, userId, iapTopupMicro(ctx.env.IAP_TOPUP_CREDITS), transactionId);
@@ -999,7 +1034,7 @@ const storeNote = async (
 
 export const appleWebhook = async (ctx: Ctx): Promise<Response> => {
   const raw = await ctx.request.text();
-  if (!raw) throw new HttpError(400, "VALIDATION_ERROR", "unreadable body");
+  if (!raw) {throw new HttpError(400, "VALIDATION_ERROR", "unreadable body");}
   const note = await storePort(ctx).decodeAppleNotification(raw);
   await grantNote(ctx, note.notificationType, note.originalTransactionId, note.productId, note.expiresAt, note.sandbox === true);
   return data(200, { received: true }, ctx.rid);
@@ -1007,7 +1042,7 @@ export const appleWebhook = async (ctx: Ctx): Promise<Response> => {
 
 export const googleWebhook = async (ctx: Ctx): Promise<Response> => {
   const raw = await ctx.request.text();
-  if (!raw) throw new HttpError(400, "VALIDATION_ERROR", "unreadable body");
+  if (!raw) {throw new HttpError(400, "VALIDATION_ERROR", "unreadable body");}
   let body: unknown;
   try {
     body = JSON.parse(raw) as unknown;
@@ -1018,9 +1053,8 @@ export const googleWebhook = async (ctx: Ctx): Promise<Response> => {
   let expiresAt = note.expiresAt;
   let sandbox = false;
   const pushed = googlePlayPubsub(body);
-  const sub = pushed?.subscriptionNotification && typeof pushed.subscriptionNotification === "object"
-    ? pushed.subscriptionNotification as Record<string, unknown> : null;
-  if (sub) {
+  const hasSubscriptionNotification = Boolean(pushed?.subscriptionNotification) && typeof pushed?.subscriptionNotification === "object";
+  if (hasSubscriptionNotification) {
     const upper = String(note.notificationType).toUpperCase();
     const grant = upper === "PURCHASE" || upper === "RENEWAL" || upper === "SUBSCRIBED" || upper === "DID_RENEW";
     if (grant && note.purchaseToken && note.productId) {

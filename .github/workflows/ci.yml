@@ -151,6 +151,24 @@ jobs:
         continue-on-error: true
         run: uv run --no-sync mypy
 
+  # oxlint covers every TS/JS workspace in one pass, so it skips the path filter.
+  lint-ts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: oxlint
+        run: |
+          npm ci
+          npm run lint
+
   test-gateway:
     needs: changes
     if: needs.changes.outputs.gateway == 'true'

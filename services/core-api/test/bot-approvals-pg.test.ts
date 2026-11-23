@@ -3,18 +3,20 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
+import type { Row } from "../src/db.ts";
 import { handle } from "../src/handler.ts";
-import { botsPg, type BotsPg, type Person } from "../test-support/bots-pg.ts";
+import { botsPg } from '../test-support/bots-pg.ts';
+import type { BotsPg, Person } from '../test-support/bots-pg.ts';
 
 const URL_ = process.env.BILLING_PG_URL;
 const SKIP = "set BILLING_PG_URL to a migrated Postgres";
 const TEN_MINUTES = 10 * 60 * 1000;
 
 let db: BotsPg | undefined;
-before(async () => { if (URL_) db = await botsPg(URL_); });
+before(async () => { if (URL_) {db = await botsPg(URL_);} });
 after(async () => { await db?.close(); });
 
-const rows = async (sql: string, params: unknown[]): Promise<Record<string, unknown>[]> => (await db!.pg.query(sql, params)).rows;
+const rows = async (sql: string, params: Array<unknown>): Promise<Array<Row>> => (await db!.pg.query(sql, params)).rows;
 
 const botWithThread = async (user: Person, company = "모아페이"): Promise<{ bot: string; thread: string }> => {
   const created = await db!.call(user, "POST", "/bots", { postingId: await db!.posting(company) });
@@ -49,10 +51,10 @@ const answer = async (user: Person, path: string, optionId: string): Promise<num
   { query: db!.pg.query, transaction: db!.pg.transaction, now: () => new Date() },
 )).status;
 
-const span = (retry: Record<string, unknown>) => Date.parse(String(retry.expiresAt)) - Date.parse(String(retry.openedAt));
+const span = (retry: Row) => Date.parse(String(retry.expiresAt)) - Date.parse(String(retry.openedAt));
 
 test("닫기 closes an expired card with reject and resumes nothing, and any other answer is 410", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const { bot, thread } = await botWithThread(user);
   const id = await pageCard(user, thread, 11);
@@ -74,7 +76,7 @@ test("닫기 closes an expired card with reject and resumes nothing, and any oth
 });
 
 test("다시 요청 asks an expired card again with its whole lifetime, every time", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const { bot, thread } = await botWithThread(user);
   const id = await pageCard(user, thread, 11);
@@ -99,7 +101,7 @@ test("다시 요청 asks an expired card again with its whole lifetime, every ti
 });
 
 test("a retry after a newer message is 409 APPROVAL_SUPERSEDED", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const { bot, thread } = await botWithThread(user);
   const id = await pageCard(user, thread, 11);
@@ -115,7 +117,7 @@ test("a retry after a newer message is 409 APPROVAL_SUPERSEDED", async (t) => {
 });
 
 test("only an expiring tool card of the bot's own thread can be asked again", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const mine = await botWithThread(user, "모아페이");
   const other = await botWithThread(user, "누리클라우드");
@@ -130,7 +132,7 @@ test("only an expiring tool card of the bot's own thread can be asked again", as
 });
 
 test("a bot's allowed sites are listed by host and taken back without a confirm", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const { bot } = await botWithThread(user);
   await rows(
@@ -161,7 +163,7 @@ test("a bot's allowed sites are listed by host and taken back without a confirm"
 });
 
 test("the Push Bot lists and revokes its sites by the literal push", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
 
   const empty = await db.call(user, "GET", "/bots/push/site-grants");
@@ -169,8 +171,8 @@ test("the Push Bot lists and revokes its sites by the literal push", async (t) =
 
   const [push] = await rows("SELECT id FROM bots WHERE user_id = $1::uuid AND kind = 'push'", [user.id]);
   await rows("INSERT INTO bot_site_grants (bot_id, host, kind) VALUES ($1::uuid, 'nuricloud.career.greetinghr.com', 'posting')", [push.id]);
-  assert.deepEqual(((await db.call(user, "GET", "/bots/push/site-grants")).body.data as { host: string }[]).map((g) => g.host),
-    ["nuricloud.career.greetinghr.com"]);
+  const grants: unknown = (await db.call(user, "GET", "/bots/push/site-grants")).body.data;
+  assert.deepEqual(Array.isArray(grants) ? grants.map((g: { host: string }) => g.host) : [], ["nuricloud.career.greetinghr.com"]);
   assert.equal((await db.call(user, "DELETE", "/bots/push/site-grants/nuricloud.career.greetinghr.com")).status, 204);
   assert.deepEqual((await db.call(user, "GET", "/bots/push/site-grants")).body.data, []);
 });

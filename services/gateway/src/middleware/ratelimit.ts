@@ -6,27 +6,31 @@
 import { createIsolateCache } from "./cache.ts";
 import type { Deps } from "../types.ts";
 
+type Row = Awaited<ReturnType<Deps["query"]>>[number];
+
 const missingCompanyTable = (err: unknown): boolean => {
-  const e = err as { code?: string; message?: string };
-  const text = `${e?.code || ""} ${e?.message || ""} ${String(err)}`;
-  return e?.code === "42P01" || e?.code === "42703" || /42P01|42703|relation .* does not exist|column .* does not exist/i.test(text);
+  const fields = typeof err === "object" && err !== null ? err : {};
+  const code = "code" in fields && typeof fields.code === "string" ? fields.code : "";
+  const message = "message" in fields && typeof fields.message === "string" ? fields.message : "";
+  const text = `${code} ${message} ${String(err)}`;
+  return code === "42P01" || code === "42703" || /42P01|42703|relation .* does not exist|column .* does not exist/i.test(text);
 };
 
-export const queryToleratingCompany = async (run: Deps["query"], sql: string, params: unknown[]): Promise<Record<string, unknown>[]> => {
+export const queryToleratingCompany = async (run: Deps["query"], sql: string, params: Array<unknown>): Promise<Array<Row>> => {
   try {
     return await run(sql, params);
-  } catch (err) {
-    if (!sql.includes("company_members") || !missingCompanyTable(err)) throw err;
+  } catch (error) {
+    if (!sql.includes("company_members") || !missingCompanyTable(error)) {throw error;}
     const fallback = sql
       .replaceAll("m.company_id, m.role AS company_role", "NULL::uuid AS company_id, NULL::text AS company_role")
       .replaceAll(" LEFT JOIN company_members m ON m.user_id = u.id", "")
       .replaceAll("LEFT JOIN company_members m ON m.user_id = u.id", "");
-    if (fallback === sql || fallback.includes("company_members")) throw err;
+    if (fallback === sql || fallback.includes("company_members")) {throw error;}
     return run(fallback, params);
   }
 };
 
-const hits = new Map<string, number[]>();
+const hits = new Map<string, Array<number>>();
 // Buckets this isolate has seen filled. Further requests are rejected
 // here and do not write Neon.
 export const remoteHits = new Map<string, number>();
@@ -54,15 +58,15 @@ export const MAX_STREAMS = 3;
 const streams = new Map<string, number>();
 export const openStream = (key: string): (() => void) | null => {
   const open = streams.get(key) ?? 0;
-  if (open >= MAX_STREAMS) return null;
+  if (open >= MAX_STREAMS) {return null;}
   streams.set(key, open + 1);
   let released = false;
   return () => {
-    if (released) return;
+    if (released) {return;}
     released = true;
     const left = (streams.get(key) ?? 1) - 1;
-    if (left > 0) streams.set(key, left);
-    else streams.delete(key);
+    if (left > 0) {streams.set(key, left);}
+    else {streams.delete(key);}
   };
 };
 export const isolate = createIsolateCache();
@@ -71,7 +75,7 @@ export const isolate = createIsolateCache();
 // up before it expires, and never past this cap. A wide lease stranded hits
 // on isolates that never saw another request.
 const MAX_LEASE = 8;
-const LEASE_TTL_MS = 5_000;
+const LEASE_TTL_MS = 5000;
 // Short enough that Workers still runs it after the response. A 5s timer
 // never landed, so the row kept the unused hits.
 const RELEASE_DELAY_MS = 250;
@@ -79,7 +83,7 @@ const RELEASE_DELAY_MS = 250;
 // Reads stop this far under the shared cap so a burst of GETs leaves room
 // for Python writes on the same `user:{id}:{minute}` row.
 export function readCap(limit: number): number {
-  if (limit < 10) return limit;
+  if (limit < 10) {return limit;}
   return limit - Math.floor(limit / 10);
 }
 // The update runs only while the row is still under the limit, so a 429
@@ -255,7 +259,7 @@ export const LIST_SQL = AUTH_RATE_PREFIX
   + "AND c.company_id IS NULL AND c.bot_id IS NULL "
   + "AND ($8::uuid IS NULL OR c.application_id = $8::uuid) "
   + "AND ($9::timestamptz IS NULL OR (c.updated_at, c.id) < ($9::timestamptz, $10::uuid)) "
-  + "AND ($12::text IS NULL OR c.title ILIKE $12 ESCAPE '\\' OR COALESCE(last_msg.text, '') ILIKE $12 ESCAPE '\\') "
+  + String.raw`AND ($12::text IS NULL OR c.title ILIKE $12 ESCAPE '\' OR COALESCE(last_msg.text, '') ILIKE $12 ESCAPE '\') `
   + "ORDER BY c.updated_at DESC, c.id DESC LIMIT $11"
   + ") SELECT " + AUTH_COLUMNS + ", COALESCE((SELECT json_agg(json_build_object("
   + "'id', page.id, 'revision', page.revision, 'application_id', page.application_id, "
@@ -310,7 +314,7 @@ const RELEASE_SQL = "UPDATE rate_limits SET hits = GREATEST(0, hits - $2::int) "
   + "WHERE bucket = $1 AND $2::int > 0 RETURNING hits";
 
 async function releaseLease(deps: Deps, lease: Lease): Promise<void> {
-  if (lease.remaining <= 0) return;
+  if (lease.remaining <= 0) {return;}
   const amount = lease.remaining;
   lease.remaining = 0;
   lease.spent = false;
@@ -326,12 +330,12 @@ async function releaseLease(deps: Deps, lease: Lease): Promise<void> {
 // that never see that next request.
 export async function releaseExpired(deps: Deps, nowMs: number, exceptKey = ""): Promise<void> {
   const currentWindow = exceptKey.includes(":") ? exceptKey.slice(exceptKey.lastIndexOf(":") + 1) : "";
-  const due: [string, Lease][] = [];
+  const due: Array<[string, Lease]> = [];
   for (const [key, lease] of leases) {
-    if (key === exceptKey) continue;
+    if (key === exceptKey) {continue;}
     const window = key.slice(key.lastIndexOf(":") + 1);
     const minuteRolled = currentWindow !== "" && window !== currentWindow;
-    if (lease.remaining > 0 && (minuteRolled || nowMs >= lease.expiresAt)) due.push([key, lease]);
+    if (lease.remaining > 0 && (minuteRolled || nowMs >= lease.expiresAt)) {due.push([key, lease]);}
   }
   // releaseLease takes the hits out before it awaits, so the map entries can
   // go now. Other tokens' leftovers must not add serial Neon round trips to
@@ -342,10 +346,10 @@ export async function releaseExpired(deps: Deps, nowMs: number, exceptKey = ""):
     remoteHits.delete(key);
     return pending;
   });
-  if (!returns.length) return;
+  if (!returns.length) {return;}
   const all = Promise.all(returns);
-  if (deps.waitUntil) deps.waitUntil(all);
-  else await all;
+  if (deps.waitUntil) {deps.waitUntil(all);}
+  else {await all;}
 }
 
 function nearCap(lease: Lease): boolean {
@@ -358,14 +362,14 @@ function nearCap(lease: Lease): boolean {
 // still free. Anything larger, and any leftover once the counter has
 // climbed, still goes back.
 function worthReturning(lease: Lease): boolean {
-  if (lease.remaining <= 0) return false;
-  if (lease.remaining <= 1 && lease.hits < Math.floor(lease.cap / 4)) return false;
+  if (lease.remaining <= 0) {return false;}
+  if (lease.remaining <= 1 && lease.hits < Math.floor(lease.cap / 4)) {return false;}
   return true;
 }
 
 function releaseDelayMs(lease: Lease): number {
   const mostlyUnused = lease.remaining >= lease.size - 1 || lease.remaining * 2 >= lease.size;
-  if (mostlyUnused && nearCap(lease)) return 0;
+  if (mostlyUnused && nearCap(lease)) {return 0;}
   return RELEASE_DELAY_MS;
 }
 
@@ -373,16 +377,16 @@ function releaseDelayMs(lease: Lease): number {
 // unused pool, after taking it out of the local number so a second timer
 // cannot subtract it again. The bucket is `user:{id}:{minute}`.
 function armRelease(deps: Deps, cacheKey: string): void {
-  if (!deps.waitUntil) return;
+  if (!deps.waitUntil) {return;}
   const lease = leases.get(cacheKey);
-  if (!lease || !worthReturning(lease)) return;
+  if (!lease || !worthReturning(lease)) {return;}
   const epoch = ++lease.timer;
   const delay = releaseDelayMs(lease);
-  const sleep = deps.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const sleep = deps.sleep ?? ((ms: number) => new Promise((resolve) => { setTimeout(resolve, ms); }));
   deps.waitUntil((async () => {
     await sleep(delay);
     const current = leases.get(cacheKey);
-    if (!current || current.timer !== epoch || !worthReturning(current)) return;
+    if (!current || current.timer !== epoch || !worthReturning(current)) {return;}
     await releaseLease(deps, current);
     if (leases.get(cacheKey) === current && current.remaining <= 0) {
       leases.delete(cacheKey);
@@ -399,17 +403,17 @@ export function allow(key: string, limit: number, windowMs: number, nowMs: numbe
     return false;
   }
   kept.push(nowMs);
-  if (hits.size > 10000) {
+  if (hits.size > 10_000) {
     for (const [name, times] of hits) {
-      if (!times.some((t) => t > cutoff)) hits.delete(name);
+      if (!times.some((t) => t > cutoff)) {hits.delete(name);}
     }
   }
   hits.set(key, kept);
   return true;
 }
 
-function rememberHits(bucket: string, row: Record<string, unknown> | undefined, limit: number): void {
-  if (!row || row.hits == null || row.hits === "") {
+function rememberHits(bucket: string, row: Row | undefined, limit: number): void {
+  if (!row || (row.hits === null || row.hits === undefined) || row.hits === "") {
     remoteHits.set(bucket, limit);
     return;
   }
@@ -422,11 +426,11 @@ export async function allowShared(
   const window = Math.floor(now.getTime() / 1000 / 60);
   const bucket = `${kind}:${key || "unknown"}:${window}`;
   const known = remoteHits.get(bucket);
-  if (known !== undefined && known >= limit) return false;
+  if (known !== undefined && known >= limit) {return false;}
   try {
     const rows = await deps.query(RATE_SQL, [bucket, window * 60 + 120, limit]);
     const row = rows[0];
-    if (!row || row.hits == null || row.hits === "") {
+    if (!row || (row.hits === null || row.hits === undefined) || row.hits === "") {
       remoteHits.set(bucket, limit);
       return false;
     }
@@ -441,9 +445,9 @@ export async function allowShared(
 }
 export async function clearLease(deps: Deps, hash: string): Promise<void> {
   const prefix = `user:${hash}:`;
-  const owned: [string, Lease][] = [];
+  const owned: Array<[string, Lease]> = [];
   for (const [key, lease] of leases) {
-    if (key.startsWith(prefix)) owned.push([key, lease]);
+    if (key.startsWith(prefix)) {owned.push([key, lease]);}
   }
   for (const [key, lease] of owned) {
     await releaseLease(deps, lease);
@@ -455,7 +459,7 @@ export function windowOf(moment: Date): number {
   return Math.floor(moment.getTime() / 1000 / 60);
 }
 
-export function rateParams(hash: string, moment: Date, limit: number, batch: number, release: number): unknown[] {
+export function rateParams(hash: string, moment: Date, limit: number, batch: number, release: number): Array<unknown> {
   const window = windowOf(moment);
   const size = Math.max(1, Math.min(MAX_LEASE, batch));
   return [
@@ -464,15 +468,15 @@ export function rateParams(hash: string, moment: Date, limit: number, batch: num
   ];
 }
 export function acceptGrant(
-  cacheKey: string, row: Record<string, unknown>, limit: number, nowMs: number, bucket: string, deps: Deps,
+  cacheKey: string, row: Row, limit: number, nowMs: number, bucket: string, deps: Deps,
 ): boolean {
   rememberHits(cacheKey, row, limit);
   const hitsValue = row.hits;
-  if (hitsValue == null || hitsValue === "" || Number(hitsValue) > limit) {
+  if ((hitsValue === null || hitsValue === undefined) || hitsValue === "" || Number(hitsValue) > limit) {
     leases.delete(cacheKey);
     return false;
   }
-  const granted = Object.prototype.hasOwnProperty.call(row, "granted")
+  const granted = Object.hasOwn(row, "granted")
     ? Number(row.granted)
     : 1;
   if (!Number.isFinite(granted) || granted <= 0) {
@@ -494,14 +498,14 @@ export function acceptGrant(
     cap: limit,
   };
   leases.set(cacheKey, lease);
-  if (remaining > 0) armRelease(deps, cacheKey);
-  if (Number(hitsValue) >= limit && remaining <= 0) remoteHits.set(cacheKey, limit);
+  if (remaining > 0) {armRelease(deps, cacheKey);}
+  if (Number(hitsValue) >= limit && remaining <= 0) {remoteHits.set(cacheKey, limit);}
   return true;
 }
 
 export function spendLease(cacheKey: string, nowMs: number, deps: Deps): void {
   const lease = leases.get(cacheKey);
-  if (!lease || lease.remaining <= 0) return;
+  if (!lease || lease.remaining <= 0) {return;}
   lease.remaining -= 1;
   lease.expiresAt = nowMs + LEASE_TTL_MS;
   if (lease.remaining === 0) {
@@ -511,7 +515,7 @@ export function spendLease(cacheKey: string, nowMs: number, deps: Deps): void {
   armRelease(deps, cacheKey);
 }
 export function nextBatch(lease: Lease | undefined, nowMs: number, release: number): number {
-  if (!lease || release > 0) return 1;
+  if (!lease || release > 0) {return 1;}
   if (lease.spent && lease.remaining <= 0 && nowMs < lease.expiresAt) {
     return Math.min(MAX_LEASE, Math.max(1, lease.size) * 2);
   }

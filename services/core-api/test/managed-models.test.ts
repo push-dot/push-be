@@ -1,19 +1,22 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
+import type { Row } from "../src/db.ts";
+import type { Json, JsonObject } from "../src/json.ts";
 import { resetLimits } from "../src/ratelimit.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const NOW = "2026-10-21T00:00:00.000Z";
 
 const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
-const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
+const empty = { rows: [] as Array<Row>, rowCount: 0 };
 
 const deps = (): Deps => ({
   now: () => new Date(NOW),
   query: async (sql, params = []) => {
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     if (sql.includes("access_tokens")) {
       return {
         rows: [{
@@ -24,16 +27,16 @@ const deps = (): Deps => ({
         rowCount: 1,
       };
     }
-    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "1" }], rowCount: 1 };
-    if (sql.includes("FROM users")) return { rows: [{ plan: "PRO", is_employer: false }], rowCount: 1 };
-    if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
-    if (sql.includes("co.verified_at")) return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };
-    if (sql.includes("chat_jobs")) return { rows: [{ id: String(params[2]) }], rowCount: 1 };
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {return { rows: [{ id: "1" }], rowCount: 1 };}
+    if (sql.includes("FROM users")) {return { rows: [{ plan: "PRO", is_employer: false }], rowCount: 1 };}
+    if (sql.includes("user_consents")) {return { rows: [{ reference_data: true }], rowCount: 1 };}
+    if (sql.includes("co.verified_at")) {return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };}
+    if (sql.includes("chat_jobs")) {return { rows: [{ id: String(params[2]) }], rowCount: 1 };}
     return empty;
   },
 });
 
-const message = (ai: Record<string, unknown>, key: string): Request => new Request(
+const message = (ai: JsonObject, key: string): Request => new Request(
   "https://core.example/api/v1/conversations/" + USER + "/messages",
   {
     method: "POST",
@@ -62,7 +65,7 @@ test("the ai keys routes are gone", async () => {
       body: method === "PUT" || method === "POST" ? JSON.stringify({ key: "sk-12345678" }) : undefined,
     }), env(), deps());
     assert.equal(res.status, 404, `${method} ${path}`);
-    assert.equal((await res.json() as { error: { code: string } }).error.code, "NOT_FOUND");
+    assert.equal(at(await readJson(res), "error", "code"), "NOT_FOUND");
   }
 });
 
@@ -72,7 +75,7 @@ test("a message stores the plan effort and ignores the client value", async () =
     ...deps(),
     fetch: async () => new Response("ok"),
     query: async (sql, params = []) => {
-      if (sql.includes("INSERT INTO chat_jobs")) slot.payload = String(params[3] ?? "");
+      if (sql.includes("INSERT INTO chat_jobs")) {slot.payload = String(params[3] ?? "");}
       return deps().query(sql, params);
     },
   });
@@ -91,7 +94,7 @@ test("a message stores the plan effort and ignores the client value", async () =
   resetLimits();
   const bad = await handle(message({ provider: "OPENAI", model: "gpt-x", effort: "HUGE" }, "eeeeeeee-bbbb-4ccc-8ddd-eeeeeeeeeeee"), env(), deps());
   assert.equal(bad.status, 400);
-  assert.equal((await bad.json() as { error: { code: string } }).error.code, "VALIDATION_ERROR");
+  assert.equal(at(await readJson(bad), "error", "code"), "VALIDATION_ERROR");
 });
 
 test("a message is accepted whatever provider the client names", async () => {
@@ -99,3 +102,19 @@ test("a message is accepted whatever provider the client names", async () => {
   const res = await handle(message({ ...AI, provider: "CLAUDE" }, "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"), { ...env(), AI_ORIGIN: "https://ai.example.test" }, { ...deps(), fetch: async () => new Response("ok") });
   assert.equal(res.status, 202);
 });
+
+// One typed boundary for response bodies in this test file.
+async function readJson(res: Pick<Response, "json">): Promise<Json> {
+  const body: Json = await res.json();
+  return body;
+}
+
+// Walks a JSON path; undefined when any step is missing.
+function at(value: Json | undefined, ...path: Array<string | number>): Json | undefined {
+  let cur = value;
+  for (const key of path) {
+    if (cur === null || typeof cur !== "object") {return undefined;}
+    cur = Array.isArray(cur) ? cur[Number(key)] : cur[key];
+  }
+  return cur;
+}

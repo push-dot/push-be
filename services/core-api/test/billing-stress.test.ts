@@ -13,16 +13,19 @@ import { after, before, test } from "node:test";
 import { ensureMonthlyGrant, monthKey } from "../src/billing/credits.ts";
 import { hmacSha256Hex } from "../src/crypto.ts";
 import type { Query } from "../src/db.ts";
-import { handle, type CoreEnv } from "../src/handler.ts";
+import type { JsonObject } from "../src/json.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
-import { livePg, type LivePg } from "./parity/pg.ts";
+import { livePg } from './parity/pg.ts';
+import type { LivePg } from './parity/pg.ts';
 
 const URL_ = process.env.BILLING_PG_URL;
 const SEEDS = Number(process.env.BILLING_STRESS_SEEDS ?? 20);
 const FIRST = Number(process.env.BILLING_STRESS_SEED ?? 1);
 const PRICE = { BASIC: "price_basic", PRO: "price_pro", ULTRA: "price_ultra" } as const;
-const CENTS = { BASIC: 2000, PRO: 10000, ULTRA: 20000 } as const;
-const CREDITS = { BASIC: 3000, PRO: 15000, ULTRA: 30000 } as const;
+const CENTS = { BASIC: 2000, PRO: 10_000, ULTRA: 20_000 } as const;
+const CREDITS = { BASIC: 3000, PRO: 15_000, ULTRA: 30_000 } as const;
 const PLANS = ["BASIC", "PRO", "ULTRA"] as const;
 const MICRO = 6000;
 const HOUR = 3_600_000;
@@ -31,7 +34,9 @@ const PERIOD = 30 * DAY;
 const START = Date.parse("2026-11-02T09:00:00.000Z");
 
 type Plan = keyof typeof PRICE;
-type Row = Record<string, unknown>;
+// NaN for an unknown plan name, as a missing CREDITS entry did.
+const creditsOf = (plan: string | undefined): number => Object.entries(CREDITS).find(([name]) => name === plan)?.[1] ?? Number.NaN;
+type Row = JsonObject;
 type Sub = { id: string; customer: string; plan: Plan; status: "active" | "past_due" | "canceled"; created: number; start: number; end: number; comment: string | null };
 type Invoice = { id: string; sub: string; customer: string; plan: Plan; start: number; status: "draft" | "open" | "paid" | "void"; reason: "subscription_create" | "subscription_cycle" };
 type Refund = { sub: string; plan: Plan; start: number; paid: boolean; newerLive: number };
@@ -47,26 +52,26 @@ const env: CoreEnv = {
 };
 
 let pg: LivePg | undefined;
-before(async () => { if (URL_) pg = await livePg(URL_, 40); });
+before(async () => { if (URL_) {pg = await livePg(URL_, 40);} });
 after(async () => { await pg?.close(); });
 
 const mulberry = (seed: number) => () => {
-  seed = (seed + 0x6d2b79f5) | 0;
+  seed = (seed + 0x6d_2b_79_f5) | 0;
   let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
   t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
 };
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number) => new Promise((resolve) => { setTimeout(resolve, ms); });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const unix = (ms: number) => Math.floor(ms / 1000);
 
 function stripeWorld(name: string, latency: () => number, clock: () => number) {
   let serial = 0;
-  const customers: string[] = [];
+  const customers: Array<string> = [];
   const subs = new Map<string, Sub>();
   const invoices = new Map<string, Invoice>();
-  const refunds: Refund[] = [];
-  const events: Row[] = [];
+  const refunds: Array<Refund> = [];
+  const events: Array<Row> = [];
   // The full UUID: event ids are global in stripe_events, and a short suffix collides across thousands of seeds in one database.
   const next = (prefix: string) => `${prefix}_${String(++serial).padStart(4, "0")}${crypto.randomUUID().replaceAll("-", "")}`;
   const line = (invoice: Invoice, amount: number) => ({
@@ -92,7 +97,7 @@ function stripeWorld(name: string, latency: () => number, clock: () => number) {
   const bill = (sub: Sub, reason: Invoice["reason"], status: Invoice["status"], at: number): Invoice => {
     const invoice: Invoice = { id: next("in"), sub: sub.id, customer: sub.customer, plan: sub.plan, start: sub.start, status, reason };
     invoices.set(invoice.id, invoice);
-    if (status === "paid") invoiceEvent(invoice, CENTS[sub.plan], at);
+    if (status === "paid") {invoiceEvent(invoice, CENTS[sub.plan], at);}
     return invoice;
   };
   const end = (sub: Sub, at: number) => {
@@ -101,7 +106,7 @@ function stripeWorld(name: string, latency: () => number, clock: () => number) {
   };
   const pay = (invoice: Invoice, at: number) => {
     // A cancel that ran after this payment was scripted may have voided the invoice.
-    if (invoice.status !== "open") return;
+    if (invoice.status !== "open") {return;}
     invoice.status = "paid";
     invoiceEvent(invoice, CENTS[invoice.plan], at);
     const sub = subs.get(invoice.sub)!;
@@ -110,7 +115,7 @@ function stripeWorld(name: string, latency: () => number, clock: () => number) {
       event("customer.subscription.updated", view(sub), at);
     }
   };
-  const subscribe = (customer: string, plan: Plan, at: number): { sub: Sub; invoice: Invoice } => {
+  const subscribe = (customer: string, plan: Plan, at: number) => {
     const sub: Sub = { id: next("sub"), customer, plan, status: "active", created: at, start: at, end: at + PERIOD, comment: null };
     subs.set(sub.id, sub);
     return { sub, invoice: bill(sub, "subscription_create", "paid", at) };
@@ -122,15 +127,15 @@ function stripeWorld(name: string, latency: () => number, clock: () => number) {
     const method = init?.method ?? "GET";
     const one = /^\/v1\/subscriptions\/([^/]+)$/.exec(url.pathname)?.[1];
     const sub = one ? subs.get(decodeURIComponent(one)) : undefined;
-    if (one && !sub) return json({ error: { code: "resource_missing" } }, 404);
-    if (sub && method === "GET") return json(view(sub));
+    if (one && !sub) {return json({ error: { code: "resource_missing" } }, 404);}
+    if (sub && method === "GET") {return json(view(sub));}
     if (sub && method === "DELETE") {
-      if (sub.status === "canceled") return json({ error: { type: "invalid_request_error" } }, 400);
+      if (sub.status === "canceled") {return json({ error: { type: "invalid_request_error" } }, 400);}
       const prorate = url.searchParams.get("prorate") === "true";
       sub.comment = url.searchParams.get("cancellation_details[comment]");
       if (prorate) {
         const paid = [...invoices.values()].some((inv) => inv.sub === sub.id && inv.start === sub.start && inv.status === "paid");
-        const newerLive = Math.max(0, ...[...subs.values()].filter((other) => other.created > sub.created && other.status === "active").map((other) => CREDITS[other.plan]));
+        const newerLive = Math.max(0, ...[...subs.values()].flatMap((other) => (other.created > sub.created && other.status === "active") ? [CREDITS[other.plan]] : []));
         refunds.push({ sub: sub.id, plan: sub.plan, start: sub.start, paid, newerLive });
       }
       end(sub, clock());
@@ -139,25 +144,25 @@ function stripeWorld(name: string, latency: () => number, clock: () => number) {
     if (url.pathname === "/v1/subscriptions") {
       const of = url.searchParams.get("customer");
       const expand = url.searchParams.getAll("expand[]").includes("data.latest_invoice");
-      return json({ object: "list", has_more: false, data: [...subs.values()].filter((s) => s.status !== "canceled" && s.customer === of).map((s) => view(s, expand)) });
+      return json({ object: "list", has_more: false, data: [...subs.values()].flatMap((s) => (s.status !== "canceled" && s.customer === of) ? [view(s, expand)] : []) });
     }
     if (url.pathname === "/v1/invoices" && method === "GET") {
       const of = url.searchParams.get("subscription");
       const status = url.searchParams.get("status");
-      return json({ object: "list", has_more: false, data: [...invoices.values()].filter((inv) => inv.sub === of && (!status || inv.status === status)).map(invoiceView) });
+      return json({ object: "list", has_more: false, data: [...invoices.values()].flatMap((inv) => (inv.sub === of && (!status || inv.status === status)) ? [invoiceView(inv)] : []) });
     }
     const voided = /^\/v1\/invoices\/([^/]+)\/void$/.exec(url.pathname)?.[1];
     if (voided && method === "POST") {
       const invoice = invoices.get(voided);
-      if (!invoice || invoice.status !== "open") return json({ error: { type: "invalid_request_error" } }, 400);
+      if (!invoice || invoice.status !== "open") {return json({ error: { type: "invalid_request_error" } }, 400);}
       invoice.status = "void";
       return json({ id: invoice.id, object: "invoice", status: "void" });
     }
-    if (url.pathname.startsWith("/v1/invoices/")) return json({ id: url.pathname.split("/").at(-1), object: "invoice", hosted_invoice_url: "https://invoice.stripe.com/i/x" });
+    if (url.pathname.startsWith("/v1/invoices/")) {return json({ id: url.pathname.split("/").at(-1), object: "invoice", hosted_invoice_url: "https://invoice.stripe.com/i/x" });}
     return json({ error: { code: "resource_missing" } }, 404);
   }) as typeof fetch;
 
-  const pending: { invoice: Invoice; paid: boolean }[] = [];
+  const pending: Array<{ invoice: Invoice; paid: boolean }> = [];
   return {
     subs, invoices, refunds, events, pending, fetchImpl, pay, end,
     customer(): string {
@@ -196,9 +201,9 @@ function stripeWorld(name: string, latency: () => number, clock: () => number) {
     finalize(at: number) {
       const { invoice, paid } = pending.shift()!;
       const sub = subs.get(invoice.sub)!;
-      if (invoice.status !== "draft" || sub.status === "canceled") return;
+      if (invoice.status !== "draft" || sub.status === "canceled") {return;}
       invoice.status = "open";
-      if (paid) pay(invoice, at);
+      if (paid) {pay(invoice, at);}
       else if (sub.status === "active" && sub.start === invoice.start) {
         sub.status = "past_due";
         event("customer.subscription.updated", view(sub), at);
@@ -227,8 +232,8 @@ const jittered = (query: Query, jitter: () => number): Query => async (sql, para
 };
 
 const dbFor = (query: Query, who: { companyId: string | null }): Query => async (sql, params = []) => {
-  if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-  if (sql.includes("idempotency_keys")) return sql.includes("INSERT") ? { rows: [{ id: "idem" }], rowCount: 1 } : { rows: [], rowCount: 0 };
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+  if (sql.includes("idempotency_keys")) {return sql.includes("INSERT") ? { rows: [{ id: "idem" }], rowCount: 1 } : { rows: [], rowCount: 0 };}
   if (sql.includes("access_tokens")) {
     return { rows: [{
       id: crypto.randomUUID(), display_name: "이민아", locale: "ko", plan: "FREE", subscription_status: "NONE", stripe_customer_id: null,
@@ -239,12 +244,12 @@ const dbFor = (query: Query, who: { companyId: string | null }): Query => async 
   return query(sql, params);
 };
 
-type Run = { violations: string[]; stats: { actions: string[]; deliveries: number; retries: number } };
+type Run = { violations: Array<string>; stats: { actions: Array<string>; deliveries: number; retries: number } };
 
 async function runSeed(seed: number, draft: boolean): Promise<Run> {
   const script = mulberry(seed);
   const timing = mulberry(seed * 7919 + 13);
-  const pick = <T,>(items: readonly T[]): T => items[Math.floor(script() * items.length)]!;
+  const pick = <T,>(items: ReadonlyArray<T>): T => items[Math.floor(script() * items.length)];
   const companyId = crypto.randomUUID();
   await pg!.query("INSERT INTO companies (id, name) VALUES ($1, 'push-be stress company')", [companyId]);
   let clock = START;
@@ -254,13 +259,13 @@ async function runSeed(seed: number, draft: boolean): Promise<Run> {
     ? <T,>(work: (q: Query) => Promise<T>) => pg!.transaction!((q) => work(jittered(q, () => timing() * 3)))
     : undefined;
   const stats: Run["stats"] = { actions: [], deliveries: 0, retries: 0 };
-  const violations: string[] = [];
+  const violations: Array<string> = [];
   const inflight = new Set<Promise<void>>();
   let delivered = 0;
 
   let turn: Promise<unknown> = Promise.resolve();
   const serial = <T,>(work: () => Promise<T>): Promise<T> => {
-    if (!process.env.BILLING_STRESS_SERIAL) return work();
+    if (!process.env.BILLING_STRESS_SERIAL) {return work();}
     const mine = turn.then(work);
     turn = mine.catch(() => undefined);
     return mine;
@@ -274,30 +279,30 @@ async function runSeed(seed: number, draft: boolean): Promise<Run> {
       const now = at + attempt * 60_000;
       const request = await signed(event, now);
       const res = await serial(() => handle(request, env, {
-        query: dbFor(query, { companyId: null }), now: () => new Date(now), fetch: stripe.fetchImpl, ...(transaction ? { transaction } : {}),
+        query: dbFor(query, { companyId: null }), now: () => new Date(now), fetch: stripe.fetchImpl, ...(transaction ? { transaction } : undefined),
       }));
-      if (res.status === 200) return;
-      if (process.env.BILLING_STRESS_VERBOSE && attempt === 29) violations.push(`${String(event.type)} ${JSON.stringify((event.data as Row).object).slice(0, 200)} -> ${res.status} ${await res.text()}`);
+      if (res.status === 200) {return;}
+      if (process.env.BILLING_STRESS_VERBOSE && attempt === 29) {violations.push(`${String(event.type)} ${JSON.stringify(typeof event.data === "object" && event.data !== null && "object" in event.data ? event.data.object : undefined).slice(0, 200)} -> ${res.status} ${await res.text()}`);}
       stats.retries++;
       await sleep(5 + attempt * 5 + timing() * 20);
     }
     violations.push(`event ${String(event.type)} never accepted`);
   };
   const track = (work: Promise<void>) => {
-    const done = work.catch((err: unknown) => { violations.push("harness: " + String(err)); }).finally(() => inflight.delete(done));
+    const done = work.catch((error: unknown) => { violations.push("harness: " + String(error)); }).finally(() => inflight.delete(done));
     inflight.add(done);
   };
   const flushEvents = () => {
     while (delivered < stripe.events.length) {
-      const event = stripe.events[delivered++]!;
+      const event = stripe.events[delivered++];
       track(deliver(event, Number(event.at)));
-      if (timing() < 0.2) track(deliver(event, Number(event.at) + 1000));
+      if (timing() < 0.2) {track(deliver(event, Number(event.at) + 1000));}
     }
   };
   const settle = async () => {
     while (inflight.size > 0 || delivered < stripe.events.length) {
       flushEvents();
-      await Promise.all([...inflight]);
+      await Promise.all(inflight);
     }
   };
   const reads = (at: number) => {
@@ -305,17 +310,17 @@ async function runSeed(seed: number, draft: boolean): Promise<Run> {
       resetLimits();
       const res = await handle(new Request("https://core.example/api/v1/billing", { headers: { authorization: "Bearer t" } }), env,
         { query: dbFor(query, { companyId }), now: () => new Date(at) });
-      if (res.status !== 200) violations.push("billing read " + res.status);
+      if (res.status !== 200) {violations.push("billing read " + res.status);}
     })());
     track((async () => {
       const row = (await pg!.query("SELECT plan FROM companies WHERE id = $1", [companyId])).rows[0];
-      await ensureMonthlyGrant(query, { audience: "EMPLOYER", plan: row?.plan == null ? null : String(row.plan), ownerId: companyId, now: new Date(at) });
+      await ensureMonthlyGrant(query, { audience: "EMPLOYER", plan: (row?.plan === null || row?.plan === undefined) ? null : String(row.plan), ownerId: companyId, now: new Date(at) });
     })());
   };
   // Checkout sends the company's customer when it has one; a checkout opened before any completed makes a new customer.
   const customerNow = async (): Promise<string> => {
     const row = (await pg!.query("SELECT stripe_customer_id FROM companies WHERE id = $1", [companyId])).rows[0];
-    return row?.stripe_customer_id == null ? stripe.customer() : String(row.stripe_customer_id);
+    return (row?.stripe_customer_id === null || row?.stripe_customer_id === undefined) ? stripe.customer() : String(row.stripe_customer_id);
   };
 
   const live = () => [...stripe.subs.values()].filter((sub) => sub.status !== "canceled");
@@ -354,50 +359,50 @@ async function runSeed(seed: number, draft: boolean): Promise<Run> {
     ];
     const action = pick(choices);
     stats.actions.push(action);
-    const at = action === "renew" || action === "renewFail" ? Math.max(sub!.end, clock + 60_000)
+    const at = action === "renew" || action === "renewFail" ? Math.max(sub.end, clock + 60_000)
       : action === "cancel" || action === "dunningEnd" ? clock + HOUR + Math.floor(script() * 10 * DAY)
       : script() < 0.5 ? clock + soon()
       : action === "change" && sub ? Math.max(clock + HOUR, sub.start + Math.floor(script() * (sub.end - sub.start)))
       : clock + HOUR + Math.floor(script() * 5 * DAY);
     // Webhooks overlap the next Stripe change only when it comes within the hour; Stripe delivers within seconds.
-    if (at - clock > HOUR) await settle();
+    if (at - clock > HOUR) {await settle();}
     clock = at;
-    if (action === "change") stripe.checkout(companyId, await customerNow(), pick(PLANS), at);
-    else if (action === "renew" || action === "renewFail") stripe.renew(sub!, action === "renew", draft, at);
-    else if (action === "payOpen") stripe.pay(pick(open), at);
-    else if (action === "finalize") stripe.finalize(at);
-    else stripe.end(sub!, at);
+    if (action === "change") {stripe.checkout(companyId, await customerNow(), pick(PLANS), at);}
+    else if (action === "renew" || action === "renewFail") {stripe.renew(sub, action === "renew", draft, at);}
+    else if (action === "payOpen") {stripe.pay(pick(open), at);}
+    else if (action === "finalize") {stripe.finalize(at);}
+    else {stripe.end(sub, at);}
   }
-  while (stripe.pending.length) stripe.finalize(clock);
+  while (stripe.pending.length) {stripe.finalize(clock);}
   await settle();
   reads(clock + DAY);
   await settle();
   return { violations: [...violations, ...await check(companyId, stripe, legacy)], stats };
 }
 
-async function check(companyId: string, stripe: World, legacy: boolean): Promise<string[]> {
-  const out: string[] = [];
+async function check(companyId: string, stripe: World, legacy: boolean): Promise<Array<string>> {
+  const out: Array<string> = [];
   const ledger = (await pg!.query(
     "SELECT reference_id, amount_micro_credits FROM billing_ledger WHERE company_id = $1 AND user_id IS NULL AND type = 'PURCHASE' AND (reference_id LIKE 'period:%' OR reference_id LIKE 'monthly:%')",
     [companyId])).rows.map((row) => ({ ref: String(row.reference_id), credits: Number(row.amount_micro_credits) / MICRO }));
   const alerted = (await pg!.query("SELECT reference_id FROM billing_alerts WHERE company_id = $1 AND kind = 'NOT_GRANTED'", [companyId])).rows.map((row) => String(row.reference_id));
-  const company = (await pg!.query("SELECT plan, stripe_subscription_id FROM companies WHERE id = $1", [companyId])).rows[0]!;
+  const company = (await pg!.query("SELECT plan, stripe_subscription_id FROM companies WHERE id = $1", [companyId])).rows[0];
 
   // Money: every paid invoice is worth its plan's credits, and a prorated cancel takes back the refunded period's plan credits
   // (the successor carried them). Every paid renewal here has a plan line, so none may be left to the operator's NOT_GRANTED list.
-  if (alerted.length) out.push(`NOT_GRANTED alerts for ${alerted.join(",")}`);
+  if (alerted.length) {out.push(`NOT_GRANTED alerts for ${alerted.join(",")}`);}
   let expected = 0;
   for (const invoice of stripe.invoices.values()) {
-    if (invoice.status === "paid") expected += CREDITS[invoice.plan];
+    if (invoice.status === "paid") {expected += CREDITS[invoice.plan];}
   }
   for (const refund of stripe.refunds) {
-    if (refund.paid) expected -= CREDITS[refund.plan];
-    else out.push(`refund of the unpaid period ${refund.sub}@${refund.start}`);
-    const level = Math.max(0, ...ledger.filter((row) => row.ref.startsWith(`period:${refund.sub}:${unix(refund.start)}:`)).map((row) => CREDITS[row.ref.split(":")[3] as Plan]));
-    if (level > refund.newerLive) out.push(`refund of ${refund.sub}, whose period granted ${level}, for a lower plan (${refund.newerLive})`);
+    if (refund.paid) {expected -= CREDITS[refund.plan];}
+    else {out.push(`refund of the unpaid period ${refund.sub}@${refund.start}`);}
+    const level = Math.max(0, ...ledger.flatMap((row) => (row.ref.startsWith(`period:${refund.sub}:${unix(refund.start)}:`) ? [creditsOf(row.ref.split(":")[3])] : [])));
+    if (level > refund.newerLive) {out.push(`refund of ${refund.sub}, whose period granted ${level}, for a lower plan (${refund.newerLive})`);}
   }
   const granted = ledger.reduce((sum, row) => sum + row.credits, 0);
-  if (granted !== expected) out.push(`granted ${granted} credits, paid for ${expected}`);
+  if (granted !== expected) {out.push(`granted ${granted} credits, paid for ${expected}`);}
   if (out.length && process.env.BILLING_STRESS_VERBOSE) {
     out.push(JSON.stringify({ ledger, invoices: [...stripe.invoices.values()], refunds: stripe.refunds, alerted, subs: [...stripe.subs.values()] }));
   }
@@ -405,30 +410,30 @@ async function check(companyId: string, stripe: World, legacy: boolean): Promise
   // No grant without a paid period. A company on calendar months was paid for the month it moved to credit periods in.
   const legacyMonth = monthKey(new Date(START));
   for (const row of ledger) {
-    if (row.credits <= 0) continue;
+    if (row.credits <= 0) {continue;}
     const [kind, sub, start] = row.ref.split(":");
     const paid = kind === "period"
       ? [...stripe.invoices.values()].some((inv) => inv.sub === sub && unix(inv.start) === Number(start) && inv.status === "paid")
       : legacy && row.ref.startsWith(legacyMonth + ":");
-    if (!paid) out.push(`grant ${row.ref} (${row.credits}) has no paid period`);
+    if (!paid) {out.push(`grant ${row.ref} (${row.credits}) has no paid period`);}
   }
 
   // Plan state follows the newest subscription Stripe still bills, and Stripe bills at most one.
   const billing = [...stripe.subs.values()].filter((sub) => sub.status !== "canceled");
-  if (billing.length > 1) out.push(`${billing.length} subscriptions still billing`);
+  if (billing.length > 1) {out.push(`${billing.length} subscriptions still billing`);}
   const latest = billing.sort((a, b) => b.created - a.created || (a.id < b.id ? 1 : -1))[0];
   if (latest) {
     if (company.stripe_subscription_id !== latest.id || company.plan !== latest.plan) {
       out.push(`company on ${String(company.stripe_subscription_id)}/${String(company.plan)}, Stripe bills ${latest.id}/${latest.plan}`);
     }
   }
-  else if (company.plan != null) out.push(`company keeps plan ${String(company.plan)} with no subscription billing`);
+  else if ((company.plan !== null && company.plan !== undefined)) {out.push(`company keeps plan ${String(company.plan)} with no subscription billing`);}
   return out;
 }
 
 const stress = (draft: boolean) => async (t: { skip: (message: string) => void; diagnostic: (message: string) => void }) => {
-  if (!pg) return t.skip("set BILLING_PG_URL to a migrated Postgres");
-  const failed: string[] = [];
+  if (!pg) {return t.skip("set BILLING_PG_URL to a migrated Postgres");}
+  const failed: Array<string> = [];
   let deliveries = 0;
   let retries = 0;
   for (let seed = FIRST; seed < FIRST + SEEDS; seed++) {

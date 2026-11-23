@@ -1,23 +1,27 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import type { QueryResult, Row } from "../src/db.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
 import { encodeCursor } from "../src/time.ts";
+
+const jsonOf = <T>(res: Response): Promise<T> => res.json();
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const POSTING = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const NOW = "2026-10-21T00:00:00.000Z";
 const GUEST = "00000000-0000-0000-0000-000000000000";
 
-type Call = { sql: string; params: unknown[] };
+type Call = { sql: string; params: Array<unknown> };
 
 const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
 const deps = (query: Deps["query"]): Deps => ({ query, now: () => new Date(NOW) });
 
-const authed = (seen: Call[], extra: Deps["query"]): Deps["query"] => async (sql, params = []) => {
+const authed = (seen: Array<Call>, extra: Deps["query"]): Deps["query"] => async (sql, params = []) => {
   seen.push({ sql, params });
-  if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
   if (sql.includes("access_tokens")) {
     return {
       rows: [{
@@ -30,14 +34,14 @@ const authed = (seen: Call[], extra: Deps["query"]): Deps["query"] => async (sql
   if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {
     return { rows: [{ id: "11111111-1111-4111-8111-111111111111" }], rowCount: 1 };
   }
-  if (sql.includes("idempotency_keys")) return { rows: [], rowCount: 0 };
+  if (sql.includes("idempotency_keys")) {return { rows: [], rowCount: 0 };}
   if (sql.includes("is_employer") && sql.includes("FROM users") && !sql.includes("access_tokens")) {
     return { rows: [{ is_employer: false, display_name: "Ada" }], rowCount: 1 };
   }
   return extra(sql, params);
 };
 
-const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
+const empty: QueryResult = { rows: [], rowCount: 0 };
 
 const openRow = {
   id: POSTING,
@@ -53,20 +57,20 @@ const openRow = {
 
 test("home sort accepts latest, deadline, and popular, and a 7-day deadline window", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const popular = await handle(
     new Request("https://core.example/api/v1/postings?sort=popular&deadlineWithin=7", {
       headers: { authorization: "Bearer secret-token" },
     }),
     env(),
     deps(authed(seen, async (sql) => {
-      if (sql.includes("count(*)") && sql.includes("job_postings")) return { rows: [{ total: 1 }], rowCount: 1 };
-      if (sql.includes("ORDER BY") && sql.includes("job_postings")) return { rows: [openRow], rowCount: 1 };
+      if (sql.includes("count(*)") && sql.includes("job_postings")) {return { rows: [{ total: 1 }], rowCount: 1 };}
+      if (sql.includes("ORDER BY") && sql.includes("job_postings")) {return { rows: [openRow], rowCount: 1 };}
       return empty;
     })),
   );
   assert.equal(popular.status, 200);
-  const popularBody = await popular.json() as { data: Record<string, unknown>[] };
+  const popularBody = await jsonOf<{ data: Array<Row> }>(popular);
   assert.equal(Object.hasOwn(popularBody.data[0], "applicantCount"), false);
   const ordered = seen.find((call) => call.sql.includes("ORDER BY") && call.sql.includes("job_postings"));
   assert.ok(ordered);
@@ -76,7 +80,7 @@ test("home sort accepts latest, deadline, and popular, and a 7-day deadline wind
   assert.equal(ordered.params.includes("2026-10-28"), true);
 
   resetLimits();
-  const deadlineSeen: Call[] = [];
+  const deadlineSeen: Array<Call> = [];
   const deadline = await handle(
     new Request("https://core.example/api/v1/postings?sort=deadline&cursor=" + encodeCursor("2026-10-01T00:00:00.000Z", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), {
       headers: { authorization: "Bearer secret-token" },
@@ -102,14 +106,14 @@ test("home sort accepts latest, deadline, and popular, and a 7-day deadline wind
 test("detail view counts once per user per day and a public detail includes applicantCount", async () => {
   resetLimits();
   let inserted = true;
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = authed(seen, async (sql) => {
-    if (sql.includes("company_members") && !sql.includes("access_tokens")) return empty;
+    if (sql.includes("company_members") && !sql.includes("access_tokens")) {return empty;}
     if (sql.includes("INSERT INTO posting_views")) {
       return inserted ? { rows: [{ posting_id: POSTING }], rowCount: 1 } : empty;
     }
-    if (sql.includes("UPDATE") && sql.includes("view_count")) return { rows: [{ id: POSTING }], rowCount: 1 };
-    if (sql.includes("FROM job_postings") && sql.includes("closed_at IS NULL")) return { rows: [openRow], rowCount: 1 };
+    if (sql.includes("UPDATE") && sql.includes("view_count")) {return { rows: [{ id: POSTING }], rowCount: 1 };}
+    if (sql.includes("FROM job_postings") && sql.includes("closed_at IS NULL")) {return { rows: [openRow], rowCount: 1 };}
     return empty;
   });
   const first = await handle(
@@ -118,21 +122,21 @@ test("detail view counts once per user per day and a public detail includes appl
     deps(query),
   );
   assert.equal(first.status, 200);
-  const firstBody = await first.json() as { data: { applicantCount: number } };
+  const firstBody = await jsonOf<{ data: { applicantCount: number } }>(first);
   assert.equal(firstBody.data.applicantCount, 9);
   assert.equal(seen.filter((call) => call.sql.includes("UPDATE") && call.sql.includes("view_count")).length, 1);
   assert.equal(seen.some((call) => call.sql.includes("INSERT INTO posting_views") && call.params.includes(USER)), true);
 
   inserted = false;
   resetLimits();
-  const secondSeen: Call[] = [];
+  const secondSeen: Array<Call> = [];
   const second = await handle(
     new Request(`https://core.example/api/v1/postings/${POSTING}`, { headers: { authorization: "Bearer secret-token" } }),
     env(),
     deps(authed(secondSeen, async (sql) => {
-      if (sql.includes("company_members") && !sql.includes("access_tokens")) return empty;
-      if (sql.includes("INSERT INTO posting_views")) return empty;
-      if (sql.includes("FROM job_postings") && sql.includes("closed_at IS NULL")) return { rows: [openRow], rowCount: 1 };
+      if (sql.includes("company_members") && !sql.includes("access_tokens")) {return empty;}
+      if (sql.includes("INSERT INTO posting_views")) {return empty;}
+      if (sql.includes("FROM job_postings") && sql.includes("closed_at IS NULL")) {return { rows: [openRow], rowCount: 1 };}
       return empty;
     })),
   );
@@ -140,16 +144,16 @@ test("detail view counts once per user per day and a public detail includes appl
   assert.equal(secondSeen.some((call) => call.sql.includes("UPDATE") && call.sql.includes("view_count")), false);
 
   resetLimits();
-  const guestSeen: Call[] = [];
+  const guestSeen: Array<Call> = [];
   const guest = await handle(
     new Request(`https://core.example/api/v1/postings/${POSTING}`),
     env(),
     deps(async (sql, params = []) => {
       guestSeen.push({ sql, params });
-      if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-      if (sql.includes("INSERT INTO posting_views")) return { rows: [{ posting_id: POSTING }], rowCount: 1 };
-      if (sql.includes("UPDATE") && sql.includes("view_count")) return { rows: [{ id: POSTING }], rowCount: 1 };
-      if (sql.includes("FROM job_postings") && sql.includes("closed_at IS NULL")) return { rows: [openRow], rowCount: 1 };
+      if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+      if (sql.includes("INSERT INTO posting_views")) {return { rows: [{ posting_id: POSTING }], rowCount: 1 };}
+      if (sql.includes("UPDATE") && sql.includes("view_count")) {return { rows: [{ id: POSTING }], rowCount: 1 };}
+      if (sql.includes("FROM job_postings") && sql.includes("closed_at IS NULL")) {return { rows: [openRow], rowCount: 1 };}
       return empty;
     }),
   );

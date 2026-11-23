@@ -1,9 +1,9 @@
-import type { Route, Schema } from "./shared.ts";
+import type { Route } from "./shared.ts";
 import { get, post, del, ref, obj, arr, str, uuid, dateTime, enumOf, ok, noContent, pathParam } from "./shared.ts";
 
 const id = pathParam("id", { type: "string", description: "A bot id, or the literal push for the caller's Push Bot." });
 
-export const schemas: Record<string, Schema> = {
+export const schemas = {
   CardRetry: obj({
     id: uuid,
     status: enumOf("PENDING"),
@@ -21,7 +21,7 @@ export const schemas: Record<string, Schema> = {
   }),
 };
 
-export const routes: Route[] = [
+export const routes: Array<Route> = [
   post("core", "/api/v1/bots/{id}/approvals/{approvalId}/retry", {
     tag: "bots",
     summary: "Ask an expired card again",

@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, resetLimits, type Deps, type FrontEnv } from "../src/handler.ts";
+import { handle, resetLimits } from '../src/handler.ts';
+import type { Deps, FrontEnv } from '../src/handler.ts';
 import { ownerOf } from "../src/routes/owner.ts";
+
+const jsonOf = <T>(res: Response): Promise<T> => res.json();
 
 const USER = "12345678-1234-5678-1234-567812345678";
 
@@ -19,7 +22,7 @@ test("the gateway strips act-as headers and denies /internal", async () => {
   assert.equal(ownerOf("POST", "/internal/ai/jobs"), "deny");
   assert.equal(ownerOf("GET", "/internal"), "deny");
   resetLimits();
-  const seen: Request[] = [];
+  const seen: Array<Request> = [];
   const binding = {
     fetch: async (request: Request) => {
       seen.push(request);
@@ -71,7 +74,7 @@ test("the gateway strips act-as headers and denies /internal", async () => {
 
 test("the gateway forwards act-as headers to core only with the internal secret", async () => {
   resetLimits();
-  const seen: Request[] = [];
+  const seen: Array<Request> = [];
   const binding = {
     fetch: async (request: Request) => {
       seen.push(request);
@@ -143,7 +146,7 @@ test("act-as-only core routes go to core", () => {
 });
 
 const capture = () => {
-  const seen: Request[] = [];
+  const seen: Array<Request> = [];
   const binding = {
     fetch: async (request: Request) => {
       seen.push(request);
@@ -185,7 +188,7 @@ test("client copies of any x-push header are dropped on every route", async () =
   }), env, deps);
   assert.equal(seen.length, 3);
   for (const request of seen.slice(0, 2)) {
-    for (const name of Object.keys(spoofed)) assert.equal(request.headers.get(name), null, name);
+    for (const name of Object.keys(spoofed)) {assert.equal(request.headers.get(name), null, name);}
   }
   assert.equal(seen[1].headers.get("x-push-act-as"), USER);
   assert.equal(seen[2].headers.get("x-push-ai-secret"), "real");
@@ -216,8 +219,12 @@ test("AI_ORIGIN unset returns 500 and does not call a binding", async () => {
     body: "{}",
   }), env, deps);
   assert.equal(res.status, 500);
-  assert.equal((await res.json() as { error: { code: string } }).error.code, "NOT_CONFIGURED");
+  assert.equal((await jsonOf<{ error: { code: string } }>(res)).error.code, "NOT_CONFIGURED");
   assert.equal(calls, 0);
+});
+
+const postBare = () => new Request("https://push-be.example/api/v1/ai/generate", {
+  method: "POST", headers: { "content-type": "application/json", "x-push-ai-secret": "client-guess" }, body: "{}",
 });
 
 test("AI_ORIGIN replaces a client secret and refuses plain HTTP or a missing secret", async () => {
@@ -230,18 +237,15 @@ test("AI_ORIGIN replaces a client secret and refuses plain HTTP or a missing sec
       return new Response("{}", { status: 202 });
     },
   } as Deps;
-  const post = () => new Request("https://push-be.example/api/v1/ai/generate", {
-    method: "POST", headers: { "content-type": "application/json", "x-push-ai-secret": "client-guess" }, body: "{}",
-  });
   const base = { APP_ENV: "production" };
 
-  const ok = await handle(post(), { ...base, AI_ORIGIN: "https://ai.example.test", AI_SHARED_SECRET: "real" } as FrontEnv, deps);
+  const ok = await handle(postBare(), { ...base, AI_ORIGIN: "https://ai.example.test", AI_SHARED_SECRET: "real" }, deps);
   assert.equal(ok.status, 202);
   assert.deepEqual(sent, [{ url: "https://ai.example.test/api/v1/ai/generate", secret: "real" }]);
 
-  const noSecret = await handle(post(), { ...base, AI_ORIGIN: "https://ai.example.test" } as FrontEnv, deps);
+  const noSecret = await handle(postBare(), { ...base, AI_ORIGIN: "https://ai.example.test" }, deps);
   assert.equal(noSecret.status, 500);
-  const plain = await handle(post(), { ...base, AI_ORIGIN: "http://ai.example.test", AI_SHARED_SECRET: "real" } as FrontEnv, deps);
+  const plain = await handle(postBare(), { ...base, AI_ORIGIN: "http://ai.example.test", AI_SHARED_SECRET: "real" }, deps);
   assert.equal(plain.status, 500);
   assert.equal(sent.length, 1);
 });
@@ -255,7 +259,7 @@ test("a declared body over 20 MiB is refused before it is read or forwarded", as
     method: "POST", headers: { "content-length": String((20 << 20) + 1) }, body: "x",
   }), env, deps);
   assert.equal(big.status, 413);
-  assert.equal((await big.json() as { error: { code: string } }).error.code, "PAYLOAD_TOO_LARGE");
+  assert.equal((await jsonOf<{ error: { code: string } }>(big)).error.code, "PAYLOAD_TOO_LARGE");
   const small = await handle(new Request("https://push-be.example/api/v1/sources", {
     method: "POST", headers: { "content-type": "application/json" }, body: '{"a":1}',
   }), env, deps);
@@ -270,7 +274,7 @@ test("a chunked body over 20 MB is not forwarded", async () => {
   let read = 0;
   const binding = {
     fetch: async (request: Request) => {
-      for await (const chunk of request.body as unknown as AsyncIterable<Uint8Array>) read += chunk.byteLength;
+      for await (const chunk of request.body ?? []) {read += chunk.byteLength;}
       return new Response("{}", { status: 200 });
     },
   };
@@ -282,7 +286,7 @@ test("a chunked body over 20 MB is not forwarded", async () => {
       method: "POST",
       body: new ReadableStream<Uint8Array>({
         pull(controller) {
-          if (sent === megabytes) return controller.close();
+          if (sent === megabytes) {return controller.close();}
           sent += 1;
           controller.enqueue(new Uint8Array(MB));
         },
@@ -292,7 +296,7 @@ test("a chunked body over 20 MB is not forwarded", async () => {
   };
   const big = await handle(chunked(21), env, deps);
   assert.equal(big.status, 413);
-  assert.equal((await big.json() as { error: { code: string } }).error.code, "PAYLOAD_TOO_LARGE");
+  assert.equal((await jsonOf<{ error: { code: string } }>(big)).error.code, "PAYLOAD_TOO_LARGE");
   assert.ok(read <= 20 * MB, `forwarded ${read} bytes`);
   read = 0;
   const fits = await handle(chunked(20), env, deps);
@@ -300,9 +304,13 @@ test("a chunked body over 20 MB is not forwarded", async () => {
   assert.equal(read, 20 * MB);
 });
 
+const postWith = (extra: Record<string, string>) => new Request("https://push-be.example/api/v1/ai/generate", {
+  method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": "6.6.6.6", ...extra }, body: "{}",
+});
+
 test("the AI proxy drops a client x-forwarded-for and passes only the edge cf-connecting-ip", async () => {
   resetLimits();
-  const seen: Headers[] = [];
+  const seen: Array<Headers> = [];
   const deps = {
     query: async () => [],
     fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -311,11 +319,8 @@ test("the AI proxy drops a client x-forwarded-for and passes only the edge cf-co
     },
   } as Deps;
   const env = { APP_ENV: "production", AI_ORIGIN: "https://ai.example.test", AI_SHARED_SECRET: "real" } as FrontEnv;
-  const post = (extra: Record<string, string>) => new Request("https://push-be.example/api/v1/ai/generate", {
-    method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": "6.6.6.6", ...extra }, body: "{}",
-  });
-  await handle(post({ "cf-connecting-ip": "203.0.113.7" }), env, deps);
-  await handle(post({}), env, deps);
+  await handle(postWith({ "cf-connecting-ip": "203.0.113.7" }), env, deps);
+  await handle(postWith({}), env, deps);
   assert.equal(seen[0].get("cf-connecting-ip"), "203.0.113.7");
   assert.equal(seen[0].get("x-forwarded-for"), null);
   assert.equal(seen[1].get("cf-connecting-ip"), null);

@@ -3,8 +3,20 @@
  * worker entry, the rate limiter, and the handlers do not depend on each other.
  */
 
+/** A value JSON.parse returns and a json/jsonb column decodes to. */
+export type Json = string | number | boolean | null | Array<Json> | JsonObject;
+
+export interface JsonObject {
+  [key: string]: Json;
+}
+
+/** A column value as the Neon driver decodes it. */
+export type DbValue = Json | Date | Uint8Array;
+
+export type Row = Record<string, DbValue>;
+
 export interface Query {
-  (text: string, params: unknown[]): Promise<Record<string, unknown>[]>;
+  (text: string, params: Array<unknown>): Promise<Array<Row>>;
 }
 
 export interface FrontEnv {

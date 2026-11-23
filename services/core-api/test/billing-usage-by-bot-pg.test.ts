@@ -3,18 +3,19 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
-import { botsPg, type BotsPg, type Person } from "../test-support/bots-pg.ts";
+import { botsPg } from '../test-support/bots-pg.ts';
+import type { BotsPg, Person } from '../test-support/bots-pg.ts';
 
 const URL_ = process.env.BILLING_PG_URL;
 const SKIP = "set BILLING_PG_URL to a migrated Postgres";
 
 let db: BotsPg | undefined;
-before(async () => { if (URL_) db = await botsPg(URL_); });
+before(async () => { if (URL_) {db = await botsPg(URL_);} });
 after(async () => { await db?.close(); });
 
 type Usage = { id: string; name: string; usedMicroCredits: number };
 
-const run = (sql: string, params: unknown[] = []) => db!.pg.query(sql, params);
+const run = (sql: string, params: Array<unknown> = []) => db!.pg.query(sql, params);
 
 const bot = async (user: Person, company: string): Promise<{ id: string; thread: string }> => {
   const made = await db!.call(user, "POST", "/bots", { postingId: await db!.posting(company) });
@@ -41,20 +42,24 @@ const chatJob = async (user: Person, thread: string): Promise<string> => {
   return id;
 };
 
-const billing = async (user: Person): Promise<Usage[]> => {
+const isUsage = (value: unknown): value is Usage => typeof value === "object" && value !== null && "id" in value && "name" in value && "usedMicroCredits" in value;
+
+const billing = async (user: Person): Promise<Array<Usage>> => {
   const res = await db!.call(user, "GET", "/billing");
   assert.equal(res.status, 200);
-  return res.data.usageByBot as Usage[];
+  const list = res.data.usageByBot;
+  assert.ok(Array.isArray(list));
+  return list.filter(isUsage);
 };
 
 test("usageByBot is an empty list when the user has no Bot usage", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   assert.deepEqual(await billing(user), []);
 });
 
 test("usageByBot sums this month's settled usage per Bot through its jobs, biggest first", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const [small, large] = [await bot(user, "작은회사"), await bot(user, "큰회사")];
   await usage(user, 1_000_000, { job: await chatJob(user, small.thread) });
@@ -66,7 +71,7 @@ test("usageByBot sums this month's settled usage per Bot through its jobs, bigge
 });
 
 test("usageByBot leaves out unsettled rows, last month's rows, usage outside any Bot thread and Bots the user deleted", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const [kept, gone] = [await bot(user, "남는회사"), await bot(user, "지운회사")];
   const job = await chatJob(user, kept.thread);
@@ -82,7 +87,7 @@ test("usageByBot leaves out unsettled rows, last month's rows, usage outside any
 });
 
 test("usageByBot never shows another user's Bot usage", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const [mine, theirs] = [await db.person("PRO"), await db.person("PRO")];
   const other = await bot(theirs, "남의회사");
   await usage(theirs, 7_000_000, { job: await chatJob(theirs, other.thread) });

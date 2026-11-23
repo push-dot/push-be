@@ -1,21 +1,25 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import type { QueryResult } from "../src/db.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
+
+const jsonOf = <T>(res: Response): Promise<T> => res.json();
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const NOW = "2026-10-21T00:00:00.000Z";
 
-type Call = { sql: string; params: unknown[] };
+type Call = { sql: string; params: Array<unknown> };
 
 const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
 const deps = (query: Deps["query"]): Deps => ({ query, now: () => new Date(NOW) });
-const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
+const empty: QueryResult = { rows: [], rowCount: 0 };
 
-const authed = (seen: Call[], extra: Deps["query"]): Deps["query"] => async (sql, params = []) => {
+const authed = (seen: Array<Call>, extra: Deps["query"]): Deps["query"] => async (sql, params = []) => {
   seen.push({ sql, params });
-  if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
   if (sql.includes("access_tokens")) {
     return {
       rows: [{
@@ -26,8 +30,8 @@ const authed = (seen: Call[], extra: Deps["query"]): Deps["query"] => async (sql
       rowCount: 1,
     };
   }
-  if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "1" }], rowCount: 1 };
-  if (sql.includes("idempotency_keys")) return empty;
+  if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {return { rows: [{ id: "1" }], rowCount: 1 };}
+  if (sql.includes("idempotency_keys")) {return empty;}
   if (sql.includes("is_employer") && sql.includes("FROM users") && !sql.includes("access_tokens")) {
     return { rows: [{ is_employer: false }], rowCount: 1 };
   }
@@ -55,26 +59,26 @@ const settingsRow = (mode: string | null = null) => ({
 
 test("settings round-trip aiAccessMode and reject an unknown mode", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   let stored: string | null = null;
   const query = authed(seen, async (sql, params) => {
-    if (sql.includes("INSERT INTO user_settings")) return empty;
+    if (sql.includes("INSERT INTO user_settings")) {return empty;}
     if (sql.includes("UPDATE user_settings")) {
       stored = String(params?.[13] ?? stored);
       return empty;
     }
-    if (sql.includes("user_settings")) return { rows: [settingsRow(stored)], rowCount: 1 };
+    if (sql.includes("user_settings")) {return { rows: [settingsRow(stored)], rowCount: 1 };}
     return empty;
   });
 
   const patched = await handle(patch("/api/v1/me/settings", { aiAccessMode: "BYPASS" }), env(), deps(query));
   assert.equal(patched.status, 200);
-  assert.equal((await patched.json() as { data: { aiAccessMode: string } }).data.aiAccessMode, "BYPASS");
+  assert.equal((await jsonOf<{ data: { aiAccessMode: string } }>(patched)).data.aiAccessMode, "BYPASS");
 
   resetLimits();
   const loaded = await handle(get("/api/v1/me/settings"), env(), deps(query));
   assert.equal(loaded.status, 200);
-  assert.equal((await loaded.json() as { data: { aiAccessMode: string } }).data.aiAccessMode, "BYPASS");
+  assert.equal((await jsonOf<{ data: { aiAccessMode: string } }>(loaded)).data.aiAccessMode, "BYPASS");
   const update = seen.find((call) => call.sql.includes("UPDATE user_settings"));
   assert.match(update?.sql ?? "", /ai_access_mode = \$14/);
   assert.doesNotMatch(update?.sql ?? "", /default_effort|confirm_before_edit|chat_retention_days/);
@@ -82,17 +86,17 @@ test("settings round-trip aiAccessMode and reject an unknown mode", async () => 
 
   resetLimits();
   const bad = await handle(patch("/api/v1/me/settings", { aiAccessMode: "YOLO" }), env(), deps(authed([], async (sql) => {
-    if (sql.includes("INSERT INTO user_settings")) return empty;
-    if (sql.includes("user_settings")) return { rows: [settingsRow("AUTO")], rowCount: 1 };
+    if (sql.includes("INSERT INTO user_settings")) {return empty;}
+    if (sql.includes("user_settings")) {return { rows: [settingsRow("AUTO")], rowCount: 1 };}
     return empty;
   })));
   assert.equal(bad.status, 400);
-  assert.equal((await bad.json() as { error: { code: string } }).error.code, "VALIDATION_ERROR");
+  assert.equal((await jsonOf<{ error: { code: string } }>(bad)).error.code, "VALIDATION_ERROR");
 });
 
 test("a message stores the canonical access mode in both keys", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(new Request("https://core.example/api/v1/conversations/" + USER + "/messages", {
     method: "POST",
     headers: {
@@ -103,9 +107,9 @@ test("a message stores the canonical access mode in both keys", async () => {
     body: JSON.stringify({ text: "hi", accessMode: "CONFIRM_ACTIONS" }),
   }), { ...env(), AI_ORIGIN: "https://ai.example.test" }, {
     ...deps(authed(seen, async (sql) => {
-      if (sql.includes("chat_jobs")) return { rows: [{ id: "job-1" }], rowCount: 1 };
-      if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
-      if (sql.includes("co.verified_at")) return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };
+      if (sql.includes("chat_jobs")) {return { rows: [{ id: "job-1" }], rowCount: 1 };}
+      if (sql.includes("user_consents")) {return { rows: [{ reference_data: true }], rowCount: 1 };}
+      if (sql.includes("co.verified_at")) {return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };}
       return empty;
     })),
     fetch: async () => new Response("ok"),
@@ -127,5 +131,5 @@ test("a message stores the canonical access mode in both keys", async () => {
     body: JSON.stringify({ text: "hi", accessMode: "YOLO" }),
   }), env(), deps(authed([], async () => empty)));
   assert.equal(unknown.status, 400);
-  assert.equal((await unknown.json() as { error: { code: string } }).error.code, "VALIDATION_ERROR");
+  assert.equal((await jsonOf<{ error: { code: string } }>(unknown)).error.code, "VALIDATION_ERROR");
 });

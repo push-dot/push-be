@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 
-const sql = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../../db/migrations/0040_web_v2_fields.sql"), "utf8");
+const sql = readFileSync(resolve(import.meta.dirname, "../../../db/migrations/0040_web_v2_fields.sql"), "utf8");
 
 test("migration 0040 only adds nullable columns and their checks", () => {
   assert.match(sql, /ALTER TABLE companies ADD COLUMN legal_name text;/);

@@ -71,7 +71,7 @@ const POSTING_UUID = /^\/api\/v1\/postings\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-
 const APPLICANT_COUNTS = /^\/api\/v1\/postings\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/applicant-counts$/i;
 
 const isGuestRead = (method: string, path: string): boolean => {
-  if (method !== "GET") return false;
+  if (method !== "GET") {return false;}
   return path === "/api/v1/postings"
     || path === "/api/v1/postings/locations"
     || path === "/api/v1/postings/facets"
@@ -105,7 +105,7 @@ async function route(request: Request, env: CoreEnv, deps: Deps): Promise<Respon
     if (request.method === "POST" && path.startsWith("/api/v1/internal/notifications/")) {
       const ctx = base(request, env, deps, rid, url, now, anonymous());
       const job = await dispatchNotificationJobs(ctx, path);
-      if (job) return job;
+      if (job) {return job;}
     }
     if (request.method === "POST" && path === "/api/v1/internal/billing/toss-renew") {
       return await runTossRenewals(base(request, env, deps, rid, url, now, anonymous()));
@@ -117,7 +117,7 @@ async function route(request: Request, env: CoreEnv, deps: Deps): Promise<Respon
         return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
       }
       const ctx = base(request, env, deps, rid, url, now, user);
-      if (request.method !== "POST" || path.endsWith("/stream")) return await dispatch(ctx, path);
+      if (request.method !== "POST" || path.endsWith("/stream")) {return await dispatch(ctx, path);}
       return await idempotent(ctx, path);
     }
     if (isPublic(request.method, path, authz)) {
@@ -136,10 +136,10 @@ async function route(request: Request, env: CoreEnv, deps: Deps): Promise<Respon
       return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
     }
     const ctx = base(request, env, deps, rid, url, now, user);
-    if (request.method !== "POST" || path.endsWith("/stream")) return await dispatch(ctx, path);
+    if (request.method !== "POST" || path.endsWith("/stream")) {return await dispatch(ctx, path);}
     return await idempotent(await withApprovalAnswerKey(ctx, path), path);
-  } catch (err) {
-    if (err instanceof HttpError) return errorOf(err, rid);
+  } catch (error) {
+    if (error instanceof HttpError) {return errorOf(error, rid);}
     return errorResponse(500, "INTERNAL", "internal error", rid);
   }
 }
@@ -157,140 +157,140 @@ function base(request: Request, env: CoreEnv, deps: Deps, rid: string, url: URL,
 }
 
 function isPublic(method: string, path: string, authorization = ""): boolean {
-  if (PUBLIC.has(path)) return true;
-  if (method === "POST" && EMAIL_PUBLIC.has(path)) return true;
-  if (method === "POST" && PHONE_PUBLIC.has(path)) return true;
-  if (method === "GET" && /^\/api\/v1\/auth\/email\/password-reset\/[^/]+$/.test(path)) return true;
-  if (method === "POST" && (path === "/api/v1/auth/apple/callback" || path === "/api/v1/auth/apple/native")) return true;
-  if (method === "GET" && /^\/api\/v1\/auth\/[^/]+\/(start|callback)$/.test(path)) return true;
-  if (method === "GET" && /^\/api\/v1\/companies\/invites\/[^/]+$/.test(path)) return true;
-  if (isImageRead(method, path)) return true;
-  if (isGoogleCallback(method, path)) return true;
-  if (method === "GET" && /^\/api\/v1\/documents\/shared\/[^/]+$/.test(path)) return true;
+  if (PUBLIC.has(path)) {return true;}
+  if (method === "POST" && EMAIL_PUBLIC.has(path)) {return true;}
+  if (method === "POST" && PHONE_PUBLIC.has(path)) {return true;}
+  if (method === "GET" && /^\/api\/v1\/auth\/email\/password-reset\/[^/]+$/.test(path)) {return true;}
+  if (method === "POST" && (path === "/api/v1/auth/apple/callback" || path === "/api/v1/auth/apple/native")) {return true;}
+  if (method === "GET" && /^\/api\/v1\/auth\/[^/]+\/(start|callback)$/.test(path)) {return true;}
+  if (method === "GET" && /^\/api\/v1\/companies\/invites\/[^/]+$/.test(path)) {return true;}
+  if (isImageRead(method, path)) {return true;}
+  if (isGoogleCallback(method, path)) {return true;}
+  if (method === "GET" && /^\/api\/v1\/documents\/shared\/[^/]+$/.test(path)) {return true;}
   return authorization === "" && isGuestRead(method, path);
 }
 
 export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   const method = ctx.request.method;
   const authProvider = path.match(/^\/api\/v1\/auth\/([^/]+)\/(start|callback)$/);
-  if (method === "GET" && authProvider?.[2] === "start") return oauthStart(ctx);
+  if (method === "GET" && authProvider?.[2] === "start") {return oauthStart(ctx);}
   if (method === "GET" && authProvider?.[2] === "callback") {
-    if (authProvider[1] === "apple") throw new HttpError(400, "VALIDATION_ERROR", "apple callback is POST form_post");
+    if (authProvider[1] === "apple") {throw new HttpError(400, "VALIDATION_ERROR", "apple callback is POST form_post");}
     return oauthCallback(ctx);
   }
-  if (method === "POST" && path === "/api/v1/auth/exchange") return exchange(ctx);
-  if (method === "POST" && path === "/api/v1/auth/refresh") return refresh(ctx);
-  if (method === "POST" && path === "/api/v1/auth/logout") return logout(ctx);
-  if (method === "GET" && path === "/api/v1/auth/me") return me(ctx);
-  if (method === "DELETE" && path === "/api/v1/me") return deleteAccount(ctx);
+  if (method === "POST" && path === "/api/v1/auth/exchange") {return exchange(ctx);}
+  if (method === "POST" && path === "/api/v1/auth/refresh") {return refresh(ctx);}
+  if (method === "POST" && path === "/api/v1/auth/logout") {return logout(ctx);}
+  if (method === "GET" && path === "/api/v1/auth/me") {return me(ctx);}
+  if (method === "DELETE" && path === "/api/v1/me") {return deleteAccount(ctx);}
   const emailed = await dispatchEmailAuth(ctx, path);
-  if (emailed) return emailed;
+  if (emailed) {return emailed;}
   const phoned = await dispatchPhoneAuth(ctx, path);
-  if (phoned) return phoned;
+  if (phoned) {return phoned;}
   const appled = await dispatchAppleAuth(ctx, path);
-  if (appled) return appled;
+  if (appled) {return appled;}
 
-  if (method === "POST" && path === "/api/v1/conversations") return createConversation(ctx);
+  if (method === "POST" && path === "/api/v1/conversations") {return createConversation(ctx);}
   const conv = path.match(/^\/api\/v1\/conversations\/([^/]+)$/);
-  if (method === "PATCH" && conv) return patchConversation(ctx, conv[1]);
-  if (method === "DELETE" && conv) return deleteConversation(ctx, conv[1]);
+  if (method === "PATCH" && conv) {return patchConversation(ctx, conv[1]);}
+  if (method === "DELETE" && conv) {return deleteConversation(ctx, conv[1]);}
   const archive = path.match(/^\/api\/v1\/conversations\/([^/]+)\/archive$/);
-  if (method === "POST" && archive) return archiveConversation(ctx, archive[1]);
+  if (method === "POST" && archive) {return archiveConversation(ctx, archive[1]);}
   const unarchive = path.match(/^\/api\/v1\/conversations\/([^/]+)\/unarchive$/);
-  if (method === "POST" && unarchive) return archiveConversation(ctx, unarchive[1], false);
+  if (method === "POST" && unarchive) {return archiveConversation(ctx, unarchive[1], false);}
   const message = path.match(/^\/api\/v1\/conversations\/([^/]+)\/messages(?:\/stream)?$/);
-  if (method === "POST" && message) return postMessage(ctx, message[1]);
+  if (method === "POST" && message) {return postMessage(ctx, message[1]);}
   const attachment = path.match(/^\/api\/v1\/conversations\/([^/]+)\/attachments$/);
-  if (method === "POST" && attachment) return postAttachment(ctx, attachment[1]);
+  if (method === "POST" && attachment) {return postAttachment(ctx, attachment[1]);}
   const approval = path.match(/^\/api\/v1\/conversations\/([^/]+)\/approvals\/([^/]+)$/);
-  if (method === "POST" && approval) return resolveApproval(ctx, approval[1], approval[2]);
+  if (method === "POST" && approval) {return resolveApproval(ctx, approval[1], approval[2]);}
   const artifact = path.match(/^\/api\/v1\/conversations\/([^/]+)\/artifacts\/([^/]+)$/);
-  if (method === "GET" && artifact) return getArtifact(ctx, artifact[1], artifact[2]);
+  if (method === "GET" && artifact) {return getArtifact(ctx, artifact[1], artifact[2]);}
 
   // 약관 4조·11조7항: no payment is taken until PAYMENTS_ENABLED=1 (off in production until 사업자등록).
   if (method === "POST" && PAYMENT_PATHS.has(path) && ctx.env.PAYMENTS_ENABLED !== "1") {
     throw new HttpError(503, "PAYMENTS_DISABLED", "payments are not open yet");
   }
-  if (method === "GET" && path === "/api/v1/billing") return billingStatus(ctx);
+  if (method === "GET" && path === "/api/v1/billing") {return billingStatus(ctx);}
   const toss = await dispatchToss(ctx, path);
-  if (toss) return toss;
-  if (method === "POST" && path === "/api/v1/billing/checkout") return checkout(ctx);
-  if (method === "POST" && path === "/api/v1/billing/topup") return topup(ctx);
-  if (method === "POST" && path === "/api/v1/billing/portal") return portal(ctx);
-  if (method === "POST" && path === "/api/v1/billing/iap/verify") return verifyIap(ctx);
-  if (method === "GET" && path === "/api/v1/billing/ledger") return ledger(ctx);
-  if (method === "POST" && path === "/api/v1/billing/webhook") return webhook(ctx);
-  if (method === "POST" && path === "/api/v1/billing/webhook/app-store") return appleWebhook(ctx);
-  if (method === "POST" && path === "/api/v1/billing/webhook/google-play") return googleWebhook(ctx);
+  if (toss) {return toss;}
+  if (method === "POST" && path === "/api/v1/billing/checkout") {return checkout(ctx);}
+  if (method === "POST" && path === "/api/v1/billing/topup") {return topup(ctx);}
+  if (method === "POST" && path === "/api/v1/billing/portal") {return portal(ctx);}
+  if (method === "POST" && path === "/api/v1/billing/iap/verify") {return verifyIap(ctx);}
+  if (method === "GET" && path === "/api/v1/billing/ledger") {return ledger(ctx);}
+  if (method === "POST" && path === "/api/v1/billing/webhook") {return webhook(ctx);}
+  if (method === "POST" && path === "/api/v1/billing/webhook/app-store") {return appleWebhook(ctx);}
+  if (method === "POST" && path === "/api/v1/billing/webhook/google-play") {return googleWebhook(ctx);}
 
-  if (method === "GET" && path === "/api/v1/ai/usage") return listUsage(ctx);
+  if (method === "GET" && path === "/api/v1/ai/usage") {return listUsage(ctx);}
   const queueJob = path.match(/^\/api\/v1\/ai\/jobs\/([^/]+)$/);
-  if (method === "GET" && queueJob) return getQueueJob(ctx, queueJob[1]);
+  if (method === "GET" && queueJob) {return getQueueJob(ctx, queueJob[1]);}
   const generate = path.match(/^\/api\/v1\/documents\/([^/]+)\/generate$/);
-  if (method === "POST" && generate) return enqueueDocumentGenerate(ctx, generate[1]);
+  if (method === "POST" && generate) {return enqueueDocumentGenerate(ctx, generate[1]);}
   const fit = path.match(/^\/api\/v1\/postings\/([^/]+)\/fit$/);
-  if (method === "POST" && fit) return enqueueFit(ctx, fit[1]);
+  if (method === "POST" && fit) {return enqueueFit(ctx, fit[1]);}
 
-  if (method === "GET" && path === "/api/v1/jobs") return listJobs(ctx);
-  if (method === "POST" && path === "/api/v1/jobs") return createJob(ctx);
+  if (method === "GET" && path === "/api/v1/jobs") {return listJobs(ctx);}
+  if (method === "POST" && path === "/api/v1/jobs") {return createJob(ctx);}
   const analyses = path.match(/^\/api\/v1\/jobs\/([^/]+)\/analyses$/);
-  if (method === "GET" && analyses) return listAnalyses(ctx, analyses[1]);
+  if (method === "GET" && analyses) {return listAnalyses(ctx, analyses[1]);}
   const job = path.match(/^\/api\/v1\/jobs\/([^/]+)$/);
-  if (method === "GET" && job) return getJob(ctx, job[1]);
-  if (method === "PATCH" && job) return patchJob(ctx, job[1]);
+  if (method === "GET" && job) {return getJob(ctx, job[1]);}
+  if (method === "PATCH" && job) {return patchJob(ctx, job[1]);}
 
   const postings = await dispatchPostings(ctx, path);
-  if (postings) return postings;
+  if (postings) {return postings;}
   const search = await dispatchSearch(ctx, path);
-  if (search) return search;
+  if (search) {return search;}
   const botApprovals = await dispatchBotApprovals(ctx, path);
-  if (botApprovals) return botApprovals;
+  if (botApprovals) {return botApprovals;}
   const botChat = await dispatchBotChat(ctx, path);
-  if (botChat) return botChat;
+  if (botChat) {return botChat;}
   const bots = await dispatchBots(ctx, path);
-  if (bots) return bots;
+  if (bots) {return bots;}
   const materials = await dispatchMaterials(ctx, path);
-  if (materials) return materials;
+  if (materials) {return materials;}
   const profiles = await dispatchProfiles(ctx, path);
-  if (profiles) return profiles;
+  if (profiles) {return profiles;}
   const offers = await dispatchOffers(ctx, path);
-  if (offers) return offers;
+  if (offers) {return offers;}
   const blocks = await dispatchBlocks(ctx, path);
-  if (blocks) return blocks;
+  if (blocks) {return blocks;}
   const posts = await dispatchPosts(ctx, path);
-  if (posts) return posts;
+  if (posts) {return posts;}
   const mine = await dispatchMe(ctx, path);
-  if (mine) return mine;
+  if (mine) {return mine;}
   const companies = await dispatchCompanies(ctx, path);
-  if (companies) return companies;
+  if (companies) {return companies;}
 
-  if (method === "GET" && path === "/api/v1/calendar/events") return listEvents(ctx);
-  if (method === "POST" && path === "/api/v1/calendar/events") return createEvent(ctx);
+  if (method === "GET" && path === "/api/v1/calendar/events") {return listEvents(ctx);}
+  if (method === "POST" && path === "/api/v1/calendar/events") {return createEvent(ctx);}
   const event = path.match(/^\/api\/v1\/calendar\/events\/([^/]+)$/);
-  if (method === "PATCH" && event) return patchEvent(ctx, event[1]);
-  if (method === "DELETE" && event) return deleteEvent(ctx, event[1]);
+  if (method === "PATCH" && event) {return patchEvent(ctx, event[1]);}
+  if (method === "DELETE" && event) {return deleteEvent(ctx, event[1]);}
 
   const consents = await dispatchConsents(ctx, path);
-  if (consents) return consents;
+  if (consents) {return consents;}
 
   const applications = await dispatchApplications(ctx, path);
-  if (applications) return applications;
+  if (applications) {return applications;}
   const sources = await dispatchSources(ctx, path);
-  if (sources) return sources;
+  if (sources) {return sources;}
   const images = await dispatchImages(ctx, path);
-  if (images) return images;
+  if (images) {return images;}
   const evidence = await dispatchEvidence(ctx, path);
-  if (evidence) return evidence;
+  if (evidence) {return evidence;}
   const experiments = await dispatchExperiments(ctx, path);
-  if (experiments) return experiments;
+  if (experiments) {return experiments;}
   const interviews = await dispatchInterviews(ctx, path);
-  if (interviews) return interviews;
+  if (interviews) {return interviews;}
   const projects = await dispatchProjects(ctx, path);
-  if (projects) return projects;
+  if (projects) {return projects;}
   const integrations = await dispatchIntegrations(ctx, path);
-  if (integrations) return integrations;
+  if (integrations) {return integrations;}
   const documents = await dispatchDocuments(ctx, path);
-  if (documents) return documents;
+  if (documents) {return documents;}
 
   return errorResponse(404, "NOT_FOUND", "resource not found", ctx.rid);
 }
@@ -318,8 +318,8 @@ async function idempotent(ctx: Ctx, path: string): Promise<Response> {
       "INSERT INTO idempotency_keys (id, user_id, method, path, key, request_hash, created_at) VALUES ($1,$2,'POST',$3,$4,$5,$6) ON CONFLICT (user_id, method, path, key) DO NOTHING RETURNING id",
       [id, ctx.user.id, path, key, requestHash, ctx.now.toISOString()]);
     inserted = Boolean(row);
-  } catch (err) {
-    if (!isUnique(err)) {
+  } catch (error) {
+    if (!isUnique(error)) {
       return errorResponse(500, "INTERNAL", "internal error", ctx.rid);
     }
   }
@@ -330,7 +330,7 @@ async function idempotent(ctx: Ctx, path: string): Promise<Response> {
     if (!existing) {
       return errorResponse(500, "INTERNAL", "internal error", ctx.rid);
     }
-    const pending = existing.response_status == null;
+    const pending = (existing.response_status === null || existing.response_status === undefined);
     const stale = pending && ctx.now.getTime() - Date.parse(String(existing.created_at)) > PENDING_MS;
     if (stale) {
       await query(ctx.deps.query, "DELETE FROM idempotency_keys WHERE id = $1 AND response_status IS NULL", [String(existing.id)]);
@@ -341,7 +341,7 @@ async function idempotent(ctx: Ctx, path: string): Promise<Response> {
     }
     const headers = new Headers();
     const stored = parseHeaders(existing.response_headers);
-    for (const [name, value] of stored) headers.set(name, value);
+    for (const [name, value] of stored) {headers.set(name, value);}
     if (![...headers.keys()].some((name) => name.toLowerCase() === "content-type")) {
       headers.set("content-type", "application/json; charset=utf-8");
     }
@@ -350,15 +350,15 @@ async function idempotent(ctx: Ctx, path: string): Promise<Response> {
     if (status === 204 || status === 205 || status === 304) {
       return new Response(null, { status, headers });
     }
-    const replay = typeof payload === "string" ? payload : payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength) as ArrayBuffer;
+    const replay = typeof payload === "string" ? payload : new Uint8Array(payload);
     return new Response(replay, { status, headers });
   }
   let response: Response;
   try {
     response = await dispatch(live, path);
-  } catch (err) {
+  } catch (error) {
     await query(ctx.deps.query, "DELETE FROM idempotency_keys WHERE id = $1 AND response_status IS NULL", [id]);
-    if (err instanceof HttpError) return errorOf(err, ctx.rid);
+    if (error instanceof HttpError) {return errorOf(error, ctx.rid);}
     return errorResponse(500, "INTERNAL", "internal error", ctx.rid);
   }
   if (response.status < 200 || response.status >= 300) {
@@ -395,22 +395,22 @@ async function sha256Bytes(bytes: Uint8Array): Promise<string> {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-function parseHeaders(value: unknown): [string, string][] {
+function parseHeaders(value: unknown): Array<[string, string]> {
   let raw = value;
   if (typeof raw === "string") {
     try { raw = JSON.parse(raw); } catch { return []; }
   }
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((item) => Array.isArray(item) && item.length >= 2).map((item) => [String(item[0]), String(item[1])]);
+  if (!Array.isArray(raw)) {return [];}
+  return raw.filter((item: unknown): item is Array<unknown> => Array.isArray(item) && item.length >= 2).map((item): [string, string] => [String(item[0]), String(item[1])]);
 }
 
 function bodyOf(value: unknown): Uint8Array | string {
-  if (value instanceof Uint8Array) return value;
+  if (value instanceof Uint8Array) {return value;}
   if (typeof value === "string") {
-    if (value.startsWith("\\x")) {
+    if (value.startsWith(String.raw`\x`)) {
       const hex = value.slice(2);
       const out = new Uint8Array(hex.length / 2);
-      for (let i = 0; i < out.length; i++) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+      for (let i = 0; i < out.length; i++) {out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);}
       return out;
     }
     return value;

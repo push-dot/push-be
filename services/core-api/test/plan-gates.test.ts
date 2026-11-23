@@ -2,17 +2,19 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { HttpError } from "../src/http.ts";
-import { assertPlanAllows, type Gate, type Plan } from "../src/jobs/config.ts";
+import { assertPlanAllows } from '../src/jobs/config.ts';
+import type { Gate } from '../src/jobs/config.ts';
 
 const outcome = (plan: unknown, gate: Gate): string => {
   try {
     assertPlanAllows(plan, gate);
     return "ok";
-  } catch (err) {
-    assert.ok(err instanceof HttpError);
-    assert.equal(err.status, 403);
-    assert.equal(err.code, "PLAN_REQUIRED");
-    return String((err.details as { requiredPlan: Plan }).requiredPlan);
+  } catch (error) {
+    assert.ok(error instanceof HttpError);
+    assert.equal(error.status, 403);
+    assert.equal(error.code, "PLAN_REQUIRED");
+    assert.ok(typeof error.details === "object" && error.details !== null && "requiredPlan" in error.details);
+    return String(error.details.requiredPlan);
   }
 };
 

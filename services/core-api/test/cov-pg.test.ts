@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { createServer, type AddressInfo, type Socket } from "node:net";
+import { createServer } from 'node:net';
+import type { Socket } from 'node:net';
 import { test } from "node:test";
 
 import { livePg } from "./parity/pg.ts";
@@ -16,13 +17,13 @@ const int16 = (n: number) => { const b = Buffer.alloc(2); b.writeInt16BE(n); ret
 const int32 = (n: number) => { const b = Buffer.alloc(4); b.writeInt32BE(n); return b; };
 const cstr = (s: string) => Buffer.from(s + "\0");
 const ready = msg("Z", Buffer.from("I"));
-const rowDesc = (cols: [string, number][]) => msg("T", Buffer.concat([int16(cols.length), ...cols.map(([name, oid]) =>
+const rowDesc = (cols: Array<[string, number]>) => msg("T", Buffer.concat([int16(cols.length), ...cols.map(([name, oid]) =>
   Buffer.concat([cstr(name), int32(0), int16(0), int32(oid), int16(-1), int32(-1), int16(0)]))]));
-const dataRow = (values: string[]) => msg("D", Buffer.concat([int16(values.length), ...values.flatMap((v) => [int32(Buffer.byteLength(v)), Buffer.from(v)])]));
-const result = (cols: [string, number][], values: string[]) => Buffer.concat([rowDesc(cols), dataRow(values), msg("C", cstr("SELECT 1"))]);
+const dataRow = (values: Array<string>) => msg("D", Buffer.concat([int16(values.length), ...values.flatMap((v) => [int32(Buffer.byteLength(v)), Buffer.from(v)])]));
+const result = (cols: Array<[string, number]>, values: Array<string>) => Buffer.concat([rowDesc(cols), dataRow(values), msg("C", cstr("SELECT 1"))]);
 
 async function fakePostgres() {
-  const queries: string[] = [];
+  const queries: Array<string> = [];
   const sockets = new Set<Socket>();
   const server = createServer((socket) => {
     sockets.add(socket);
@@ -32,13 +33,13 @@ async function fakePostgres() {
       buf = Buffer.concat([buf, chunk]);
       for (;;) {
         if (!started) {
-          if (buf.length < 4 || buf.length < buf.readInt32BE(0)) return;
+          if (buf.length < 4 || buf.length < buf.readInt32BE(0)) {return;}
           buf = buf.subarray(buf.readInt32BE(0));
           started = true;
           socket.write(Buffer.concat([msg("R", int32(0)), ready]));
           continue;
         }
-        if (buf.length < 5 || buf.length < 1 + buf.readInt32BE(1)) return;
+        if (buf.length < 5 || buf.length < 1 + buf.readInt32BE(1)) {return;}
         const type = String.fromCharCode(buf[0]);
         const body = buf.subarray(5, 1 + buf.readInt32BE(1));
         buf = buf.subarray(1 + buf.readInt32BE(1));
@@ -58,11 +59,12 @@ async function fakePostgres() {
     });
     socket.on("close", () => sockets.delete(socket));
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => { server.listen(0, "127.0.0.1", resolve); });
+  const address = server.address();
   return {
-    url: `postgres://u:p@127.0.0.1:${(server.address() as AddressInfo).port}/db`,
+    url: `postgres://u:p@127.0.0.1:${typeof address === "object" && address ? address.port : 0}/db`,
     queries,
-    close: () => new Promise<void>((resolve) => { for (const s of sockets) s.destroy(); server.close(() => resolve()); }),
+    close: () => new Promise<void>((resolve) => { for (const s of sockets) {s.destroy();} server.close(() => resolve()); }),
   };
 }
 

@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 
-const sql = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../../db/migrations/0024_vectors_1024.sql"), "utf8");
+const sql = readFileSync(resolve(import.meta.dirname, "../../../db/migrations/0024_vectors_1024.sql"), "utf8");
 
 test("migration 0024 creates rag_nodes with a 1024 HNSW index, trigram index and a tenant check", () => {
   assert.match(sql, /CREATE EXTENSION IF NOT EXISTS pg_trgm/);

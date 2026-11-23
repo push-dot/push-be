@@ -22,9 +22,11 @@ const refusal = async (method: string, path: string): Promise<[number, string, u
   try {
     const res = await dispatch(ctx, url.pathname);
     return [res.status, "", null];
-  } catch (err) {
-    assert.ok(err instanceof HttpError, String(err));
-    return [err.status, err.code, (err.details as { field?: string } | null)?.field ?? null];
+  } catch (error) {
+    assert.ok(error instanceof HttpError, String(error));
+    const details = error.details;
+    const field = typeof details === "object" && details !== null && "field" in details ? details.field : null;
+    return [error.status, error.code, field ?? null];
   }
 };
 

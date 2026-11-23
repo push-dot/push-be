@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
+import { handle, resetLimits } from '../src/handler.ts';
+import type { Deps, FrontEnv, Query } from '../src/handler.ts';
 import { complete, STORED } from "./fakes.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
@@ -23,19 +24,21 @@ const deps = (query: Query): Deps => ({
   now: () => NOW,
 });
 
-const framesOf = (text: string): Record<string, unknown>[] => {
-  const frames: Record<string, unknown>[] = [];
+type Row = Awaited<ReturnType<Query>>[number];
+
+const framesOf = (text: string): Array<Row> => {
+  const frames: Array<Row> = [];
   for (const block of text.split("\n\n")) {
     const line = block.split("\n").find((item) => item.startsWith("data: "));
-    if (!line) continue;
-    frames.push(JSON.parse(line.slice("data: ".length)) as Record<string, unknown>);
+    if (!line) {continue;}
+    frames.push(JSON.parse(line.slice("data: ".length)));
   }
   return frames;
 };
 
-const authQuery = (events: () => Record<string, unknown>[]): Query => {
+const authQuery = (events: () => Array<Row>): Query => {
   return async (sql) => {
-    if (sql.includes("chat_events")) return events();
+    if (sql.includes("chat_events")) {return events();}
     if (sql.includes("access_tokens")) {
       return [{
         id: USER,
@@ -48,8 +51,8 @@ const authQuery = (events: () => Record<string, unknown>[]): Query => {
         job_id: JOB,
       }];
     }
-    if (sql.includes("FROM conversations")) return [{ id: USER }];
-    if (sql.includes("FROM chat_jobs")) return [{ id: JOB }];
+    if (sql.includes("FROM conversations")) {return [{ id: USER }];}
+    if (sql.includes("FROM chat_jobs")) {return [{ id: JOB }];}
     return [];
   };
 };
@@ -67,9 +70,9 @@ const stream = async (query: Query): Promise<string> => {
 test("structured rows keep their fields and an unknown type does not end the stream", async () => {
   resetLimits();
   let reads = 0;
-  const text = await stream(authQuery(() => {
+  const text = await stream(authQuery((): Array<Row> => {
     reads += 1;
-    if (reads > 1) return [{ id: 99, type: "token", payload: { text: "second-poll" } }];
+    if (reads > 1) {return [{ id: 99, type: "token", payload: { text: "second-poll" } }];}
     return [
       { id: 10, type: "token", payload: { text: "hi", extra: true } },
       { id: 11, type: "tool", payload: { name: "read", state: "run", summary: "file" } },
@@ -127,9 +130,9 @@ test("structured rows keep their fields and an unknown type does not end the str
 test("cancelled ends the poll and does not forward later rows", async () => {
   resetLimits();
   let reads = 0;
-  const text = await stream(authQuery(() => {
+  const text = await stream(authQuery((): Array<Row> => {
     reads += 1;
-    if (reads > 1) return [{ id: 99, type: "token", payload: { text: "second-poll" } }];
+    if (reads > 1) {return [{ id: 99, type: "token", payload: { text: "second-poll" } }];}
     return [
       { id: 4, type: "cancelled", payload: {} },
       { id: 5, type: "token", payload: { text: "after-cancel" } },
@@ -143,7 +146,7 @@ test("cancelled ends the poll and does not forward later rows", async () => {
 
 test("a done row that waits for the user keeps awaiting", async () => {
   resetLimits();
-  const text = await stream(authQuery(() => [
+  const text = await stream(authQuery((): Array<Row> => [
     { id: 20, type: "approval", payload: { id: "a1", kind: "TOOL_ACTION", title: "지원", options: [] } },
     { id: 21, type: "done", payload: { awaiting: "approval" } },
   ]));
@@ -153,7 +156,7 @@ test("a done row that waits for the user keeps awaiting", async () => {
 
 test("replay skips markdown file cards and keeps other file cards", async () => {
   resetLimits();
-  const text = await stream(authQuery(() => [
+  const text = await stream(authQuery((): Array<Row> => [
     { id: 1, type: "file", payload: { name: "05_final_resume.md", mime: "text/markdown" } },
     { id: 2, type: "file", payload: { name: "03_draft_resume_v1.md", mime: "text/plain" } },
     { id: 3, type: "file", payload: { name: "김서준_모아페이_백엔드.pdf", mime: "application/pdf" } },

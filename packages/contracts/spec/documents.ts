@@ -27,7 +27,7 @@ const exportBinary: Schema = {
   },
 };
 
-export const routes: Route[] = [
+export const routes: Array<Route> = [
   get("core", "/api/v1/documents", {
     tag: "documents",
     summary: "List documents",
@@ -374,7 +374,7 @@ export const routes: Route[] = [
     body: body(closed({
       kind: evidenceKind,
       title: { type: "string", minLength: 1, maxLength: 200 },
-      sourceText: { type: "string", minLength: 1, maxLength: 100000 },
+      sourceText: { type: "string", minLength: 1, maxLength: 100_000 },
       sourceUrl: nullable({ type: "string", format: "uri", description: "http(s) without credentials" }),
       skills: { type: "array", maxItems: 100, items: { type: "string", minLength: 1, maxLength: 100 } },
       supersedesId: nullable(uuid),
@@ -503,7 +503,7 @@ export const routes: Route[] = [
   }),
 ];
 
-export const schemas: Record<string, Schema> = {
+export const schemas = {
   Document: obj({
     id: uuid,
     revision: int,

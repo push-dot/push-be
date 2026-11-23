@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import type { QueryResult } from "../src/db.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
+import type { Ctx, UserRow } from "../src/types.ts";
+
+const readJson = async <T>(res: Response): Promise<T> => {
+  const body: T = await res.json();
+  return body;
+};
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const OTHER = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -12,7 +20,13 @@ const OFFER = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const CONV = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const NOW = "2026-10-21T00:00:00.000Z";
 
-type Call = { sql: string; params: unknown[] };
+const PUSH_USER: UserRow = {
+  id: USER, displayName: "Ada", locale: "ko", email: "ada@example.com", provider: "email", plan: "FREE",
+  subscriptionStatus: "NONE", stripeCustomerId: null, periodEndsAt: null, createdAt: NOW,
+  accountType: "PERSONAL", companyId: null, companyRole: null,
+};
+
+type Call = { sql: string; params: Array<unknown> };
 
 const env = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
   APP_ENV: "production", MANAGED_AI: "1", ...extra,
@@ -22,9 +36,9 @@ const deps = (query: Deps["query"], fetchImpl?: typeof fetch): Deps => ({
   query, now: () => new Date(NOW), fetch: fetchImpl,
 });
 
-const authed = (seen: Call[], extra: Deps["query"]): Deps["query"] => async (sql, params = []) => {
+const authed = (seen: Array<Call>, extra: Deps["query"]): Deps["query"] => async (sql, params = []) => {
   seen.push({ sql, params });
-  if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
   if (sql.includes("access_tokens")) {
     return {
       rows: [{
@@ -37,14 +51,14 @@ const authed = (seen: Call[], extra: Deps["query"]): Deps["query"] => async (sql
   if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {
     return { rows: [{ id: "11111111-1111-4111-8111-111111111111" }], rowCount: 1 };
   }
-  if (sql.includes("idempotency_keys")) return { rows: [], rowCount: 0 };
+  if (sql.includes("idempotency_keys")) {return { rows: [], rowCount: 0 };}
   if (sql.includes("is_employer") && sql.includes("FROM users") && !sql.includes("access_tokens")) {
     return { rows: [{ is_employer: false, display_name: "Ada" }], rowCount: 1 };
   }
   return extra(sql, params);
 };
 
-const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
+const empty: QueryResult = { rows: [], rowCount: 0 };
 
 const post = (path: string, body: unknown, key = "44444444-4444-4444-8444-444444444444"): Request => new Request("https://core.example" + path, {
   method: "POST",
@@ -56,18 +70,17 @@ const post = (path: string, body: unknown, key = "44444444-4444-4444-8444-444444
   body: JSON.stringify(body),
 });
 
-const titles = (seen: Call[]): unknown[] => seen
-  .filter((call) => call.sql.includes("INSERT INTO notifications"))
-  .map((call) => call.params[3]);
+const titles = (seen: Array<Call>): Array<unknown> => seen
+  .flatMap((call) => (call.sql.includes("INSERT INTO notifications") ? [call.params[3]] : []));
 
 test("a reply stores parentId and tells the parent author", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(
     post(`/api/v1/posts/${POST}/comments`, { body: "동의해요", parentId: PARENT }),
     env(),
     deps(authed(seen, async (sql) => {
-      if (sql.includes("FROM posts")) return { rows: [{ id: POST, user_id: OTHER, title: "글" }], rowCount: 1 };
+      if (sql.includes("FROM posts")) {return { rows: [{ id: POST, user_id: OTHER, title: "글" }], rowCount: 1 };}
       if (sql.includes("FROM post_comments")) {
         return { rows: [{ id: PARENT, user_id: "99999999-9999-4999-8999-999999999999" }], rowCount: 1 };
       }
@@ -75,7 +88,7 @@ test("a reply stores parentId and tells the parent author", async () => {
     })),
   );
   assert.equal(res.status, 201);
-  const body = await res.json() as { data: { parentId: string } };
+  const body = await readJson<{ data: { parentId: string } }>(res);
   assert.equal(body.data.parentId, PARENT);
   const insert = seen.find((call) => call.sql.includes("INSERT INTO post_comments"));
   assert.ok(insert);
@@ -103,8 +116,8 @@ test("ai-done is a job route and pushes only when expo is configured", async () 
   assert.equal(denied.status, 401);
 
   resetLimits();
-  const quiet: string[] = [];
-  const seen: Call[] = [];
+  const quiet: Array<string> = [];
+  const seen: Array<Call> = [];
   const quietRes = await handle(new Request("https://core.example/api/v1/internal/notifications/ai-done", {
     method: "POST",
     headers: { authorization: "Bearer job-secret", "content-type": "application/json" },
@@ -114,9 +127,9 @@ test("ai-done is a job route and pushes only when expo is configured", async () 
     if (sql.includes("FROM conversations")) {
       return { rows: [{ bot_id: null, notifications_muted: null, display_name: null, last_message_preview: null, unread: null, allowed: true }], rowCount: 1 };
     }
-    if (sql.includes("INSERT INTO notification_dedupes")) return { rows: [{ dedupe_key: params[0] }], rowCount: 1 };
-    if (sql.includes("user_settings")) return { rows: [{ enabled: true }], rowCount: 1 };
-    if (sql.includes("user_devices")) return { rows: [{ token: "ExponentPushToken[abc]" }], rowCount: 1 };
+    if (sql.includes("INSERT INTO notification_dedupes")) {return { rows: [{ dedupe_key: String(params[0]) }], rowCount: 1 };}
+    if (sql.includes("user_settings")) {return { rows: [{ enabled: true }], rowCount: 1 };}
+    if (sql.includes("user_devices")) {return { rows: [{ token: "ExponentPushToken[abc]" }], rowCount: 1 };}
     return empty;
   }, async (input) => {
     quiet.push(String(input));
@@ -130,7 +143,7 @@ test("ai-done is a job route and pushes only when expo is configured", async () 
   assert.equal(quiet.length, 0);
 
   resetLimits();
-  const pushed: { url: string; authorization: string; body: string }[] = [];
+  const pushed: Array<{ url: string; authorization: string; body: string }> = [];
   const loud = await handle(new Request("https://core.example/api/v1/internal/notifications/ai-done", {
     method: "POST",
     headers: { authorization: "Bearer job-secret", "content-type": "application/json" },
@@ -139,9 +152,9 @@ test("ai-done is a job route and pushes only when expo is configured", async () 
     if (sql.includes("FROM conversations")) {
       return { rows: [{ bot_id: null, notifications_muted: null, display_name: null, last_message_preview: null, unread: null, allowed: true }], rowCount: 1 };
     }
-    if (sql.includes("INSERT INTO notification_dedupes")) return { rows: [{ dedupe_key: params[0] }], rowCount: 1 };
-    if (sql.includes("user_settings")) return { rows: [{ enabled: true }], rowCount: 1 };
-    if (sql.includes("user_devices")) return { rows: [{ token: "ExponentPushToken[abc]" }], rowCount: 1 };
+    if (sql.includes("INSERT INTO notification_dedupes")) {return { rows: [{ dedupe_key: String(params[0]) }], rowCount: 1 };}
+    if (sql.includes("user_settings")) {return { rows: [{ enabled: true }], rowCount: 1 };}
+    if (sql.includes("user_devices")) {return { rows: [{ token: "ExponentPushToken[abc]" }], rowCount: 1 };}
     return empty;
   }, async (input, init) => {
     pushed.push({
@@ -160,7 +173,7 @@ test("ai-done is a job route and pushes only when expo is configured", async () 
 
 test("the notification job writes one D-3 deadline and one due reminder", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(new Request("https://core.example/api/v1/internal/notifications/run", {
     method: "POST",
     headers: { authorization: "Bearer job-secret" },
@@ -174,9 +187,9 @@ test("the notification job writes one D-3 deadline and one due reminder", async 
       return { rows: [{ id: "ffffffff-ffff-4fff-8fff-ffffffffffff", user_id: OTHER, title: "커피챗" }], rowCount: 1 };
     }
     if (sql.includes("notification_dedupes") && sql.includes("INSERT")) {
-      return { rows: [{ dedupe_key: params[0] }], rowCount: 1 };
+      return { rows: [{ dedupe_key: String(params[0]) }], rowCount: 1 };
     }
-    if (sql.includes("user_settings")) return { rows: [{ enabled: true }], rowCount: 1 };
+    if (sql.includes("user_settings")) {return { rows: [{ enabled: true }], rowCount: 1 };}
     return empty;
   }));
   assert.equal(res.status, 200);
@@ -194,19 +207,19 @@ test("accepting an offer and sending a message notify the other person", async (
     message: "합류해요", posting_id: null, status: "READ", read_at: NOW, created_at: NOW,
     sender_company: "Acme", sender_headline: "Recruiter", sender_avatar: "avatars/bea.png",
   };
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const accepted = await handle(
     post(`/api/v1/me/offers/${OFFER}/accept`, {}, "55555555-5555-4555-8555-555555555555"),
     env(),
     deps(authed(seen, async (sql) => {
-      if (sql.startsWith("UPDATE offers")) return { rows: [{ id: offerRow.id }], rowCount: 1 };
-      if (sql.includes("FROM offers")) return { rows: [offerRow], rowCount: 1 };
-      if (sql.includes("user_settings")) return { rows: [{ enabled: true }], rowCount: 1 };
+      if (sql.startsWith("UPDATE offers")) {return { rows: [{ id: offerRow.id }], rowCount: 1 };}
+      if (sql.includes("FROM offers")) {return { rows: [offerRow], rowCount: 1 };}
+      if (sql.includes("user_settings")) {return { rows: [{ enabled: true }], rowCount: 1 };}
       return empty;
     })),
   );
   assert.equal(accepted.status, 200);
-  const acceptBody = await accepted.json() as { data: { sender: { companyName: string | null; headline: string; avatarUrl: string | null } } };
+  const acceptBody = await readJson<{ data: { sender: { companyName: string | null; headline: string; avatarUrl: string | null } } }>(accepted);
   assert.equal(acceptBody.data.sender.companyName, "Acme");
   assert.equal(acceptBody.data.sender.headline, "Recruiter");
   assert.equal(acceptBody.data.sender.avatarUrl, "/api/v1/uploads/images/avatars%2Fbea.png");
@@ -216,13 +229,13 @@ test("accepting an offer and sending a message notify the other person", async (
   assert.equal(acceptNote.params.includes("제안을 수락했어요"), true);
 
   resetLimits();
-  const messageSeen: Call[] = [];
+  const messageSeen: Array<Call> = [];
   const message = await handle(
     post(`/api/v1/me/offers/${OFFER}/messages`, { body: "내일 봐요" }, "66666666-6666-4666-8666-666666666666"),
     env(),
     deps(authed(messageSeen, async (sql) => {
-      if (sql.includes("FROM offers")) return { rows: [{ ...offerRow, status: "ACCEPTED" }], rowCount: 1 };
-      if (sql.includes("user_settings")) return { rows: [{ enabled: true }], rowCount: 1 };
+      if (sql.includes("FROM offers")) {return { rows: [{ ...offerRow, status: "ACCEPTED" }], rowCount: 1 };}
+      if (sql.includes("user_settings")) {return { rows: [{ enabled: true }], rowCount: 1 };}
       return empty;
     })),
   );
@@ -238,17 +251,17 @@ test("unread notification count is the unread rows", async () => {
   const res = await handle(new Request("https://core.example/api/v1/me/notifications/unread", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), deps(authed([], async (sql) => {
-    if (sql.includes("count(*)") && sql.includes("notifications")) return { rows: [{ count: 3 }], rowCount: 1 };
+    if (sql.includes("count(*)") && sql.includes("notifications")) {return { rows: [{ count: 3 }], rowCount: 1 };}
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { count: number } };
+  const body = await readJson<{ data: { count: number } }>(res);
   assert.equal(body.data.count, 3);
 });
 
 test("calendar stores a coffee chat and remindAt", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(
     post("/api/v1/calendar/events", {
       type: "COFFEE_CHAT",
@@ -261,7 +274,7 @@ test("calendar stores a coffee chat and remindAt", async () => {
     deps(authed(seen, async () => empty)),
   );
   assert.equal(res.status, 201);
-  const body = await res.json() as { data: { type: string; remindAt: string | null } };
+  const body = await readJson<{ data: { type: string; remindAt: string | null } }>(res);
   assert.equal(body.data.type, "COFFEE_CHAT");
   assert.equal(body.data.remindAt, "2026-10-23T01:00:00Z");
   const insert = seen.find((call) => call.sql.includes("INSERT INTO calendar_events"));
@@ -272,18 +285,18 @@ test("calendar stores a coffee chat and remindAt", async () => {
 
 test("the notification job claims and filters in two statements, not per row", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const rows = Array.from({ length: 5 }, (_, i) => ({ user_id: OTHER, id: `p-${i}`, title: `T${i}` }));
   const res = await handle(new Request("https://core.example/api/v1/internal/notifications/run", {
     method: "POST",
     headers: { authorization: "Bearer job-secret" },
   }), env({ INTERNAL_JOB_TOKEN: "job-secret" }), deps(async (sql, params = []) => {
     seen.push({ sql, params });
-    if (sql.includes("FROM bookmarks")) return { rows, rowCount: rows.length };
+    if (sql.includes("FROM bookmarks")) {return { rows, rowCount: rows.length };}
     return empty;
   }));
   assert.equal(res.status, 200);
-  assert.deepEqual((await res.json() as { data: unknown }).data, { deadlines: 5, reminders: 0 });
+  assert.deepEqual((await readJson<{ data: unknown }>(res)).data, { deadlines: 5, reminders: 0 });
   const picks = seen.filter((call) => call.sql.includes("notification_dedupes"));
   assert.equal(picks.length, 2);
   assert.ok(picks.every((call) => call.sql.includes("COALESCE(s.notify_deadline, true)")));
@@ -292,9 +305,11 @@ test("the notification job claims and filters in two statements, not per row", a
 
 test("push skips users in the deletion grace period", async () => {
   const { deliverPush } = await import("../src/push/notifier.ts");
-  const seen: string[] = [];
-  const sent: string[] = [];
-  const ctx = {
+  const seen: Array<string> = [];
+  const sent: Array<string> = [];
+  const url = new URL("https://core.example/");
+  const ctx: Ctx = {
+    request: new Request(url), url, rid: "t", user: PUSH_USER, now: new Date(NOW),
     env: { EXPO_ACCESS_TOKEN: "expo-secret" },
     deps: {
       query: async (sql: string) => {
@@ -306,7 +321,7 @@ test("push skips users in the deletion grace period", async () => {
         return new Response("{}");
       },
     },
-  } as unknown as Parameters<typeof deliverPush>[0];
+  };
   await deliverPush(ctx, USER, "t", "b", {});
   assert.match(seen[0], /JOIN users u ON u\.id = d\.user_id WHERE d\.user_id = \$1 AND u\.deletion_requested_at IS NULL/);
   assert.equal(sent.length, 0);

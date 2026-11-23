@@ -13,4 +13,4 @@ export const GATEWAY_ROUTES = [
   "/api/v1/conversations",
   "/api/v1/ai/models",
   "/api/v1/integrations/job-sites",
-] as const satisfies readonly (keyof paths)[];
+] as const satisfies ReadonlyArray<keyof paths>;

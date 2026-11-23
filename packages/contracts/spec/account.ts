@@ -18,7 +18,7 @@ const userIdParam = pathParam("userId");
 const inviteIdParam = pathParam("id");
 const imageTypes = ["image/jpeg", "image/jpg", "image/pjpeg", "image/png", "image/webp", "image/heic", "image/heif"];
 
-export const routes: Route[] = [
+export const routes: Array<Route> = [
   get("gateway", "/healthz", {
     tag: "health",
     summary: "Liveness check",
@@ -188,7 +188,7 @@ export const routes: Route[] = [
     summary: "Send a personal phone code",
     auth: "optional",
     description: "E.164 phone. Stores a hashed 6-digit code. Resend cooldown defaults to 168 seconds (429 RATE_LIMITED, details.retryAfterSec). 503 NOT_CONFIGURED unless PHONE_SMS_MODE=log and APP_ENV=development, or a test sender is injected. The code is never in the response. Employer sessions are 403.",
-    body: body(obj({ phone: { type: "string", pattern: "^\\+[1-9]\\d{7,14}$" } }, ["phone"])),
+    body: body(obj({ phone: { type: "string", pattern: String.raw`^\+[1-9]\d{7,14}$` } }, ["phone"])),
     responses: { 202: ok(obj({ cooldownSeconds: int, expiresAt: dateTime }), "Accepted") },
   }),
   post("core", "/api/v1/auth/phone/verify", {
@@ -197,8 +197,8 @@ export const routes: Route[] = [
     auth: "optional",
     description: "Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: log into that account (created=false) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 409 PHONE_TAKEN if a login to attach is already linked to another account (details.conflict IDENTITY with details.provider, the pending social provider; or conflict PHONE with provider phone, when the phone itself is linked elsewhere). It never names the provider of the account that owns the number. A wrong code is 400 PHONE_CODE_INVALID with details.attemptsLeft. Reaching the attempt limit (default 5) makes the next try 429 RATE_LIMITED with details.reason TOO_MANY_ATTEMPTS and details.maxAttempts. Send does not reveal whether a phone is registered. Signup terms are not stored here.",
     body: body(obj({
-      phone: { type: "string", pattern: "^\\+[1-9]\\d{7,14}$" },
-      code: { type: "string", pattern: "^\\d{6}$" },
+      phone: { type: "string", pattern: String.raw`^\+[1-9]\d{7,14}$` },
+      code: { type: "string", pattern: String.raw`^\d{6}$` },
       pendingToken: str,
     }, ["phone", "code"])),
     responses: {
@@ -349,8 +349,8 @@ export const routes: Route[] = [
     summary: "Verify business registration and create company",
     description: "EMPLOYER only. The four fields are trimmed before the pattern check. Checks the business with the NTS API and makes the caller ADMIN. 422 BUSINESS_NOT_VERIFIED (details.reason MISMATCH, SUSPENDED or CLOSED). 409 COMPANY_EXISTS or CONFLICT (already in a company). 503 NOT_CONFIGURED when NTS_SERVICE_KEY is empty. 502 PROVIDER_ERROR when the NTS call fails. Only legalName is returned of the profile fields.",
     body: body(obj({
-      bNo: { type: "string", pattern: "^\\d{10}$", description: "Business registration number" },
-      startDt: { type: "string", pattern: "^\\d{8}$", description: "Opening date YYYYMMDD" },
+      bNo: { type: "string", pattern: String.raw`^\d{10}$`, description: "Business registration number" },
+      startDt: { type: "string", pattern: String.raw`^\d{8}$`, description: "Opening date YYYYMMDD" },
       pNm: { type: "string", minLength: 1, description: "Representative name" },
       bNm: { type: "string", minLength: 1, description: "Business name" },
       legalName: { type: "string", maxLength: 120, description: "Optional registered company name. Trimmed; empty is ignored" },
@@ -493,7 +493,7 @@ export const routes: Route[] = [
     tag: "uploads",
     summary: "Download an uploaded image",
     auth: "public",
-    params: [pathParam("name", { type: "string", pattern: "^[0-9a-f]{32}\\.(jpg|png|webp|heic)$", example: "0123456789abcdef0123456789abcdef.png" })],
+    params: [pathParam("name", { type: "string", pattern: String.raw`^[0-9a-f]{32}\.(jpg|png|webp|heic)$`, example: "0123456789abcdef0123456789abcdef.png" })],
     responses: {
       200: {
         description: "Image bytes; content type follows the file extension",
@@ -503,7 +503,7 @@ export const routes: Route[] = [
   }),
 ];
 
-export const schemas: Record<string, Schema> = {
+export const schemas = {
   User: obj({
     id: uuid,
     displayName: str,
@@ -625,7 +625,7 @@ export const schemas: Record<string, Schema> = {
     }),
   }),
   UploadedImage: obj({
-    key: { type: "string", pattern: "^[0-9a-f]{32}\\.(jpg|png|webp|heic)$" },
+    key: { type: "string", pattern: String.raw`^[0-9a-f]{32}\.(jpg|png|webp|heic)$` },
     url: { type: "string", description: "/api/v1/uploads/images/<key>" },
   }),
   AiModel: obj({
@@ -646,4 +646,4 @@ export const schemas: Record<string, Schema> = {
     supportedFields: arr(str),
     checklist: arr(str),
   }),
-};
+} satisfies Record<string, Schema>;

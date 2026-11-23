@@ -1,12 +1,35 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { clearDeletion } from "../src/routes/auth.ts";
-import type { Ctx } from "../src/types.ts";
 import { resetLimits } from "../src/ratelimit.ts";
+import { ctxFor, readJson } from "../test-support/recorder.ts";
+import type { Row } from "../test-support/recorder.ts";
 
 const NOW = new Date("2026-10-21T00:00:00Z");
+
+const githubFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+  const url = String(input);
+  if (url.includes("access_token")) {return Response.json({ access_token: "gho_x" });}
+  const ua = new Headers(init?.headers).get("user-agent");
+  return ua ? Response.json({ id: 42, login: "ada" }) : new Response("forbidden", { status: 403 });
+};
+
+const githubQuery: Deps["query"] = async (sql) => {
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+  if (sql.includes("FROM oauth_states")) {
+    return {
+      rows: [{
+        state: "s1", provider: "github", code_challenge: "c", redirect_uri: "https://x/cb",
+        final_uri: "push://auth/callback", expires_at: "2099-01-01T00:00:00Z",
+      }],
+      rowCount: 1,
+    };
+  }
+  return { rows: [], rowCount: 1 };
+};
 
 test("github callback sends a User-Agent when fetching the user", async () => {
   resetLimits();
@@ -14,41 +37,22 @@ test("github callback sends a User-Agent when fetching the user", async () => {
     APP_ENV: "production", MANAGED_AI: "1",
     GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "secret",
   } as CoreEnv;
-  const query: Deps["query"] = async (sql) => {
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("FROM oauth_states")) {
-      return {
-        rows: [{
-          state: "s1", provider: "github", code_challenge: "c", redirect_uri: "https://x/cb",
-          final_uri: "push://auth/callback", expires_at: "2099-01-01T00:00:00Z",
-        }],
-        rowCount: 1,
-      };
-    }
-    return { rows: [], rowCount: 1 };
-  };
   // Mirrors api.github.com: 403 without a User-Agent header.
-  const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    if (url.includes("access_token")) return Response.json({ access_token: "gho_x" });
-    const ua = new Headers(init?.headers).get("user-agent");
-    return ua ? Response.json({ id: 42, login: "ada" }) : new Response("forbidden", { status: 403 });
-  };
   const res = await handle(
     new Request("https://core.example/api/v1/auth/github/callback?code=abc&state=s1"),
     env,
-    { query, now: () => NOW, fetch: fetch as typeof globalThis.fetch },
+    { query: githubQuery, now: () => NOW, fetch: githubFetch },
   );
   assert.equal(res.status, 302);
   assert.match(res.headers.get("location") ?? "", /^push:\/\/auth\/callback\?code=/);
 });
 
 function deletionDeps(stripeOk: boolean) {
-  const sqls: string[] = [];
-  const stripeCalls: string[] = [];
+  const sqls: Array<string> = [];
+  const stripeCalls: Array<string> = [];
   const query: Deps["query"] = async (sql) => {
     sqls.push(sql);
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     if (sql.includes("FROM users WHERE id")) {
       return { rows: [{ id: "u1", display_name: "a", locale: "ko", plan: "PRO", subscription_status: "ACTIVE", stripe_customer_id: "cus_1", period_ends_at: null, created_at: NOW.toISOString() }], rowCount: 1 };
     }
@@ -56,15 +60,15 @@ function deletionDeps(stripeOk: boolean) {
   };
   const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     stripeCalls.push(`${init?.method} ${String(input).replace("https://api.stripe.com", "")}`);
-    if (!stripeOk) return Response.json({ error: {} }, { status: 500 });
-    if (init?.method === "GET") return Response.json({ data: [{ id: "sub_1", status: "active" }, { id: "sub_2", status: "past_due" }, { id: "sub_3", status: "incomplete_expired" }] });
+    if (!stripeOk) {return Response.json({ error: {} }, { status: 500 });}
+    if (init?.method === "GET") {return Response.json({ data: [{ id: "sub_1", status: "active" }, { id: "sub_2", status: "past_due" }, { id: "sub_3", status: "incomplete_expired" }] });}
     return Response.json({ id: "sub", status: "canceled" });
   };
   const env = { APP_ENV: "development", DEV_AUTH_TOKEN: "dev", DEV_USER_ID: "u1", STRIPE_SECRET_KEY: "sk" } as CoreEnv;
   const call = () => handle(
     new Request("https://core.example/api/v1/me", { method: "DELETE", headers: { authorization: "Bearer dev" } }),
     env,
-    { query, now: () => NOW, fetch: fetch as typeof globalThis.fetch },
+    { query, now: () => NOW, fetch },
   );
   return { sqls, stripeCalls, call };
 }
@@ -91,29 +95,30 @@ test("DELETE /me keeps the account when Stripe cancel fails", async () => {
   assert.ok(d.sqls.some((s) => s.includes("SET deletion_requested_at = NULL WHERE id = $1")), "mark is undone");
 });
 
+const missingCompaniesQuery: Deps["query"] = async (sql) => {
+  if (sql.includes("company_members") || sql.includes("UPDATE companies")) {
+    throw Object.assign(new Error('relation "companies" does not exist'), { code: "42P01" });
+  }
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+  if (sql.includes("FROM users WHERE id")) {
+    return { rows: [{ id: "u1", display_name: "a", locale: "ko", plan: "PRO", subscription_status: "ACTIVE", stripe_customer_id: "cus_1", period_ends_at: null, created_at: NOW.toISOString() }], rowCount: 1 };
+  }
+  return { rows: [], rowCount: 1 };
+};
+
 test("DELETE /me still deletes when the companies table is missing", async () => {
   resetLimits();
-  const stripeCalls: string[] = [];
-  const query: Deps["query"] = async (sql) => {
-    if (sql.includes("company_members") || sql.includes("UPDATE companies")) {
-      throw Object.assign(new Error('relation "companies" does not exist'), { code: "42P01" });
-    }
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("FROM users WHERE id")) {
-      return { rows: [{ id: "u1", display_name: "a", locale: "ko", plan: "PRO", subscription_status: "ACTIVE", stripe_customer_id: "cus_1", period_ends_at: null, created_at: NOW.toISOString() }], rowCount: 1 };
-    }
-    return { rows: [], rowCount: 1 };
-  };
+  const stripeCalls: Array<string> = [];
   const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     stripeCalls.push(`${init?.method} ${String(input).replace("https://api.stripe.com", "")}`);
-    if (init?.method === "GET") return Response.json({ data: [{ id: "sub_1", status: "active" }, { id: "sub_2", status: "past_due" }, { id: "sub_3", status: "incomplete_expired" }] });
+    if (init?.method === "GET") {return Response.json({ data: [{ id: "sub_1", status: "active" }, { id: "sub_2", status: "past_due" }, { id: "sub_3", status: "incomplete_expired" }] });}
     return Response.json({ id: "sub", status: "canceled" });
   };
   const env = { APP_ENV: "development", DEV_AUTH_TOKEN: "dev", DEV_USER_ID: "u1", STRIPE_SECRET_KEY: "sk" } as CoreEnv;
   const res = await handle(
     new Request("https://core.example/api/v1/me", { method: "DELETE", headers: { authorization: "Bearer dev" } }),
     env,
-    { query, now: () => NOW, fetch: fetch as typeof globalThis.fetch },
+    { query: missingCompaniesQuery, now: () => NOW, fetch },
   );
   assert.equal(res.status, 204);
   assert.deepEqual(stripeCalls, [
@@ -123,15 +128,34 @@ test("DELETE /me still deletes when the companies table is missing", async () =>
   ]);
 });
 
+const clearDeletionQuery: Deps["query"] = async (sql) => {
+  if (sql.includes("UPDATE companies")) {
+    throw Object.assign(new Error('relation "companies" does not exist'), { code: "42P01" });
+  }
+  return { rows: [], rowCount: 1 };
+};
+
 test("clearDeletion ignores a missing companies table", async () => {
-  const query: Deps["query"] = async (sql) => {
-    if (sql.includes("UPDATE companies")) {
-      throw Object.assign(new Error('relation "companies" does not exist'), { code: "42P01" });
-    }
-    return { rows: [], rowCount: 1 };
-  };
-  await clearDeletion({ deps: { query } } as Ctx, "u1");
+  await clearDeletion(ctxFor({ query: clearDeletionQuery }), "u1");
 });
+
+const preMigrationFetch = async (input: RequestInfo | URL) =>
+  String(input).includes("access_token") ? Response.json({ access_token: "gho_x" }) : Response.json({ id: 42, login: "ada" });
+
+const preMigrationQuery: Deps["query"] = async (sql) => {
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+  if (sql.includes("deletion_requested_at")) {throw Object.assign(new Error('column "deletion_requested_at" does not exist'), { code: "42703" });}
+  if (sql.includes("FROM oauth_states")) {
+    return {
+      rows: [{
+        state: "s1", provider: "github", code_challenge: "c", redirect_uri: "https://x/cb",
+        final_uri: "push://auth/callback", expires_at: "2099-01-01T00:00:00Z",
+      }],
+      rowCount: 1,
+    };
+  }
+  return { rows: [], rowCount: 1 };
+};
 
 test("login still works before migration 0018 is applied", async () => {
   resetLimits();
@@ -139,42 +163,26 @@ test("login still works before migration 0018 is applied", async () => {
     APP_ENV: "production", MANAGED_AI: "1",
     GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "secret",
   } as CoreEnv;
-  const query: Deps["query"] = async (sql) => {
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("deletion_requested_at")) throw Object.assign(new Error('column "deletion_requested_at" does not exist'), { code: "42703" });
-    if (sql.includes("FROM oauth_states")) {
-      return {
-        rows: [{
-          state: "s1", provider: "github", code_challenge: "c", redirect_uri: "https://x/cb",
-          final_uri: "push://auth/callback", expires_at: "2099-01-01T00:00:00Z",
-        }],
-        rowCount: 1,
-      };
-    }
-    return { rows: [], rowCount: 1 };
-  };
-  const fetch = async (input: RequestInfo | URL) =>
-    String(input).includes("access_token") ? Response.json({ access_token: "gho_x" }) : Response.json({ id: 42, login: "ada" });
   const res = await handle(
     new Request("https://core.example/api/v1/auth/github/callback?code=abc&state=s1"),
     env,
-    { query, now: () => NOW, fetch: fetch as typeof globalThis.fetch },
+    { query: preMigrationQuery, now: () => NOW, fetch: preMigrationFetch },
   );
   assert.equal(res.status, 302);
 });
 
 test("logout deletes the caller's push token, or all of the user's when none is sent", async () => {
-  const seen: { sql: string; params: unknown[] }[] = [];
+  const seen: Array<{ sql: string; params: Array<unknown> }> = [];
   const query: Deps["query"] = async (sql, params = []) => {
     seen.push({ sql, params });
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     return { rows: [], rowCount: 1 };
   };
-  const logout = (body: Record<string, unknown>) => handle(
+  const logout = (body: Row) => handle(
     new Request("https://core.example/api/v1/auth/logout", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
     }),
-    { APP_ENV: "production" } as CoreEnv,
+    { APP_ENV: "production" },
     { query, now: () => NOW },
   );
   resetLimits();
@@ -188,15 +196,15 @@ test("logout deletes the caller's push token, or all of the user's when none is 
 });
 
 const reauthDeps = (loginAt: string | null | "none") => {
-  const sqls: string[] = [];
-  const stripeCalls: string[] = [];
+  const sqls: Array<string> = [];
+  const stripeCalls: Array<string> = [];
   const query: Deps["query"] = async (sql) => {
     sqls.push(sql);
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     if (sql.includes("FROM access_tokens t JOIN users u")) {
       return { rows: [{ id: "u1", display_name: "a", locale: "ko", plan: "FREE", subscription_status: "NONE", stripe_customer_id: null, period_ends_at: null, created_at: NOW.toISOString(), token_expires_at: "2099-01-01T00:00:00Z" }], rowCount: 1 };
     }
-    if (sql.includes("r.login_at")) return loginAt === "none" ? { rows: [], rowCount: 0 } : { rows: [{ login_at: loginAt }], rowCount: 1 };
+    if (sql.includes("r.login_at")) {return loginAt === "none" ? { rows: [], rowCount: 0 } : { rows: [{ login_at: loginAt }], rowCount: 1 };}
     return { rows: [], rowCount: 1 };
   };
   const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -205,8 +213,8 @@ const reauthDeps = (loginAt: string | null | "none") => {
   };
   const call = () => handle(
     new Request("https://core.example/api/v1/me", { method: "DELETE", headers: { authorization: "Bearer session-token" } }),
-    { APP_ENV: "production", MANAGED_AI: "1" } as CoreEnv,
-    { query, now: () => NOW, fetch: fetch as typeof globalThis.fetch },
+    { APP_ENV: "production", MANAGED_AI: "1" },
+    { query, now: () => NOW, fetch },
   );
   return { sqls, stripeCalls, call };
 };
@@ -223,7 +231,7 @@ for (const [name, loginAt] of [["older than 10 minutes", new Date(NOW.getTime() 
     const d = reauthDeps(loginAt);
     const res = await d.call();
     assert.equal(res.status, 403);
-    assert.equal(((await res.json()) as { error: { code: string } }).error.code, "REAUTH_REQUIRED");
+    assert.equal((await readJson<{ error: { code: string } }>(res)).error.code, "REAUTH_REQUIRED");
     assert.deepEqual(d.stripeCalls, []);
     assert.equal(d.sqls.some((s) => s.includes("deletion_requested_at")), false);
   });
@@ -232,14 +240,14 @@ for (const [name, loginAt] of [["older than 10 minutes", new Date(NOW.getTime() 
 test("refresh keeps the original sign-in time", async () => {
   resetLimits();
   const loginAt = "2026-10-20T23:55:00.000Z";
-  let inserted: unknown[] = [];
+  let inserted: Array<unknown> = [];
   const query: Deps["query"] = async (sql, params = []) => {
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     if (sql.includes("FROM refresh_tokens WHERE token_hash")) {
       return { rows: [{ id: "r1", user_id: "u1", expires_at: "2099-01-01T00:00:00Z", revoked_at: null, login_at: new Date(loginAt) }], rowCount: 1 };
     }
-    if (sql.includes("WITH revoked AS (UPDATE refresh_tokens")) return { rows: [{ id: "r1" }], rowCount: 1 };
-    if (sql.includes("INSERT INTO refresh_tokens")) inserted = params;
+    if (sql.includes("WITH revoked AS (UPDATE refresh_tokens")) {return { rows: [{ id: "r1" }], rowCount: 1 };}
+    if (sql.includes("INSERT INTO refresh_tokens")) {inserted = params;}
     if (sql.includes("FROM users WHERE id")) {
       return { rows: [{ id: "u1", display_name: "a", locale: "ko", created_at: NOW.toISOString() }], rowCount: 1 };
     }
@@ -247,7 +255,7 @@ test("refresh keeps the original sign-in time", async () => {
   };
   const res = await handle(
     new Request("https://core.example/api/v1/auth/refresh", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ refreshToken: "t" }) }),
-    { APP_ENV: "production", MANAGED_AI: "1" } as CoreEnv,
+    { APP_ENV: "production", MANAGED_AI: "1" },
     { query, now: () => NOW },
   );
   assert.equal(res.status, 200);
