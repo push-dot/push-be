@@ -108,6 +108,23 @@ const materialSource = obj({
   title: str,
 }, ["kind", "id", "title"]);
 
+const CARD_KINDS = ["approval", "choice", "plan", "paper", "todo", "diff", "fit", "result"];
+
+/** On every route that returns frames: the A2UI version of the a2ui frames' messages. */
+export const a2uiVersionHeader = {
+  name: "A2UI-Version",
+  in: "header",
+  required: false,
+  schema: enumOf("1.0", "v0.9.1"),
+  description: "The A2UI version of the messages in every a2ui frame: 1.0 (iOS and web) or v0.9.1 (Android). Absent or any other value is v0.9.1. The frame around the messages is the same for both.",
+};
+
+const a2uiMessage = {
+  type: "object",
+  additionalProperties: true,
+  description: "One A2UI message of the Push catalog (catalogId https://push.app/a2ui/catalogs/push/v1/catalog.json), in the version the request's A2UI-Version names. v0.9.1: packages/contracts/a2ui/push-catalog.json with the spec in packages/contracts/a2ui/spec; 1.0: push-catalog.v1.json with spec/v1.0. One wire frame per card case: packages/contracts/a2ui/fixtures (v0.9.1) and fixtures/v1.0.",
+};
+
 export const chatEvents = {
   status: { anyOf: [statusOf({}), ...statusPhases] },
   token: obj({ type: enumOf("token"), text: str, seq }),
@@ -117,6 +134,122 @@ export const chatEvents = {
     phase: { type: "string", description: "Resume phase id (analyze, strategy, craft, review, blueprints). The app does not render it." },
     seq,
   }, ["type", "seconds", "phase", "seq"]),
+  tool: obj({
+    type: enumOf("tool"),
+    name: str,
+    state: { ...enumOf("run", "ok", "err", "wait"), description: "run is sent just before the tool executes, then ok or err. wait is the approval pause." },
+    summary: str,
+    tier: enumOf("READ", "EXTERNAL_READ", "SAFE_WRITE", "RISKY_WRITE"),
+    result: { type: "object", additionalProperties: true, description: "What the tool returned: an object, with error when it failed" },
+    target: { type: "string", description: "What the tool worked on, e.g. a file name or 회사 · 직무" },
+    resultLine: { type: "string", description: "One-line outcome shown under the tool line" },
+    extra: { ...arr(str), description: "Detail lines the client folds as +N줄" },
+    warning: { type: "string", description: "Set when a READ tool failed with TOOL_FAILED and was retried once (state is ok or err after the retry)" },
+    seq,
+  }, ["type", "name", "state", "summary", "seq"]),
+  a2ui: obj({
+    type: enumOf("a2ui"),
+    kind: {
+      ...enumOf(...CARD_KINDS),
+      description: "The card the surface draws. approval and choice take an answer: POST .../approvals/{surfaceId} with the optionId and optionIds the surface's answer action carries.",
+    },
+    surfaceId: {
+      type: "string",
+      description: "The client upserts by this id. approval and choice: the approval id. plan, paper, todo: {kind}:{id}:{turn}, so a later frame of the same turn replaces the surface in place. fit, diff, result: an id stored with the row. The transcript returns the same id as the stream.",
+    },
+    messages: {
+      ...arr(a2uiMessage),
+      description: "A full snapshot: createSurface, updateComponents, updateDataModel. A client that already has the surface drops createSurface and applies the rest. An answered card replays with /open false and /picked set.",
+    },
+    seq,
+  }, ["type", "kind", "surfaceId", "messages", "seq"]),
+  file: obj({
+    type: enumOf("file"),
+    name: { type: "string", description: "Never a .md name. A new turn does not emit a file event; replay drops a stored markdown file event." },
+    mime: { type: "string", description: "Never text/markdown." },
+    fileId: str,
+    documentId: { type: "string", description: "Empty string when the document was not synced" },
+    downloadUrl: { type: "string", description: "Relative to /api/v1, e.g. /conversations/{id}/artifacts/{name}" },
+    seq,
+  }),
+  employer_research: obj({
+    type: enumOf("employer_research"),
+    company: str,
+    summary: str,
+    sourceCounts: obj({ homepage: int, news: int, postings: int }),
+    facts: arr(obj({ text: str, sourceUrl: str })),
+    seq,
+  }, ["type", "company", "facts", "seq"]),
+  posting_draft: obj({
+    type: enumOf("posting_draft"),
+    version: int,
+    draft: obj({
+      title: str,
+      jobCategory: str,
+      careerMin: int,
+      careerMax: nullable(int),
+      location: str,
+      employmentType: str,
+      workStyle: str,
+      salaryRange: nullable(str),
+      description: arr(str),
+      requirements: arr(str),
+      preferred: arr(str),
+      skills: arr(str),
+    }, ["title", "description", "requirements", "preferred"]),
+    notes: arr(str),
+    seq,
+  }, ["type", "version", "draft", "seq"]),
+  review_report: obj({
+    type: enumOf("review_report"),
+    applicationId: nullable(uuid),
+    attachmentName: nullable(str),
+    summary: str,
+    matches: arr(obj({ requirement: str, status: enumOf("MET", "PARTIAL", "MISSING"), evidence: nullable(str) })),
+    flags: arr(obj({ title: str, level: enumOf("CHECK", "SUPPORTED", "UNKNOWN"), reason: str, quote: nullable(str) })),
+    disclaimer: str,
+    seq,
+  }, ["type", "summary", "flags", "disclaimer", "seq"]),
+  interview_kit: obj({
+    type: enumOf("interview_kit"),
+    applicationId: nullable(uuid),
+    questions: arr(obj({
+      text: str,
+      verify: str,
+      goodSignals: arr(str),
+      cautionSignals: arr(str),
+      fromFlag: nullable(str),
+    }, ["text", "verify"])),
+    seq,
+  }, ["type", "questions", "seq"]),
+  done: obj({
+    type: enumOf("done"),
+    operation: nullable(ref("Operation")),
+    awaiting: enumOf("approval", "choice"),
+    sources: {
+      ...arr(materialSource),
+      description: "Materials this turn read or saved, first use, at most 5. Omitted when empty. A link title is the page read after redirects.",
+    },
+    seq,
+  }, ["type", "operation", "seq"]),
+  error: obj({ type: enumOf("error"), error: sseError, seq }, ["type", "error"]),
+  notice: obj({
+    type: enumOf("notice"),
+    text: { type: "string", description: "One line naming the step that failed while the run went on, e.g. 방향 검증에서 문제가 생겼어요" },
+    seq,
+  }),
+  cancelled: obj({
+    type: enumOf("cancelled"),
+    resumable: { type: "boolean", description: "True when a document flow is active and the next message continues it. The stream sends false for an event stored before this field; GET .../turns returns that event as stored, without it." },
+    seq,
+  }, ["type", "seq"]),
+};
+
+/**
+ * What a card row of chat_events stores: the payload services/ai/src/app/domain/a2ui.py turns into the
+ * a2ui frame. No client receives these; the stream and the transcript send the a2ui frame instead.
+ */
+export const cardPayloads = {
   plan: obj({
     type: enumOf("plan"),
     id: { ...enumOf("strategy", "feedback", "blueprints"), description: "strategy (수정 전략), feedback (고칠 점) or blueprints (프로젝트 기획서). A later plan with the same id replaces the card." },
@@ -138,19 +271,6 @@ export const chatEvents = {
     lines: { ...arr(str), description: "Up to 6 preview lines, markdown stripped, each at most 120 characters" },
     seq,
   }, ["type", "id", "label", "heading", "lines", "seq"]),
-  tool: obj({
-    type: enumOf("tool"),
-    name: str,
-    state: { ...enumOf("run", "ok", "err", "wait"), description: "run is sent just before the tool executes, then ok or err. wait is the approval pause." },
-    summary: str,
-    tier: enumOf("READ", "EXTERNAL_READ", "SAFE_WRITE", "RISKY_WRITE"),
-    result: { type: "object", additionalProperties: true, description: "What the tool returned: an object, with error when it failed" },
-    target: { type: "string", description: "What the tool worked on, e.g. a file name or 회사 · 직무" },
-    resultLine: { type: "string", description: "One-line outcome shown under the tool line" },
-    extra: { ...arr(str), description: "Detail lines the client folds as +N줄" },
-    warning: { type: "string", description: "Set when a READ tool failed with TOOL_FAILED and was retried once (state is ok or err after the retry)" },
-    seq,
-  }, ["type", "name", "state", "summary", "seq"]),
   todo: obj({
     type: enumOf("todo"),
     id: { type: "string", description: "List id. A later todo with the same id replaces the earlier list. The resume analysis uses analyze." },
@@ -233,65 +353,6 @@ export const chatEvents = {
     note: { type: "string", description: "Boost card: 적합도 6.9 → 8.3 (+1.4)" },
     seq,
   }, ["type", "score", "seq"]),
-  file: obj({
-    type: enumOf("file"),
-    name: { type: "string", description: "Never a .md name. A new turn does not emit a file event; replay drops a stored markdown file event." },
-    mime: { type: "string", description: "Never text/markdown." },
-    fileId: str,
-    documentId: { type: "string", description: "Empty string when the document was not synced" },
-    downloadUrl: { type: "string", description: "Relative to /api/v1, e.g. /conversations/{id}/artifacts/{name}" },
-    seq,
-  }),
-  employer_research: obj({
-    type: enumOf("employer_research"),
-    company: str,
-    summary: str,
-    sourceCounts: obj({ homepage: int, news: int, postings: int }),
-    facts: arr(obj({ text: str, sourceUrl: str })),
-    seq,
-  }, ["type", "company", "facts", "seq"]),
-  posting_draft: obj({
-    type: enumOf("posting_draft"),
-    version: int,
-    draft: obj({
-      title: str,
-      jobCategory: str,
-      careerMin: int,
-      careerMax: nullable(int),
-      location: str,
-      employmentType: str,
-      workStyle: str,
-      salaryRange: nullable(str),
-      description: arr(str),
-      requirements: arr(str),
-      preferred: arr(str),
-      skills: arr(str),
-    }, ["title", "description", "requirements", "preferred"]),
-    notes: arr(str),
-    seq,
-  }, ["type", "version", "draft", "seq"]),
-  review_report: obj({
-    type: enumOf("review_report"),
-    applicationId: nullable(uuid),
-    attachmentName: nullable(str),
-    summary: str,
-    matches: arr(obj({ requirement: str, status: enumOf("MET", "PARTIAL", "MISSING"), evidence: nullable(str) })),
-    flags: arr(obj({ title: str, level: enumOf("CHECK", "SUPPORTED", "UNKNOWN"), reason: str, quote: nullable(str) })),
-    disclaimer: str,
-    seq,
-  }, ["type", "summary", "flags", "disclaimer", "seq"]),
-  interview_kit: obj({
-    type: enumOf("interview_kit"),
-    applicationId: nullable(uuid),
-    questions: arr(obj({
-      text: str,
-      verify: str,
-      goodSignals: arr(str),
-      cautionSignals: arr(str),
-      fromFlag: nullable(str),
-    }, ["text", "verify"])),
-    seq,
-  }, ["type", "questions", "seq"]),
   result: {
     oneOf: [
       obj({
@@ -335,27 +396,6 @@ export const chatEvents = {
       }, ["type", "source", "taskLine", "checklist", "documentId", "name", "headline", "title", "subtitle", "actions", "seq"]),
     ],
   },
-  done: obj({
-    type: enumOf("done"),
-    operation: nullable(ref("Operation")),
-    awaiting: enumOf("approval", "choice"),
-    sources: {
-      ...arr(materialSource),
-      description: "Materials this turn read or saved, first use, at most 5. Omitted when empty. A link title is the page read after redirects.",
-    },
-    seq,
-  }, ["type", "operation", "seq"]),
-  error: obj({ type: enumOf("error"), error: sseError, seq }, ["type", "error"]),
-  notice: obj({
-    type: enumOf("notice"),
-    text: { type: "string", description: "One line naming the step that failed while the run went on, e.g. 방향 검증에서 문제가 생겼어요" },
-    seq,
-  }),
-  cancelled: obj({
-    type: enumOf("cancelled"),
-    resumable: { type: "boolean", description: "True when a document flow is active and the next message continues it. The stream sends false for an event stored before this field; GET .../turns returns that event as stored, without it." },
-    seq,
-  }, ["type", "seq"]),
 };
 
 const schemaList = (value: unknown): Array<Schema> => (Array.isArray(value) ? value.filter(isSchema) : []);
@@ -387,13 +427,14 @@ const chatStreamDescription = "Frames are `id: <seq>` + `data: <json>` with no `
   + "After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. "
   + "done with `awaiting` means the turn paused for an approval or choice card (operation is null). done with a null operation and no awaiting ends a job that wrote no reply, such as a card answer the run dropped. A stream-level failure emits an error frame without seq. "
   + "The queued job writes one status frame, text 대기 중, with phase queued, since, and ahead. This stream carries no other status: the phases thinking, working and waiting, and the notice event, are written only in a bot thread (GET /bots/{id}/stream). A status row stored before phases has text only. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Replay still forwards a stored row of any of those types. "
-  + "The resume flow sends fit twice: after the analysis when a posting is known and managed AI is on, and after each boost cycle (with from, delta, note). "
-  + "During the analysis it sends todo id analyze with now/done states and READ tool lines with target, resultLine and extra. "
+  + "Every Bot card (approval, choice, plan, paper, todo, diff, fit, result) arrives as an a2ui frame: an A2UI surface of the Push catalog, in v0.9.1 or, with the request header A2UI-Version: 1.0, in 1.0. The legacy card fields stay on the stored row (cardPayloads in this spec) and are never sent. A card the server answered itself (a choice with auto) sends no frame; the Bot says what it picked in a token. "
+  + "Inside a surface, the action answer carries {optionId, optionIds?} for POST .../approvals/{surfaceId}. After answering, the client sets /open to false and /picked to the sent ids itself; the server sends no update. The actions open_review, share, result_action, open_plan, change and open_posting are handled in the app and never sent. "
+  + "The resume flow sends a fit surface after the analysis when a posting is known and managed AI is on, and after each boost cycle. During the analysis it sends the todo surface of list analyze, updated in place, and READ tool lines with target, resultLine and extra. "
   + "Every field added after the first release is optional; a client that ignores it keeps working. "
   + "A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown. "
-  + "think, plan, and paper are stored and replayed. think carries seconds and phase only, never model reasoning. plan id strategy is the 수정 전략 card; plan id feedback is the 고칠 점 card; the same id replaces the card. paper is a draft preview, not a markdown file card. "
-  + "A choice may add sections and submit. options stays the fallback an older client renders and answers. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. The intake materials are a toggle section whose ids (m_file, m_posting, m_github) are answers; an unchecked id drops that material. Ids of a rows section are not answers. An answer contains submit only when optionId is submit or submit is in optionIds. Without submit, chips and thumbnails use the sent ids and a missing section stays unset; a toggle uses the sent ids, and a toggle section with no id keeps its selected default. "
-  + "Gate quality sits after review and before the template gate. It lists automatic fixes as a diff and recommendation toggles. Gate read_failed asks how to continue when the posting could not be read; paste and pick stay on that gate until the next message, and proceed continues to the analyze gate. Neither gate has a cancel option. The present gate (결과를 확인할까요?) is never asked: the flow saves the profile, sends the choice with auto true and no note, and goes on. The tool update_my_profile runs without an approval card; the client shows what changed and lets the person revert it.";
+  + "think is stored and replayed; it carries seconds and phase only, never model reasoning. The plan surface of id strategy is the 수정 전략 card and of id feedback the 고칠 점 card; the paper surface is a draft preview, not a markdown file card. "
+  + "A choice surface whose PushChoice answer is submit is answered with optionId submit and optionIds [submit, …picked ids]; ids from any answerable question are valid. The intake materials are a multiple question whose ids (m_file, m_posting, m_github) are answers; an unchecked id drops that material. Ids of a question with answerable false are not answers. An answer contains submit only when optionId is submit or submit is in optionIds. Without submit, chips and thumbnails use the sent ids and a missing section stays unset; a toggle uses the sent ids, and a toggle section with no id keeps its selected default. "
+  + "Gate quality sits after review and before the template gate. It lists automatic fixes as a diff and recommendation toggles. Gate read_failed asks how to continue when the posting could not be read; paste and pick stay on that gate until the next message, and proceed continues to the analyze gate. Neither gate has a cancel option. The present gate (결과를 확인할까요?) is never asked: the flow saves the profile, stores the choice with auto true and no note, sends no frame for it, and goes on. The tool update_my_profile runs without an approval card; the client shows what changed and lets the person revert it.";
 
 export const messageText = { type: "string", minLength: 1, maxLength: 20_000 };
 
@@ -519,9 +560,9 @@ export const routes: Array<Route> = [
     summary: "List chat turns with their cards",
     description: "Newest first; one item per chat job, so a reopened conversation can draw its cards again. In a personal conversation only the caller's jobs are listed. "
       + "events are the stored stream frames (same shapes as the stream, with seq) minus status and done; consecutive token frames are joined into one, and markdown file events are dropped. "
-      + "approval and choice events carry resolution. userMessageId and assistantMessageId are the messages this job wrote, or null when it wrote none (a resumed job has no USER message; a turn that paused before replying has no ASSISTANT message). "
+      + "Cards are a2ui frames in the version A2UI-Version names, with the answer from the approvals row baked into their data model. userMessageId and assistantMessageId are the messages this job wrote, or null when it wrote none (a resumed job has no USER message; a turn that paused before replying has no ASSISTANT message). "
       + "answer is set on a job started by answering a card. 404 when the conversation is not visible.",
-    params: [id, ...pageParams],
+    params: [id, ...pageParams, a2uiVersionHeader],
     responses: { 200: okPage(ref("ConversationTurn")) },
   }),
   get("gateway", "/api/v1/conversations/{id}/messages", {
@@ -543,7 +584,7 @@ export const routes: Array<Route> = [
     tag: "conversations",
     summary: "Send a message and stream the reply",
     description: "Same body and checks as POST .../messages; a non-202 result from core is returned as is. " + chatStreamDescription,
-    params: [id],
+    params: [id, a2uiVersionHeader],
     body: postMessageBody,
     responses: { 200: sse(streamEvents, "Chat reply stream") },
   }),
@@ -555,6 +596,7 @@ export const routes: Array<Route> = [
       id,
       query("after", { type: "integer", minimum: 0 }, "Resume after this seq; the Last-Event-ID header is used when absent"),
       { name: "Last-Event-ID", in: "header", required: false, schema: str },
+      a2uiVersionHeader,
     ],
     responses: { 200: sse(streamEvents, "Chat reply stream"), 204: { description: "No active chat job" } },
   }),
