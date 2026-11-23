@@ -759,10 +759,11 @@ def feedback_plan(analysis: dict) -> dict | None:
     }
 
 
-def boost_fit(first: float, after: float) -> dict:
+def boost_fit(first: float, after: float, rounds: list[dict] | None = None) -> dict:
+    """rounds: what each boost round of this job changed, {label, line} from its boost line."""
     gain = round(after - first, 1)
     signed = f"+{gain:.1f}" if gain >= 0 else f"{gain:.1f}"
-    return {
+    card = {
         "type": "fit",
         "score": after,
         "from": first,
@@ -770,3 +771,16 @@ def boost_fit(first: float, after: float) -> dict:
         "note": f"적합도 {first:.1f} → {after:.1f} ({signed})",
         "band": fit_band(after),
     }
+    if rounds:
+        card["rounds"] = rounds
+    return card
+
+
+def boost_rounds(saved, job: str, line: dict) -> dict:
+    """The rounds of this job's boost lines so far, kept in state as {job, items}. A gate answer
+    starts a new job, and the next fit card lists only that job's rounds."""
+    kept = saved if isinstance(saved, dict) else {}
+    items = list(kept.get("items") or []) if kept.get("job") == job else []
+    if line.get("target") and line.get("resultLine"):
+        items.append({"label": line["target"], "line": line["resultLine"]})
+    return {"job": job, "items": items}

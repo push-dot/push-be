@@ -1089,6 +1089,11 @@ test("the web app may send x-csrf and credentials, and the cookie reaches core a
     headers: { origin, "access-control-request-method": "POST", "access-control-request-headers": "content-type, x-csrf" },
   }), env({ async fetch() { return new Response(""); } }), deps(async () => []));
   assert.match(pre.headers.get("access-control-allow-headers") || "", /x-csrf/);
+  const a2ui = await handle(new Request("https://push-be.example/api/v1/bots/push/stream", {
+    method: "OPTIONS",
+    headers: { origin, "access-control-request-method": "GET", "access-control-request-headers": "authorization, a2ui-version" },
+  }), env({ async fetch() { return new Response(""); } }), deps(async () => []));
+  assert.match(a2ui.headers.get("access-control-allow-headers") || "", /a2ui-version/);
   assert.equal(pre.headers.get("access-control-allow-credentials"), "true");
   assert.equal(pre.headers.get("access-control-allow-origin"), origin);
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+from app.domain.a2ui import CARD_KINDS, V091, frame, mint_sid, to_a2ui
+
 _PROGRESS = frozenset({"status", "done"})
 _CARDS = frozenset({"approval", "choice"})
 _TERMINAL = frozenset({"done", "error", "cancelled"})
@@ -26,7 +28,22 @@ def _markdown_file(kind: str, payload: dict) -> bool:
     return name.lower().endswith(".md") or mime.lower() == "text/markdown"
 
 
-def turn_events(rows: list[dict], resolutions: dict[str, dict]) -> list[dict]:
+def _surface(
+    row: dict, kind: str, payload: dict, resolution: dict | None, version: str
+) -> dict | None:
+    """The a2ui frame of a card row, rebuilt from the stored legacy payload with its answer, or
+    None for a row no client draws. A row stored before surfaces has no sid: it gets one here."""
+    if "sid" not in payload and kind not in _CARDS:
+        if kind in ("plan", "paper", "todo"):
+            sid = mint_sid(kind, payload, str(row.get("job_id") or ""))
+        else:
+            sid = f"{kind}:{row['id']}"
+        payload = {**payload, "sid": sid}
+    projection = to_a2ui(kind, payload, resolution, version)
+    return None if projection is None else frame(kind, projection)
+
+
+def turn_events(rows: list[dict], resolutions: dict[str, dict], version: str = V091) -> list[dict]:
     events: list[dict] = []
     for row in rows:
         kind = str(row["type"])
@@ -36,11 +53,13 @@ def turn_events(rows: list[dict], resolutions: dict[str, dict]) -> list[dict]:
         if kind == "token" and events and events[-1]["type"] == "token":
             events[-1]["text"] += str(payload.get("text") or "")
             continue
-        event = {"type": kind, **payload, "seq": int(row["id"])}
-        resolution = resolutions.get(str(payload.get("id") or ""))
-        if kind in _CARDS and resolution is not None:
-            event["resolution"] = resolution
-        events.append(event)
+        if kind in CARD_KINDS:
+            resolution = resolutions.get(str(payload.get("id") or ""))
+            surface = _surface(row, kind, payload, resolution, version)
+            if surface is not None:
+                events.append({**surface, "seq": int(row["id"])})
+            continue
+        events.append({"type": kind, **payload, "seq": int(row["id"])})
     return events
 
 
@@ -48,6 +67,9 @@ def _hidden(kind: str, payload: dict) -> bool:
     """A row the bot stream does not send (gateway conversations.ts `hidden`)."""
     if kind == "status":
         return payload.get("phase") is None
+    if kind in CARD_KINDS:
+        # Live rows carry a2ui exactly when this projects; the gateway hides the others.
+        return to_a2ui(kind, {"sid": "-", **payload}) is None
     return _markdown_file(kind, payload)
 
 
@@ -102,7 +124,9 @@ def _frame(kind: str, payload: dict) -> dict:
     return {**payload, "type": kind}
 
 
-def bot_turn_events(rows: list[dict], cards: dict[str, dict], active: bool) -> list[dict]:
+def bot_turn_events(
+    rows: list[dict], cards: dict[str, dict], active: bool, version: str = V091
+) -> list[dict]:
     """A bot turn's events as its stream sent them, with seq and at, without done.
 
     Each piece of text is one token at its last row. Rows after the first terminal event never
@@ -120,10 +144,15 @@ def bot_turn_events(rows: list[dict], cards: dict[str, dict], active: bool) -> l
         waiting = kind == "status" and payload.get("phase") == "waiting"
         if kind == "status" and not (active or waiting):
             continue
-        event = _frame(kind, {**payload, "text": pieces[seq]} if kind == "token" else payload)
-        if kind in _CARDS:
-            event.update(cards.get(str(payload.get("id") or "")) or {**_UNSTORED_CARD, "openedAt": row["created_at"]})
-        elif waiting and str(payload.get("cardId") or "") in cards:
+        if kind in CARD_KINDS:
+            card = cards.get(str(payload.get("id") or "")) or _UNSTORED_CARD
+            resolution = card["resolution"] if kind in _CARDS else None
+            event = _surface(row, kind, payload, resolution, version)
+            if event is None:
+                continue
+        else:
+            event = _frame(kind, {**payload, "text": pieces[seq]} if kind == "token" else payload)
+        if waiting and str(payload.get("cardId") or "") in cards:
             event["since"] = cards[str(payload["cardId"])]["openedAt"]
         events.append({**event, "seq": seq, "at": row["created_at"]})
         if kind in _TERMINAL:
@@ -132,20 +161,11 @@ def bot_turn_events(rows: list[dict], cards: dict[str, dict], active: bool) -> l
 
 
 # A card with no approvals row is a gate the server answered itself (`auto`): nobody can answer it.
-_UNSTORED_CARD = {
-    "resolution": {"status": "APPROVED", "optionId": None},
-    "expiresAt": None,
-    "retryable": False,
-}
+_UNSTORED_CARD = {"resolution": {"status": "APPROVED", "optionId": None}}
 
 
 def bot_card(row: dict) -> dict:
-    return {
-        "resolution": card_resolution(row),
-        "openedAt": row["opened_at"],
-        "expiresAt": row["expires_at"],
-        "retryable": bool(row["retryable"]),
-    }
+    return {"resolution": card_resolution(row), "openedAt": row["opened_at"]}
 
 
 def card_ids(rows: list[dict]) -> list[str]:

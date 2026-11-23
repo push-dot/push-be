@@ -1,0 +1,57 @@
+{
+  "type": "a2ui",
+  "kind": "plan",
+  "surfaceId": "plan:strategy:00000000-0000-4000-8000-00000000a001",
+  "messages": [
+    {
+      "version": "v0.9.1",
+      "createSurface": {
+        "surfaceId": "plan:strategy:00000000-0000-4000-8000-00000000a001",
+        "catalogId": "https://push.app/a2ui/catalogs/push/v1/catalog.json"
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateComponents": {
+        "surfaceId": "plan:strategy:00000000-0000-4000-8000-00000000a001",
+        "components": [
+          {
+            "id": "root",
+            "component": "PushPlan",
+            "title": "수정 전략",
+            "rows": [
+              {
+                "tag": "강화",
+                "tone": "accent",
+                "label": "경력",
+                "note": "결제 트래픽 성과를 숫자로 써요"
+              },
+              {
+                "tag": "보완",
+                "tone": "orange",
+                "label": "기술 스택",
+                "note": "Kafka 경험을 더해요"
+              }
+            ],
+            "caption": "섹션 2개",
+            "keywords": [
+              "Kafka",
+              "결제"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateDataModel": {
+        "surfaceId": "plan:strategy:00000000-0000-4000-8000-00000000a001",
+        "path": "/",
+        "value": {}
+      }
+    }
+  ],
+  "seq": 1,
+  "at": "2026-11-23T00:00:00.000000Z",
+  "turn": "00000000-0000-4000-8000-00000000a001"
+}

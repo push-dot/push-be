@@ -1,0 +1,71 @@
+{
+  "type": "a2ui",
+  "kind": "choice",
+  "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+  "messages": [
+    {
+      "version": "v0.9.1",
+      "createSurface": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "catalogId": "https://push.app/a2ui/catalogs/push/v1/catalog.json"
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateComponents": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "components": [
+          {
+            "id": "root",
+            "component": "PushChoice",
+            "questions": [
+              {
+                "id": "q",
+                "title": "이대로 분석을 시작할까요?",
+                "choices": [
+                  {
+                    "id": "ready",
+                    "label": "시작하기",
+                    "recommended": true
+                  },
+                  {
+                    "id": "cancel",
+                    "label": "닫기"
+                  }
+                ],
+                "detail": "공고와 이력서를 비교해요."
+              }
+            ],
+            "answer": "pick",
+            "open": {
+              "path": "/open"
+            },
+            "picked": {
+              "path": "/picked"
+            },
+            "selected": {
+              "path": "/selected"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateDataModel": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "path": "/",
+        "value": {
+          "open": true,
+          "picked": [],
+          "selected": {
+            "q": []
+          }
+        }
+      }
+    }
+  ],
+  "seq": 1,
+  "at": "2026-11-23T00:00:00.000000Z",
+  "turn": "00000000-0000-4000-8000-00000000a001"
+}

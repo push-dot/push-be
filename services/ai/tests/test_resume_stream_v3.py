@@ -12,12 +12,12 @@ from tests.test_resume_flow_decisions import _events
 
 
 def test_live_events_store_think_plan_and_paper():
-    kind, payload = _live_event({"type": "think", "seconds": 2, "phase": "craft"})
+    kind, payload = _live_event({"type": "think", "seconds": 2, "phase": "craft"}, "job")
     assert kind == "think"
     assert payload == {"seconds": 2, "phase": "craft"}
-    assert _live_event({"type": "plan", "id": "strategy", "title": "수정 전략"})[0] == "plan"
-    assert _live_event({"type": "paper", "id": "draft-resume-v1", "lines": []})[0] == "paper"
-    assert _live_event({"type": "nope"}) is None
+    assert _live_event({"type": "plan", "id": "strategy", "title": "수정 전략"}, "job")[0] == "plan"
+    assert _live_event({"type": "paper", "id": "draft-resume-v1", "lines": []}, "job")[0] == "paper"
+    assert _live_event({"type": "nope"}, "job") is None
     assert "token" not in payload and "status" not in payload
 
 
