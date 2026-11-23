@@ -1,0 +1,48 @@
+{
+  "type": "a2ui",
+  "kind": "diff",
+  "surfaceId": "00000000-0000-4000-8000-0000000051d0",
+  "messages": [
+    {
+      "version": "1.0",
+      "createSurface": {
+        "surfaceId": "00000000-0000-4000-8000-0000000051d0",
+        "catalogId": "https://push.app/a2ui/catalogs/push/v1/catalog.json"
+      }
+    },
+    {
+      "version": "1.0",
+      "updateComponents": {
+        "surfaceId": "00000000-0000-4000-8000-0000000051d0",
+        "components": [
+          {
+            "id": "root",
+            "component": "PushDiff",
+            "title": "1줄을 더하고 1줄을 뺐어요",
+            "lines": [
+              {
+                "sign": "-",
+                "text": "운영햇어요"
+              },
+              {
+                "sign": "+",
+                "text": "운영했어요"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "version": "1.0",
+      "updateDataModel": {
+        "surfaceId": "00000000-0000-4000-8000-0000000051d0",
+        "path": "/",
+        "value": {}
+      }
+    }
+  ],
+  "seq": 1,
+  "at": "2026-11-23T00:00:00.000000Z",
+  "turn": "00000000-0000-4000-8000-00000000a001"
+}

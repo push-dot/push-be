@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Request
 
 from app.db import NotFoundError
+from app.domain.a2ui import version_of
 from app.domain.chat_turns import card_ids, card_resolution, turn_events, turn_view
 from app.domain.errors import not_found
 from app.domain.pagination import Cursor, new_page
@@ -99,10 +100,11 @@ async def list_conversation_turns(id: str, request: Request):
     cards = await turns.cards(conversation.id, card_ids(rows))
     resolutions = {str(card["id"]): card_resolution(card) for card in cards}
     stored = await turns.message_ids(conversation.id, job_ids)
+    version = version_of(request.headers.get("a2ui-version"))
     views = [
         turn_view(
             job,
-            turn_events([row for row in rows if row["job_id"] == job["id"]], resolutions),
+            turn_events([row for row in rows if row["job_id"] == job["id"]], resolutions, version),
             _present(user_message_id(job["id"]), stored),
             _present(assistant_message_id(job["id"]), stored),
         )

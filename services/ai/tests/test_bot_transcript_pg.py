@@ -222,3 +222,25 @@ async def test_compaction_keeps_what_a_reopened_chat_shows_and_runs_once(db):
         assert await db.q().fetchval(count, web_job, "status") == 3
     finally:
         await db.q().execute("DELETE FROM users WHERE id = $1", user)
+
+
+async def test_a_card_replays_in_the_a2ui_version_the_request_names(db):
+    user = await person(db)
+    try:
+        bot, thread = await bot_with_thread(db, user)
+        rows = [("todo", {"id": "analyze", "items": [{"id": "a", "text": "공고 분석", "state": "now"}]}),
+                ("done", {"operation": None})]
+        await turn(db, user, thread, "DONE", NOW, rows, "분석해 줘")
+        http = client(db, user)
+
+        def versions(body):
+            (event,) = body["data"][0]["events"]
+            assert (event["type"], event["kind"]) == ("a2ui", "todo")
+            return {message["version"] for message in event["messages"]}
+
+        url = f"/api/v1/bots/{bot}/transcript"
+        assert versions((await http.get(url)).json()) == {"v0.9.1"}
+        assert versions((await http.get(url, headers={"A2UI-Version": "1.0"})).json()) == {"1.0"}
+        assert versions((await http.get(url, headers={"A2UI-Version": "2.0"})).json()) == {"v0.9.1"}
+    finally:
+        await db.q().execute("DELETE FROM users WHERE id = $1", user)

@@ -1,0 +1,53 @@
+{
+  "type": "a2ui",
+  "kind": "plan",
+  "surfaceId": "plan:feedback:00000000-0000-4000-8000-00000000a001",
+  "messages": [
+    {
+      "version": "1.0",
+      "createSurface": {
+        "surfaceId": "plan:feedback:00000000-0000-4000-8000-00000000a001",
+        "catalogId": "https://push.app/a2ui/catalogs/push/v1/catalog.json"
+      }
+    },
+    {
+      "version": "1.0",
+      "updateComponents": {
+        "surfaceId": "plan:feedback:00000000-0000-4000-8000-00000000a001",
+        "components": [
+          {
+            "id": "root",
+            "component": "PushPlan",
+            "title": "고칠 점",
+            "rows": [
+              {
+                "tag": "성과",
+                "tone": "accent",
+                "label": "성과가 숫자로 없어요",
+                "note": "트래픽 수치를 넣어요"
+              },
+              {
+                "tag": "도메인",
+                "tone": "accent",
+                "label": "도메인 경험이 약해요",
+                "note": "결제 도메인을 강조해요"
+              }
+            ],
+            "caption": "2개"
+          }
+        ]
+      }
+    },
+    {
+      "version": "1.0",
+      "updateDataModel": {
+        "surfaceId": "plan:feedback:00000000-0000-4000-8000-00000000a001",
+        "path": "/",
+        "value": {}
+      }
+    }
+  ],
+  "seq": 1,
+  "at": "2026-11-23T00:00:00.000000Z",
+  "turn": "00000000-0000-4000-8000-00000000a001"
+}
