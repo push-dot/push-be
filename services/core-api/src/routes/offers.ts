@@ -1,8 +1,12 @@
 import { isUndefinedColumn, one, query } from "../db.ts";
+import type { QueryResult } from "../db.ts";
 import { HttpError, data, fieldError, noContent, pageBody, requireUuid } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 import { notFound, readObject, textOf, countWhere, person, offerDto, OFFER_COLS, OFFER_FROM, notify } from "./recruiting-shared.ts";
+
+type Row = QueryResult["rows"][number];
+type Body = Awaited<ReturnType<typeof readObject>>;
 
 // Mirrors the block check of POST /me/offers/{id}/messages: the other party blocked the caller.
 const offerSelect = (user: string): string => "SELECT oa.archived_at, " + OFFER_COLS
@@ -13,11 +17,11 @@ const withArchive = (user: string): string => " LEFT JOIN offer_archives oa ON o
 
 async function listOffers(ctx: Ctx): Promise<Response> {
   const box = ctx.url.searchParams.get("box");
-  if (box !== "received" && box !== "sent") throw fieldError("box", "must be received or sent");
+  if (box !== "received" && box !== "sent") {throw fieldError("box", "must be received or sent");}
   const archived = ctx.url.searchParams.get("archived");
-  if (archived !== null && archived !== "0" && archived !== "1") throw fieldError("archived", "must be 0 or 1");
+  if (archived !== null && archived !== "0" && archived !== "1") {throw fieldError("archived", "must be 0 or 1");}
   const page = pageOf(ctx.url);
-  const params: unknown[] = [ctx.user.id];
+  const params: Array<unknown> = [ctx.user.id];
   const mine = box === "received" ? "o.profile_user_id" : "o.sender_id";
   const other = box === "received" ? "o.sender_id" : "o.profile_user_id";
   let sql = offerSelect("$1") + withArchive("$1") + ` WHERE ${mine} = $1 AND oa.offer_id IS ${archived === "1" ? "NOT NULL" : "NULL"}`
@@ -35,10 +39,10 @@ async function listOffers(ctx: Ctx): Promise<Response> {
   return pageBody(paged.items.map((row) => row.item), paged.nextCursor, paged.hasMore, ctx.rid, total);
 }
 
-async function offerFor(ctx: Ctx, idRaw: string): Promise<Record<string, unknown>> {
+async function offerFor(ctx: Ctx, idRaw: string): Promise<Row> {
   const id = requireUuid(idRaw, "id");
   const row = await one(ctx.deps.query, offerSelect("$2") + withArchive("$2") + " WHERE o.id = $1 AND (o.sender_id = $2 OR o.profile_user_id = $2)", [id, ctx.user.id]);
-  if (!row) throw notFound();
+  if (!row) {throw notFound();}
   return row;
 }
 
@@ -55,25 +59,25 @@ async function getOffer(ctx: Ctx, idRaw: string): Promise<Response> {
 
 async function decideOffer(ctx: Ctx, idRaw: string, status: "ACCEPTED" | "DECLINED"): Promise<Response> {
   const row = await offerFor(ctx, idRaw);
-  if (String(row.profile_user_id) !== ctx.user.id) throw new HttpError(403, "FORBIDDEN", "only the recipient can respond");
+  if (String(row.profile_user_id) !== ctx.user.id) {throw new HttpError(403, "FORBIDDEN", "only the recipient can respond");}
   const current = String(row.status);
-  if (current !== "SENT" && current !== "READ") throw new HttpError(409, "CONFLICT", "offer is already closed");
-  const body: Record<string, unknown> = await readObject(ctx.request).catch((err: unknown) => {
-    if (err instanceof HttpError && err.message === "request body required") return {};
-    throw err;
+  if (current !== "SENT" && current !== "READ") {throw new HttpError(409, "CONFLICT", "offer is already closed");}
+  const body: Body = await readObject(ctx.request).catch((error: unknown) => {
+    if (error instanceof HttpError && error.message === "request body required") {return {};}
+    throw error;
   });
   let reply = "";
-  if (status === "ACCEPTED" && body.reply != null) reply = textOf(body.reply, "reply", 1, 2000);
+  if (status === "ACCEPTED" && (body.reply !== null && body.reply !== undefined)) {reply = textOf(body.reply, "reply", 1, 2000);}
   const now = ctx.now.toISOString();
   const guard = " WHERE id = $1 AND status IN ('SENT', 'READ') RETURNING id";
-  let decided: Record<string, unknown> | null;
+  let decided: Row | null;
   try {
     decided = await one(ctx.deps.query, "UPDATE offers SET status = $2, responded_at = $3" + guard, [row.id, status, now]);
-  } catch (err) {
-    if (!isUndefinedColumn(err)) throw err;
+  } catch (error) {
+    if (!isUndefinedColumn(error)) {throw error;}
     decided = await one(ctx.deps.query, "UPDATE offers SET status = $2" + guard, [row.id, status]);
   }
-  if (!decided) throw new HttpError(409, "CONFLICT", "offer is already closed");
+  if (!decided) {throw new HttpError(409, "CONFLICT", "offer is already closed");}
   if (reply) {
     await query(ctx.deps.query,
       "INSERT INTO offer_messages (id, offer_id, sender_id, body, created_at) VALUES ($1,$2,$3,$4,$5)",
@@ -101,11 +105,11 @@ async function archiveOffer(ctx: Ctx, idRaw: string, archive: boolean): Promise<
 
 async function reportOffer(ctx: Ctx, idRaw: string): Promise<Response> {
   const offer = await offerFor(ctx, idRaw);
-  const body: Record<string, unknown> = await readObject(ctx.request).catch((err: unknown) => {
-    if (err instanceof HttpError && err.message === "request body required") return {};
-    throw err;
+  const body: Body = await readObject(ctx.request).catch((error: unknown) => {
+    if (error instanceof HttpError && error.message === "request body required") {return {};}
+    throw error;
   });
-  const reason = body.reason == null ? null : textOf(body.reason, "reason", 1, 500);
+  const reason = (body.reason === null || body.reason === undefined) ? null : textOf(body.reason, "reason", 1, 500);
   const reported = String(offer.sender_id) === ctx.user.id ? offer.profile_user_id : offer.sender_id;
   await query(ctx.deps.query,
     "INSERT INTO offer_reports (id, reporter_id, reported_user_id, offer_id, reason, created_at) VALUES ($1,$2,$3,$4,$5,$6)",
@@ -116,7 +120,7 @@ async function reportOffer(ctx: Ctx, idRaw: string): Promise<Response> {
 async function listOfferMessages(ctx: Ctx, idRaw: string): Promise<Response> {
   const offer = await offerFor(ctx, idRaw);
   const page = pageOf(ctx.url);
-  const params: unknown[] = [offer.id];
+  const params: Array<unknown> = [offer.id];
   let sql = `SELECT m.id, m.offer_id, m.sender_id, u.display_name AS sender_name, m.body, m.created_at
     FROM offer_messages m JOIN users u ON u.id = m.sender_id WHERE m.offer_id = $1`;
   if (page.cursor) {
@@ -143,10 +147,10 @@ async function listOfferMessages(ctx: Ctx, idRaw: string): Promise<Response> {
 
 async function postOfferMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   const offer = await offerFor(ctx, idRaw);
-  if (String(offer.status) !== "ACCEPTED") throw new HttpError(409, "CONFLICT", "offer is not accepted");
+  if (String(offer.status) !== "ACCEPTED") {throw new HttpError(409, "CONFLICT", "offer is not accepted");}
   const other = String(offer.sender_id) === ctx.user.id ? String(offer.profile_user_id) : String(offer.sender_id);
   const blocked = await one(ctx.deps.query, "SELECT 1 AS blocked FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2", [other, ctx.user.id]);
-  if (blocked) throw new HttpError(403, "BLOCKED", "this user is not accepting messages from you");
+  if (blocked) {throw new HttpError(403, "BLOCKED", "this user is not accepting messages from you");}
   const body = await readObject(ctx.request);
   const text = textOf(body.body, "body", 1, 2000);
   const id = crypto.randomUUID();
@@ -162,19 +166,19 @@ async function postOfferMessage(ctx: Ctx, idRaw: string): Promise<Response> {
 
 export const dispatchOffers = async (ctx: Ctx, path: string): Promise<Response | null> => {
   const method = ctx.request.method;
-  if (path === "/api/v1/me/offers" && method === "GET") return listOffers(ctx);
+  if (path === "/api/v1/me/offers" && method === "GET") {return listOffers(ctx);}
   const messages = path.match(/^\/api\/v1\/me\/offers\/([^/]+)\/messages$/);
-  if (messages && method === "GET") return listOfferMessages(ctx, messages[1]);
-  if (messages && method === "POST") return postOfferMessage(ctx, messages[1]);
+  if (messages && method === "GET") {return listOfferMessages(ctx, messages[1]);}
+  if (messages && method === "POST") {return postOfferMessage(ctx, messages[1]);}
   const accept = path.match(/^\/api\/v1\/me\/offers\/([^/]+)\/accept$/);
-  if (accept && method === "POST") return decideOffer(ctx, accept[1], "ACCEPTED");
+  if (accept && method === "POST") {return decideOffer(ctx, accept[1], "ACCEPTED");}
   const decline = path.match(/^\/api\/v1\/me\/offers\/([^/]+)\/decline$/);
-  if (decline && method === "POST") return decideOffer(ctx, decline[1], "DECLINED");
+  if (decline && method === "POST") {return decideOffer(ctx, decline[1], "DECLINED");}
   const archive = path.match(/^\/api\/v1\/me\/offers\/([^/]+)\/(archive|unarchive)$/);
-  if (archive && method === "POST") return archiveOffer(ctx, archive[1], archive[2] === "archive");
+  if (archive && method === "POST") {return archiveOffer(ctx, archive[1], archive[2] === "archive");}
   const report = path.match(/^\/api\/v1\/me\/offers\/([^/]+)\/report$/);
-  if (report && method === "POST") return reportOffer(ctx, report[1]);
+  if (report && method === "POST") {return reportOffer(ctx, report[1]);}
   const offerId = path.match(/^\/api\/v1\/me\/offers\/([^/]+)$/);
-  if (offerId && method === "GET") return getOffer(ctx, offerId[1]);
+  if (offerId && method === "GET") {return getOffer(ctx, offerId[1]);}
   return null;
 };

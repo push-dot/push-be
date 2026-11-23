@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
@@ -14,7 +15,9 @@ const SECRET = "internal-secret";
 
 const env = (): CoreEnv => ({ APP_ENV: "production", INTERNAL_API_SECRET: SECRET });
 const deps = (query: Deps["query"]): Deps => ({ query, now: () => new Date(NOW) });
-const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
+type Row = Awaited<ReturnType<Deps["query"]>>["rows"][number];
+const noRows: Array<Row> = [];
+const empty = { rows: noRows, rowCount: 0 };
 
 const userRow = () => ({
   id: USER, display_name: "Ada", locale: "ko", plan: "PRO", subscription_status: "NONE",
@@ -22,14 +25,14 @@ const userRow = () => ({
   email: "ada@push.app", provider: "email", company_id: COMPANY, company_role: "member",
 });
 
-const queryFor = (memberOf: string | null) => async (sql: string, params: unknown[] = []) => {
-  if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+const queryFor = (memberOf: string | null) => async (sql: string, params: Array<unknown> = []) => {
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
   if (sql.includes("SELECT 1") && sql.includes("company_members")) {
-    return memberOf != null && params[0] === USER && params[1] === memberOf
+    return memberOf !== null && memberOf !== undefined && params[0] === USER && params[1] === memberOf
       ? { rows: [{ ok: 1 }], rowCount: 1 }
       : empty;
   }
-  if (sql.includes("FROM users") && sql.includes("display_name")) return { rows: [userRow()], rowCount: 1 };
+  if (sql.includes("FROM users") && sql.includes("display_name")) {return { rows: [userRow()], rowCount: 1 };}
   return empty;
 };
 
@@ -51,10 +54,12 @@ test("act-as cannot change another company's applicant stage", async () => {
   resetLimits();
   const other = await handle(stageChange(OTHER), env(), deps(queryFor(COMPANY)));
   assert.equal(other.status, 403);
-  assert.equal((await other.json() as { error: { code: string } }).error.code, "FORBIDDEN");
+  const otherBody: { error: { code: string } } = await other.json();
+  assert.equal(otherBody.error.code, "FORBIDDEN");
 
   resetLimits();
   const gone = await handle(stageChange(COMPANY), env(), deps(queryFor(null)));
   assert.equal(gone.status, 403);
-  assert.equal((await gone.json() as { error: { code: string } }).error.code, "FORBIDDEN");
+  const goneBody: { error: { code: string } } = await gone.json();
+  assert.equal(goneBody.error.code, "FORBIDDEN");
 });

@@ -1,9 +1,9 @@
 import { boundTransaction, grantPeriod, lockOwner } from "../billing/credits.ts";
-import {
-  TOSS_PACK_CREDITS, TOSS_PRICES, TossError, chargeBillingKey, confirmPayment, issueBillingKey, type TossPayment, type TossPlan,
-} from "../billing/toss.ts";
+import { TOSS_PACK_CREDITS, TOSS_PRICES, TossError, chargeBillingKey, confirmPayment, issueBillingKey } from '../billing/toss.ts';
+import type { TossPayment, TossPlan } from '../billing/toss.ts';
 import { base64ToBytes, bytesToBase64, decryptAes, encryptAes, masterKey } from "../crypto.ts";
 import { one, query } from "../db.ts";
+import type { QueryResult } from "../db.ts";
 import { HttpError, data, noContent, uuid5Url } from "../http.ts";
 import type { Ctx } from "../types.ts";
 import {
@@ -26,31 +26,33 @@ const addMonth = (from: Date): Date => {
 };
 
 const requireAdmin = (ctx: Ctx): string => {
-  if (!ctx.env.TOSS_SECRET_KEY) throw new HttpError(503, "NOT_CONFIGURED", "billing is not configured");
-  if (ctx.user.accountType !== "EMPLOYER") throw new HttpError(403, "FORBIDDEN", "admin required");
-  if (!ctx.user.companyId) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  if (ctx.user.companyRole !== "ADMIN") throw new HttpError(403, "FORBIDDEN", "admin required");
+  if (!ctx.env.TOSS_SECRET_KEY) {throw new HttpError(503, "NOT_CONFIGURED", "billing is not configured");}
+  if (ctx.user.accountType !== "EMPLOYER") {throw new HttpError(403, "FORBIDDEN", "admin required");}
+  if (!ctx.user.companyId) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
+  if (ctx.user.companyRole !== "ADMIN") {throw new HttpError(403, "FORBIDDEN", "admin required");}
   return ctx.user.companyId;
 };
 
+const isTossPlan = (value: string): value is TossPlan => EMPLOYER_PLANS.has(value);
+
 const requirePlan = (value: unknown): TossPlan => {
-  if (typeof value !== "string" || !EMPLOYER_PLANS.has(value)) throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan", { field: "planId" });
-  return value as TossPlan;
+  if (typeof value !== "string" || !isTossPlan(value)) {throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan", { field: "planId" });}
+  return value;
 };
 
 const requireText = (value: unknown, field: string): string => {
-  if (typeof value !== "string" || value.trim() === "") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body", { field });
+  if (typeof value !== "string" || value.trim() === "") {throw new HttpError(400, "VALIDATION_ERROR", "invalid request body", { field });}
   return value;
 };
 
 const providerError = (err: unknown): HttpError => {
-  if (err instanceof HttpError) return err;
-  if (err instanceof TossError && err.status >= 400 && err.status < 500) return new HttpError(402, "PAYMENT_FAILED", "payment was declined", { code: err.code });
+  if (err instanceof HttpError) {return err;}
+  if (err instanceof TossError && err.status >= 400 && err.status < 500) {return new HttpError(402, "PAYMENT_FAILED", "payment was declined", { code: err.code });}
   return new HttpError(502, "PROVIDER_ERROR", "toss request failed");
 };
 
 const cipher = async (ctx: Ctx): Promise<CryptoKey> => {
-  if (!ctx.env.TOKEN_ENCRYPTION_KEY) throw new HttpError(503, "NOT_CONFIGURED", "token encryption is not configured");
+  if (!ctx.env.TOKEN_ENCRYPTION_KEY) {throw new HttpError(503, "NOT_CONFIGURED", "token encryption is not configured");}
   return masterKey(ctx.env.TOKEN_ENCRYPTION_KEY);
 };
 
@@ -69,7 +71,7 @@ const customerKeyOf = async (ctx: Ctx, companyId: string): Promise<string> => {
     "INSERT INTO toss_billing (company_id, customer_key, updated_at) VALUES ($1, $2, $3) ON CONFLICT (company_id) DO NOTHING",
     [companyId, crypto.randomUUID(), ctx.now.toISOString()]);
   const row = await one(ctx.deps.query, "SELECT customer_key FROM toss_billing WHERE company_id = $1", [companyId]);
-  if (!row) throw new HttpError(500, "INTERNAL", "internal error");
+  if (!row) {throw new HttpError(500, "INTERNAL", "internal error");}
   return String(row.customer_key);
 };
 
@@ -79,14 +81,14 @@ const settle = (ctx: Ctx, companyId: string, work: (tx: Ctx) => Promise<void>): 
   await work({ ...ctx, deps: { ...ctx.deps, query: q } });
 });
 
-const addOrder = (ctx: Ctx, order: { orderId: string; companyId: string; kind: "PLAN" | "TOPUP"; plan: TossPlan | null; packs: number | null; amount: number }): Promise<unknown> => query(ctx.deps.query,
+const addOrder = (ctx: Ctx, order: { orderId: string; companyId: string; kind: "PLAN" | "TOPUP"; plan: TossPlan | null; packs: number | null; amount: number }): Promise<QueryResult> => query(ctx.deps.query,
   "INSERT INTO toss_orders (order_id, company_id, kind, plan, packs, amount, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, 'PENDING', $7) ON CONFLICT (order_id) DO NOTHING",
   [order.orderId, order.companyId, order.kind, order.plan, order.packs, order.amount, ctx.now.toISOString()]);
 
-const failOrder = (ctx: Ctx, orderId: string): Promise<unknown> => query(ctx.deps.query,
+const failOrder = (ctx: Ctx, orderId: string): Promise<QueryResult> => query(ctx.deps.query,
   "UPDATE toss_orders SET status = 'FAILED' WHERE order_id = $1 AND status = 'PENDING'", [orderId]);
 
-const doneOrder = (ctx: Ctx, orderId: string, payment: TossPayment): Promise<unknown> => query(ctx.deps.query,
+const doneOrder = (ctx: Ctx, orderId: string, payment: TossPayment): Promise<QueryResult> => query(ctx.deps.query,
   "UPDATE toss_orders SET status = 'DONE', payment_key = $2, receipt_url = $3 WHERE order_id = $1",
   [orderId, payment.paymentKey, payment.receiptUrl]);
 
@@ -126,8 +128,8 @@ export const billingConfirm = async (ctx: Ctx): Promise<Response> => {
   const customerKey = requireText(body.customerKey, "customerKey");
   const plan = requirePlan(body.planId);
   const row = await one(ctx.deps.query, "SELECT customer_key FROM toss_billing WHERE company_id = $1", [companyId]);
-  if (!row) throw new HttpError(409, "INVALID_TRANSITION", "billing auth required");
-  if (String(row.customer_key) !== customerKey) throw new HttpError(403, "FORBIDDEN", "customer key mismatch");
+  if (!row) {throw new HttpError(409, "INVALID_TRANSITION", "billing auth required");}
+  if (String(row.customer_key) !== customerKey) {throw new HttpError(403, "FORBIDDEN", "customer key mismatch");}
   const amount = TOSS_PRICES[plan];
   const orderId = crypto.randomUUID();
   let payment: TossPayment;
@@ -137,9 +139,9 @@ export const billingConfirm = async (ctx: Ctx): Promise<Response> => {
     sealedKey = await seal(ctx, companyId, billingKey);
     await addOrder(ctx, { orderId, companyId, kind: "PLAN", plan, packs: null, amount });
     payment = await chargeBillingKey(ctx, { billingKey, customerKey, amount, orderId, orderName: planDescription(plan), idempotencyKey: "toss-first-" + orderId });
-  } catch (err) {
+  } catch (error) {
     await failOrder(ctx, orderId);
-    throw providerError(err);
+    throw providerError(error);
   }
   if (payment.status !== "DONE") {
     await failOrder(ctx, orderId);
@@ -168,22 +170,22 @@ export const tossTopupConfirm = async (ctx: Ctx): Promise<Response> => {
   const body = await readObject(ctx.request);
   const paymentKey = requireText(body.paymentKey, "paymentKey");
   const orderId = requireText(body.orderId, "orderId");
-  if (!UUID.test(orderId)) throw new HttpError(400, "VALIDATION_ERROR", "invalid request body", { field: "orderId" });
-  if (typeof body.amount !== "number" || !Number.isSafeInteger(body.amount)) throw new HttpError(400, "VALIDATION_ERROR", "invalid request body", { field: "amount" });
+  if (!UUID.test(orderId)) {throw new HttpError(400, "VALIDATION_ERROR", "invalid request body", { field: "orderId" });}
+  if (typeof body.amount !== "number" || !Number.isSafeInteger(body.amount)) {throw new HttpError(400, "VALIDATION_ERROR", "invalid request body", { field: "amount" });}
   const order = await one(ctx.deps.query,
     "SELECT kind, packs, amount, status, receipt_url FROM toss_orders WHERE order_id = $1 AND company_id = $2", [orderId, companyId]);
-  if (!order || order.kind !== "TOPUP") throw new HttpError(404, "NOT_FOUND", "resource not found");
-  if (Number(order.amount) !== body.amount) throw new HttpError(400, "VALIDATION_ERROR", "amount does not match the order", { field: "amount" });
+  if (!order || order.kind !== "TOPUP") {throw new HttpError(404, "NOT_FOUND", "resource not found");}
+  if (Number(order.amount) !== body.amount) {throw new HttpError(400, "VALIDATION_ERROR", "amount does not match the order", { field: "amount" });}
   const creditsAdded = Number(order.packs) * TOSS_PACK_CREDITS;
-  if (order.status === "DONE") return data(200, { creditsAdded, receiptUrl: order.receipt_url == null ? null : String(order.receipt_url) }, ctx.rid);
-  if (order.status !== "PENDING") throw new HttpError(409, "INVALID_TRANSITION", "order is closed");
+  if (order.status === "DONE") {return data(200, { creditsAdded, receiptUrl: (order.receipt_url === null || order.receipt_url === undefined) ? null : String(order.receipt_url) }, ctx.rid);}
+  if (order.status !== "PENDING") {throw new HttpError(409, "INVALID_TRANSITION", "order is closed");}
   let payment: TossPayment;
   try {
     payment = await confirmPayment(ctx, { paymentKey, orderId, amount: body.amount });
-  } catch (err) {
-    throw providerError(err);
+  } catch (error) {
+    throw providerError(error);
   }
-  if (payment.status !== "DONE") throw new HttpError(402, "PAYMENT_FAILED", "payment was declined", { code: payment.status });
+  if (payment.status !== "DONE") {throw new HttpError(402, "PAYMENT_FAILED", "payment was declined", { code: payment.status });}
   await settle(ctx, companyId, async (tx) => {
     await doneOrder(tx, orderId, { ...payment, paymentKey });
     await companyLedger(tx, companyId, Number(order.packs) * PACK_MICRO, orderId, {
@@ -196,7 +198,7 @@ export const tossTopupConfirm = async (ctx: Ctx): Promise<Response> => {
 export const tossCancel = async (ctx: Ctx): Promise<Response> => {
   const companyId = requireAdmin(ctx);
   const row = await one(ctx.deps.query, "SELECT plan FROM toss_billing WHERE company_id = $1", [companyId]);
-  if (!row || row.plan == null) throw new HttpError(409, "INVALID_TRANSITION", "no active subscription");
+  if (!row || (row.plan === null || row.plan === undefined)) {throw new HttpError(409, "INVALID_TRANSITION", "no active subscription");}
   await query(ctx.deps.query,
     "UPDATE toss_billing SET canceled_at = COALESCE(canceled_at, $2), updated_at = $2 WHERE company_id = $1", [companyId, ctx.now.toISOString()]);
   return noContent(ctx.rid);
@@ -215,7 +217,7 @@ const renewOne = async (ctx: Ctx, due: Due): Promise<"renewed" | "failed" | "dro
   const orderId = await uuid5Url(idempotencyKey);
   const amount = TOSS_PRICES[plan];
   await addOrder(ctx, { orderId, companyId, kind: "PLAN", plan, packs: null, amount });
-  let payment: TossPayment | null = null;
+  let payment: TossPayment | null;
   try {
     const billingKey = await unseal(ctx, companyId, due.sealedKey);
     payment = await chargeBillingKey(ctx, { billingKey, customerKey: due.customerKey, amount, orderId, orderName: planDescription(plan), idempotencyKey });
@@ -239,7 +241,7 @@ const renewOne = async (ctx: Ctx, due: Due): Promise<"renewed" | "failed" | "dro
 
 export const runTossRenewals = async (ctx: Ctx): Promise<Response> => {
   await requireJob(ctx);
-  if (!ctx.env.TOSS_SECRET_KEY) return data(200, { renewed: 0, failed: 0, dropped: 0 }, ctx.rid);
+  if (!ctx.env.TOSS_SECRET_KEY) {return data(200, { renewed: 0, failed: 0, dropped: 0 }, ctx.rid);}
   const rows = await query(ctx.deps.query,
     "SELECT company_id, customer_key, billing_key_enc, plan, period_end, canceled_at, failures FROM toss_billing WHERE next_charge_at <= $1 AND plan IS NOT NULL ORDER BY next_charge_at LIMIT " + RENEW_BATCH,
     [ctx.now.toISOString()]);
@@ -249,10 +251,10 @@ export const runTossRenewals = async (ctx: Ctx): Promise<Response> => {
       const outcome = await renewOne(ctx, {
         companyId: String(row.company_id),
         customerKey: String(row.customer_key),
-        sealedKey: row.billing_key_enc == null ? null : String(row.billing_key_enc),
+        sealedKey: (row.billing_key_enc === null || row.billing_key_enc === undefined) ? null : String(row.billing_key_enc),
         plan: employerPlanOf(row.plan),
         periodEnd: new Date(String(row.period_end)),
-        canceled: row.canceled_at != null,
+        canceled: (row.canceled_at !== null && row.canceled_at !== undefined),
         failures: Number(row.failures),
       });
       tally[outcome] += 1;
@@ -264,11 +266,11 @@ export const runTossRenewals = async (ctx: Ctx): Promise<Response> => {
 };
 
 export const dispatchToss = async (ctx: Ctx, path: string): Promise<Response | null> => {
-  if (ctx.request.method !== "POST") return null;
-  if (path === "/api/v1/billing/toss/billing-auth") return billingAuth(ctx);
-  if (path === "/api/v1/billing/toss/billing-confirm") return billingConfirm(ctx);
-  if (path === "/api/v1/billing/toss/topup") return tossTopup(ctx);
-  if (path === "/api/v1/billing/toss/topup-confirm") return tossTopupConfirm(ctx);
-  if (path === "/api/v1/billing/toss/cancel") return tossCancel(ctx);
+  if (ctx.request.method !== "POST") {return null;}
+  if (path === "/api/v1/billing/toss/billing-auth") {return billingAuth(ctx);}
+  if (path === "/api/v1/billing/toss/billing-confirm") {return billingConfirm(ctx);}
+  if (path === "/api/v1/billing/toss/topup") {return tossTopup(ctx);}
+  if (path === "/api/v1/billing/toss/topup-confirm") {return tossTopupConfirm(ctx);}
+  if (path === "/api/v1/billing/toss/cancel") {return tossCancel(ctx);}
   return null;
 };

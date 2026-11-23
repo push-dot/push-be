@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { uuid5Url } from "../src/http.ts";
 import { resetLimits } from "../src/ratelimit.ts";
+
+const jsonOf = async <T>(res: Response): Promise<T> => {
+  const value: T = await res.json();
+  return value;
+};
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const CONV = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
@@ -12,22 +18,24 @@ const NOW = new Date("2026-10-22T00:00:00Z");
 const SECRET = "internal-secret";
 const OPTIONS = JSON.stringify([{ id: "approve", label: "실행" }, { id: "reject", label: "취소" }]);
 
-type Row = Record<string, unknown>;
+type Row = Awaited<ReturnType<Deps["query"]>>["rows"][number];
+
+const rows = (list: Array<Row>) => ({ rows: list, rowCount: list.length });
 
 const env = (): CoreEnv => ({ APP_ENV: "production", AI_ORIGIN: "https://ai.example.test", INTERNAL_API_SECRET: SECRET });
 
 const fakeDb = (approval: Row | null) => {
-  const sqls: string[] = [];
-  const state = { approval: approval ? { ...approval } : null, jobs: 0, payloads: [] as Record<string, unknown>[] };
+  const sqls: Array<string> = [];
+  const payloads: Array<Row> = [];
+  const state = { approval: approval ? { ...approval } : null, jobs: 0, payloads };
   const query: Deps["query"] = async (sql, params = []) => {
     sqls.push(sql);
-    const rows = (list: Row[]) => ({ rows: list, rowCount: list.length });
     if (sql.includes("access_tokens")) {
       return rows([{ id: USER, display_name: "Ada", locale: "ko", plan: "PRO", created_at: "2026-01-02T03:04:05Z", token_expires_at: "2099-01-01T00:00:00Z" }]);
     }
-    if (sql.includes("rate_limits")) return rows([{ hits: 1 }]);
-    if (sql.includes("user_consents")) return rows([{ reference_data: true }]);
-    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return rows([{ id: "idem" }]);
+    if (sql.includes("rate_limits")) {return rows([{ hits: 1 }]);}
+    if (sql.includes("user_consents")) {return rows([{ reference_data: true }]);}
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {return rows([{ id: "idem" }]);}
     if (sql.includes("FROM users") && sql.includes("display_name")) {
       return rows([{ id: USER, display_name: "Ada", locale: "ko", plan: "PRO", created_at: NOW.toISOString() }]);
     }
@@ -35,12 +43,12 @@ const fakeDb = (approval: Row | null) => {
       return rows(state.approval && params[0] === APPROVAL && params[1] === CONV && params[2] === USER ? [state.approval] : []);
     }
     if (sql.startsWith("UPDATE approvals SET status = $1")) {
-      if (!state.approval || state.approval.status !== "PENDING") return rows([]);
-      state.approval.status = params[0];
+      if (!state.approval || state.approval.status !== "PENDING") {return rows([]);}
+      state.approval.status = String(params[0]);
       return rows([{ id: APPROVAL }]);
     }
     if (sql.startsWith("UPDATE approvals SET status = 'EXPIRED'")) {
-      if (state.approval) state.approval.status = "EXPIRED";
+      if (state.approval) {state.approval.status = "EXPIRED";}
       return rows([]);
     }
     if (sql.includes("FROM conversations c")) {
@@ -49,18 +57,18 @@ const fakeDb = (approval: Row | null) => {
     if (sql.includes("INSERT INTO chat_jobs") && !sql.includes("WITH conv")) {
       state.jobs += 1;
       state.payloads.push(JSON.parse(String(params[3])));
-      return rows([{ job_id: params[0] }]);
+      return rows([{ job_id: String(params[0]) }]);
     }
     if (sql.includes("INSERT INTO chat_jobs")) {
       state.jobs += 1;
-      return rows([{ id: params[2] }]);
+      return rows([{ id: String(params[2]) }]);
     }
     return rows([]);
   };
   return { query, sqls, state };
 };
 
-const deps = (query: Deps["query"], woke: string[] = []): Deps => ({
+const deps = (query: Deps["query"], woke: Array<string> = []): Deps => ({
   query,
   now: () => NOW,
   fetch: async (input) => {
@@ -76,7 +84,7 @@ const resolve = (optionId: string, key = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
     body: JSON.stringify({ optionId }),
   });
 
-const pending = (extra: Row = {}): Row => ({
+const pending = (extra: Row = {}) => ({
   id: APPROVAL, status: "PENDING", kind: "TOOL_ACTION", options: OPTIONS, job_id: "job-1",
   expires_at: "2026-10-23T00:00:00Z", ...extra,
 });
@@ -84,10 +92,10 @@ const pending = (extra: Row = {}): Row => ({
 test("approving a tool card queues one resume job and the second answer is 409", async () => {
   resetLimits();
   const db = fakeDb(pending());
-  const woke: string[] = [];
+  const woke: Array<string> = [];
   const res = await handle(resolve("approve"), env(), deps(db.query, woke));
   assert.equal(res.status, 202);
-  const body = await res.json() as { data: { id: string; status: string; optionId: string; jobId: string } };
+  const body = await jsonOf<{ data: { id: string; status: string; optionId: string; jobId: string } }>(res);
   assert.equal(body.data.status, "APPROVED");
   assert.equal(body.data.optionId, "approve");
   assert.match(body.data.jobId, /^[0-9a-f-]{36}$/);
@@ -100,7 +108,7 @@ test("approving a tool card queues one resume job and the second answer is 409",
   resetLimits();
   const again = await handle(resolve("approve", "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"), env(), deps(db.query));
   assert.equal(again.status, 409);
-  assert.equal((await again.json() as { error: { code: string } }).error.code, "APPROVAL_ALREADY_RESOLVED");
+  assert.equal((await jsonOf<{ error: { code: string } }>(again)).error.code, "APPROVAL_ALREADY_RESOLVED");
   assert.equal(db.state.jobs, 1);
 });
 
@@ -109,7 +117,7 @@ test("an expired card is 410 and is marked EXPIRED", async () => {
   const db = fakeDb(pending({ expires_at: "2026-10-21T00:00:00Z" }));
   const res = await handle(resolve("approve"), env(), deps(db.query));
   assert.equal(res.status, 410);
-  assert.equal((await res.json() as { error: { code: string } }).error.code, "APPROVAL_EXPIRED");
+  assert.equal((await jsonOf<{ error: { code: string } }>(res)).error.code, "APPROVAL_EXPIRED");
   assert.equal(db.state.approval?.status, "EXPIRED");
   assert.equal(db.state.jobs, 0);
 });
@@ -119,7 +127,7 @@ test("rejecting a tool card still resumes so the model hears the rejection", asy
   const db = fakeDb(pending());
   const res = await handle(resolve("reject"), env(), deps(db.query));
   assert.equal(res.status, 202);
-  assert.equal((await res.json() as { data: { status: string } }).data.status, "REJECTED");
+  assert.equal((await jsonOf<{ data: { status: string } }>(res)).data.status, "REJECTED");
   assert.equal(db.state.jobs, 1);
 });
 
@@ -132,14 +140,14 @@ test("a jobless document card does not enqueue, and someone else's card is 404",
   const skipped = fakeDb(legacy());
   const skip = await handle(resolve("skip"), env(), deps(skipped.query));
   assert.equal(skip.status, 200);
-  assert.deepEqual((await skip.json() as { data: unknown }).data, { id: APPROVAL, status: "APPROVED", optionId: "skip" });
+  assert.deepEqual((await jsonOf<{ data: unknown }>(skip)).data, { id: APPROVAL, status: "APPROVED", optionId: "skip" });
   assert.equal(skipped.state.jobs, 0);
 
   resetLimits();
   const applied = fakeDb(legacy());
   const apply = await handle(resolve("apply"), env(), deps(applied.query));
   assert.equal(apply.status, 200);
-  assert.deepEqual((await apply.json() as { data: unknown }).data, { id: APPROVAL, status: "APPROVED", optionId: "apply" });
+  assert.deepEqual((await jsonOf<{ data: unknown }>(apply)).data, { id: APPROVAL, status: "APPROVED", optionId: "apply" });
   assert.equal(applied.state.jobs, 0);
 
   resetLimits();
@@ -165,12 +173,13 @@ test("a new message rejects waiting tool cards but not resume or employer gates"
   assert.match(insert, /kind NOT IN \('RESUME_GATE', 'EMPLOYER_GATE'\)/);
 });
 
+const request = (headers: Record<string, string>): Request => new Request(`https://core.example/api/v1/conversations/${CONV}/resume-jobs`, {
+  method: "POST",
+  headers: { "content-type": "application/json", "idempotency-key": "dddddddd-bbbb-4ccc-8ddd-eeeeeeeeeeee", ...headers },
+  body: JSON.stringify({ resume: { gate: "analyze", auto: true } }),
+});
+
 test("the resume-jobs path is gone", async () => {
-  const request = (headers: Record<string, string>): Request => new Request(`https://core.example/api/v1/conversations/${CONV}/resume-jobs`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "idempotency-key": "dddddddd-bbbb-4ccc-8ddd-eeeeeeeeeeee", ...headers },
-    body: JSON.stringify({ resume: { gate: "analyze", auto: true } }),
-  });
   resetLimits();
   const db = fakeDb(null);
   const acted = await handle(request({ "x-push-internal-secret": SECRET, "x-push-act-as": USER }), env(), deps(db.query));
@@ -187,9 +196,9 @@ test("optionIds answers every selected id and stores the first", async () => {
   const db = fakeDb(pending({
     options: JSON.stringify([{ id: "b", label: "B" }, { id: "a", label: "A" }]),
   }));
-  const keys: unknown[] = [];
+  const keys: Array<unknown> = [];
   const query: Deps["query"] = async (sql, params = []) => {
-    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) keys.push(params[3]);
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {keys.push(params[3]);}
     return db.query(sql, params);
   };
   const res = await handle(new Request(`https://core.example/api/v1/conversations/${CONV}/approvals/${APPROVAL}`, {
@@ -198,7 +207,7 @@ test("optionIds answers every selected id and stores the first", async () => {
     body: JSON.stringify({ optionIds: ["b", "a"] }),
   }), env(), deps(query));
   assert.equal(res.status, 202);
-  const body = await res.json() as { data: { optionId: string; optionIds: string[]; jobId: string } };
+  const body = await jsonOf<{ data: { optionId: string; optionIds: Array<string>; jobId: string } }>(res);
   assert.equal(body.data.optionId, "b");
   assert.deepEqual(body.data.optionIds, ["b", "a"]);
   assert.match(body.data.jobId, /^[0-9a-f-]{36}$/);
@@ -219,16 +228,16 @@ test("an unknown id in optionIds is rejected", async () => {
     body: JSON.stringify({ optionId: "approve", optionIds: ["approve", "nope"] }),
   }), env(), deps(fakeDb(pending()).query));
   assert.equal(res.status, 400);
-  const body = await res.json() as { error: { details: { field?: string } | null } };
+  const body = await jsonOf<{ error: { details: { field?: string } | null } }>(res);
   assert.equal(body.error.details?.field, "optionIds");
 });
 
 test("an answer without Idempotency-Key uses a key derived from the card and option", async () => {
   resetLimits();
   const db = fakeDb(pending());
-  const keys: unknown[] = [];
+  const keys: Array<unknown> = [];
   const query: Deps["query"] = async (sql, params = []) => {
-    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) keys.push(params[3]);
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {keys.push(params[3]);}
     return db.query(sql, params);
   };
   const res = await handle(new Request(`https://core.example/api/v1/conversations/${CONV}/approvals/${APPROVAL}`, {
@@ -251,15 +260,15 @@ test("an answer without Idempotency-Key uses a key derived from the card and opt
 test("with QUEUE_BACKEND=redis a resume job goes through enqueueJob with a credit hold and a dispatcher kick", async () => {
   resetLimits();
   const db = fakeDb(pending());
-  const sqls: { sql: string; params: unknown[] }[] = [];
-  const kicked: string[] = [];
+  const sqls: Array<{ sql: string; params: Array<unknown> }> = [];
+  const kicked: Array<string> = [];
   const query: Deps["query"] = async (sql, params = []) => {
     sqls.push({ sql, params });
     if (sql.includes("FROM conversations c")) {
       return { rows: [{ company_id: null, company_plan: null, user_plan: "PRO", last: { ai: { provider: "OPENAI" }, access_mode: "AUTO", text: "지원해줘" } }], rowCount: 1 };
     }
-    if (sql.includes("balance_after")) return { rows: [{ balance_after: "100000000" }], rowCount: 1 };
-    if (sql.includes("INSERT INTO ai_jobs")) return { rows: [{ id: params[0], queue: params[2] }], rowCount: 1 };
+    if (sql.includes("balance_after")) {return { rows: [{ balance_after: "100000000" }], rowCount: 1 };}
+    if (sql.includes("INSERT INTO ai_jobs")) {return { rows: [{ id: String(params[0]), queue: String(params[2]) }], rowCount: 1 };}
     return db.query(sql, params);
   };
   const res = await handle(resolve("approve"), { ...env(), QUEUE_BACKEND: "redis", DISPATCH_ORIGIN: "https://dispatch.test", DISPATCH_SECRET: "d" }, {
@@ -290,8 +299,8 @@ test("with QUEUE_BACKEND=redis a new message still rejects waiting tool cards", 
     if (sql.includes("FROM conversations c LEFT JOIN companies")) {
       return { rows: [{ id: CONV, company_id: null, company_plan: null, user_plan: "PRO" }], rowCount: 1 };
     }
-    if (sql.includes("balance_after")) return { rows: [{ balance_after: "100000000" }], rowCount: 1 };
-    if (sql.includes("INSERT INTO ai_jobs")) return { rows: [{ id: params[0], queue: params[2] }], rowCount: 1 };
+    if (sql.includes("balance_after")) {return { rows: [{ balance_after: "100000000" }], rowCount: 1 };}
+    if (sql.includes("INSERT INTO ai_jobs")) {return { rows: [{ id: String(params[0]), queue: String(params[2]) }], rowCount: 1 };}
     if (sql.startsWith("WITH conv")) {
       db.sqls.push(sql);
       return { rows: [{ id: CONV }], rowCount: 1 };
@@ -324,7 +333,7 @@ test("accepts submit with section ids stored in options", async () => {
     body: JSON.stringify({ optionId: "submit", optionIds: ["submit", "resume", "concise"] }),
   }), env(), deps(db.query));
   assert.equal(res.status, 202);
-  const body = await res.json() as { data: { status: string; optionId: string; optionIds: string[]; jobId: string } };
+  const body = await jsonOf<{ data: { status: string; optionId: string; optionIds: Array<string>; jobId: string } }>(res);
   assert.equal(body.data.status, "APPROVED");
   assert.equal(body.data.optionId, "submit");
   assert.deepEqual(body.data.optionIds, ["submit", "resume", "concise"]);

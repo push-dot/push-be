@@ -6,15 +6,18 @@ import { readFileSync } from "node:fs";
 import { after, before, test } from "node:test";
 
 import { CANCEL_SQL } from "../../gateway/src/routes/conversations.ts";
-import { botsPg, type BotsPg, type Person } from "../test-support/bots-pg.ts";
+import { botsPg } from '../test-support/bots-pg.ts';
+import type { BotsPg, Person } from '../test-support/bots-pg.ts';
 
 const URL_ = process.env.BILLING_PG_URL;
 const SKIP = "set BILLING_PG_URL to a migrated Postgres";
 const AI = new URL("../../ai/src/app/", import.meta.url);
 const NOW = "2026-11-12T03:00:00Z";
 
+type PgRow = Awaited<ReturnType<BotsPg["pg"]["query"]>>["rows"][number];
+
 let db: BotsPg | undefined;
-before(async () => { if (URL_) db = await botsPg(URL_); });
+before(async () => { if (URL_) {db = await botsPg(URL_);} });
 after(async () => { await db?.close(); });
 
 /** The first UPDATE of a Python method, with its adjacent string literals joined as Python joins them. */
@@ -37,18 +40,18 @@ type Ending = {
   /** The statement, by the name migration 0055 lists it under. */
   name: string;
   sql: () => string;
-  params: (job: Job) => unknown[];
+  params: (job: Job) => Array<unknown>;
   /** Attempts already used. A job has three. */
   attempts?: number;
   /** A document flow is under way in the thread. */
   flow?: boolean;
   /** Events the run wrote before the statement. */
-  wrote?: Event[];
+  wrote?: Array<Event>;
   status: string;
-  terminal: Event[];
+  terminal: Array<Event>;
 };
 
-const ENDINGS: Ending[] = [
+const ENDINGS: Array<Ending> = [
   {
     name: "worker_finish after a turn that returned before the graph",
     sql: () => statementOf(STORE, "worker_finish"), params: (job) => [job.id, "{}", NOW],
@@ -114,7 +117,7 @@ const seedJob = async (type = "chat", ending: Partial<Ending> = {}): Promise<Job
   return { id, thread, user };
 };
 
-const endOf = async (job: Job): Promise<{ status: string; terminal: Event[] }> => {
+const endOf = async (job: Job): Promise<{ status: string; terminal: Array<Event> }> => {
   const status = await db!.pg.query("SELECT status FROM ai_jobs WHERE id = $1::uuid", [job.id]);
   const events = await db!.pg.query(
     "SELECT type, payload FROM chat_events WHERE job_id = $1::uuid AND type IN ('done', 'error', 'cancelled') ORDER BY id", [job.id]);
@@ -123,7 +126,7 @@ const endOf = async (job: Job): Promise<{ status: string; terminal: Event[] }> =
 
 for (const ending of ENDINGS) {
   test(`${ending.name} leaves ${ending.terminal.length === 0 ? "no terminal event" : `one ${ending.terminal[0][0]}`}`, async (t) => {
-    if (!db) return t.skip(SKIP);
+    if (!db) {return t.skip(SKIP);}
     const job = await seedJob("chat", ending);
     await db.pg.query(ending.sql(), ending.params(job));
     assert.deepEqual(await endOf(job), { status: ending.status, terminal: ending.terminal });
@@ -131,17 +134,17 @@ for (const ending of ENDINGS) {
 }
 
 test("the gateway's cancel answers with the resumable its event carries", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   for (const flow of [true, false]) {
     const job = await seedJob("chat", { flow });
-    const row: Record<string, unknown> = (await db.pg.query(CANCEL_SQL, [job.thread, job.user.id, null])).rows[0];
+    const row: PgRow = (await db.pg.query(CANCEL_SQL, [job.thread, job.user.id, null])).rows[0];
     assert.deepEqual([row.job_id, row.resumable], [job.id, flow]);
     assert.deepEqual((await endOf(job)).terminal, [["cancelled", { resumable: flow }]]);
   }
 });
 
 test("a job that ends twice, a heartbeat, a retry, and a job that is not a chat write no second event", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const { pg } = db;
   const finish = statementOf(STORE, "worker_finish");
 

@@ -10,7 +10,7 @@ export const isBotThreadProbe = (sql: string): boolean => sql.includes("bot_id I
  * no conversation is a thread. And every chat_events row has a created_at, which a frame sends as `at`.
  */
 export const complete = (query: Query): Query => async (sql, params) => {
-  if (isBotThreadProbe(sql)) return [];
+  if (isBotThreadProbe(sql)) {return [];}
   const rows = await query(sql, params);
   return sql.includes("FROM chat_events") ? rows.map((row) => ({ created_at: STORED, ...row })) : rows;
 };

@@ -5,20 +5,23 @@ import { after, before, test } from "node:test";
 
 import { sha256Hex } from "../src/http.ts";
 import type { Query } from "../src/db.ts";
-import { handle, type CoreEnv } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
-import { livePg, type LivePg } from "./parity/pg.ts";
+import { parseJson } from "../test-support/recorder.ts";
+import { livePg } from './parity/pg.ts';
+import type { LivePg } from './parity/pg.ts';
 
 const URL_ = process.env.BILLING_PG_URL;
 const env: CoreEnv = { APP_ENV: "production" };
 
 let pg: LivePg | undefined;
-before(async () => { if (URL_) pg = await livePg(URL_); });
+before(async () => { if (URL_) {pg = await livePg(URL_);} });
 after(async () => { await pg?.close(); });
 
 const dbFor = (userId: string): Query => async (sql, params = []) => {
-  if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-  if (sql.includes("idempotency_keys")) return sql.includes("INSERT") ? { rows: [{ id: "idem" }], rowCount: 1 } : { rows: [], rowCount: 0 };
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+  if (sql.includes("idempotency_keys")) {return sql.includes("INSERT") ? { rows: [{ id: "idem" }], rowCount: 1 } : { rows: [], rowCount: 0 };}
   if (sql.includes("access_tokens")) {
     return { rows: [{
       id: userId, display_name: "이민아", locale: "ko", plan: "FREE", subscription_status: "NONE",
@@ -29,18 +32,20 @@ const dbFor = (userId: string): Query => async (sql, params = []) => {
   return pg!.query(sql, params);
 };
 
-const call = async (userId: string, method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> => {
+type Answer = { data: Array<{ id: string }>; error?: { code: string } };
+
+const call = async (userId: string, method: string, path: string, body?: unknown): Promise<{ status: number; body: Answer | null }> => {
   resetLimits();
-  const headers: Record<string, string> = { authorization: "Bearer archived-test", "idempotency-key": crypto.randomUUID() };
-  if (body !== undefined) headers["content-type"] = "application/json";
+  const headers = new Headers({ authorization: "Bearer archived-test", "idempotency-key": crypto.randomUUID() });
+  if (body !== undefined) {headers.set("content-type", "application/json");}
   const res = await handle(new Request("https://core.example" + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }),
     env, { query: dbFor(userId), now: () => new Date("2026-11-10T00:00:00Z") });
   const text = await res.text();
-  return { status: res.status, body: text ? JSON.parse(text) : null };
+  return { status: res.status, body: text ? parseJson<Answer>(text) : null };
 };
 
 test("archiving a document removes it from the document list, the library, the apply picker and its share link", async (t) => {
-  if (!pg) return t.skip("set BILLING_PG_URL to a migrated Postgres");
+  if (!pg) {return t.skip("set BILLING_PG_URL to a migrated Postgres");}
   const user = crypto.randomUUID();
   const companyId = crypto.randomUUID();
   const postingId = crypto.randomUUID();
@@ -65,7 +70,7 @@ test("archiving a document removes it from the document list, the library, the a
     [gone, await sha256Hex(token), user]);
   assert.equal((await call(user, "GET", `/api/v1/documents/shared/${token}`)).status, 200);
 
-  const ids = async (path: string): Promise<string[]> => (await call(user, "GET", path)).body.data.map((row: { id: string }) => row.id).sort();
+  const ids = async (path: string): Promise<Array<string>> => ((await call(user, "GET", path)).body?.data ?? []).map((row) => row.id).sort();
   assert.deepEqual(await ids("/api/v1/documents"), [gone, kept].sort());
   assert.deepEqual(await ids("/api/v1/sources?kind=AI"), [gone, kept].sort());
 
@@ -110,7 +115,7 @@ const seedNode = async (user: string, kind: string, id: string): Promise<void> =
 };
 
 test("archiving a document or an evidence item drops its agent search nodes", async (t) => {
-  if (!pg) return t.skip("set BILLING_PG_URL to a migrated Postgres");
+  if (!pg) {return t.skip("set BILLING_PG_URL to a migrated Postgres");}
   const user = await seedUser();
   const doc = await seedDocument(user, "DRAFT");
   const evidence = crypto.randomUUID();
@@ -126,7 +131,7 @@ test("archiving a document or an evidence item drops its agent search nodes", as
 });
 
 test("an archived document takes no share, export, base profile, conversion, fit, generation or submission draft", async (t) => {
-  if (!pg) return t.skip("set BILLING_PG_URL to a migrated Postgres");
+  if (!pg) {return t.skip("set BILLING_PG_URL to a migrated Postgres");}
   const user = await seedUser();
   const doc = await seedDocument(user, "ARCHIVED");
   const companyId = crypto.randomUUID();
@@ -136,7 +141,7 @@ test("an archived document takes no share, export, base profile, conversion, fit
     `INSERT INTO job_postings (id, company, title, job_category, career_min, location, employment_type, description, company_id)
      VALUES ($1, 'fixture', 'fixture role', 'dev', 0, 'Seoul', 'full_time', 'fixture', $2)`, [postingId, companyId]);
 
-  const attempts: [string, string, unknown][] = [
+  const attempts: Array<[string, string, unknown]> = [
     ["POST", `/api/v1/documents/${doc.id}/share`, {}],
     ["POST", `/api/v1/documents/${doc.id}/exports`, { versionId: doc.versionId, format: "PDF", rendererVersion: "1" }],
     ["POST", `/api/v1/documents/${doc.id}/base-profile`, {}],
@@ -145,7 +150,7 @@ test("an archived document takes no share, export, base profile, conversion, fit
     ["POST", `/api/v1/documents/${doc.id}/generate`, { expectedRevision: 1 }],
     ["POST", `/api/v1/applications/${doc.applicationId}/submission-drafts`, { expectedRevision: 1, mode: "MANUAL_RECORD", documentVersionIds: [doc.versionId] }],
   ];
-  const got: string[] = [];
+  const got: Array<string> = [];
   for (const [method, path, body] of attempts) {
     const res = await call(user, method, path, body);
     got.push(`${path.split("/").slice(3, 4).join("")}/${path.split("/").pop()} ${res.status} ${res.body?.error?.code ?? ""}`);
@@ -154,7 +159,7 @@ test("an archived document takes no share, export, base profile, conversion, fit
 });
 
 test("a chat message's document context must be the caller's live document", async (t) => {
-  if (!pg) return t.skip("set BILLING_PG_URL to a migrated Postgres");
+  if (!pg) {return t.skip("set BILLING_PG_URL to a migrated Postgres");}
   const [user, other] = [await seedUser(), await seedUser()];
   const conversation = crypto.randomUUID();
   await pg.query("INSERT INTO conversations (id, user_id) VALUES ($1, $2)", [conversation, user]);
@@ -163,5 +168,5 @@ test("a chat message's document context must be the caller's live document", asy
   const send = (documentId: string) => call(user, "POST", `/api/v1/conversations/${conversation}/messages`, { text: "이 서류 봐줘", context: { documentId } });
   assert.deepEqual([(await send(foreign.id)).status, (await send(archived.id)).status], [404, 409]);
   // The live document passes the document check and stops at the next gate, the agent consent.
-  assert.equal((await send(live.id)).body.error.code, "CONSENT_REQUIRED");
+  assert.equal((await send(live.id)).body?.error?.code, "CONSENT_REQUIRED");
 });

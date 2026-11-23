@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
+
+const jsonOf = <T>(res: Response): Promise<T> => res.json();
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const NOW = new Date("2026-10-18T00:00:00Z");
@@ -27,15 +30,15 @@ function paidQuery(): Deps["query"] {
         rowCount: 1,
       };
     }
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("FROM users")) return { rows: [{ plan: "PRO" }], rowCount: 1 };
-    if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
-    if (sql.includes("co.verified_at")) return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };
-    if (sql.includes("ai_usage")) return { rows: [{ spent: 0 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("FROM users")) {return { rows: [{ plan: "PRO" }], rowCount: 1 };}
+    if (sql.includes("user_consents")) {return { rows: [{ reference_data: true }], rowCount: 1 };}
+    if (sql.includes("co.verified_at")) {return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };}
+    if (sql.includes("ai_usage")) {return { rows: [{ spent: 0 }], rowCount: 1 };}
     if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {
       return { rows: [{ id: "idem" }], rowCount: 1 };
     }
-    if (sql.includes("chat_jobs")) return { rows: [{ id: "job-1" }], rowCount: 1 };
+    if (sql.includes("chat_jobs")) {return { rows: [{ id: "job-1" }], rowCount: 1 };}
     return { rows: [], rowCount: 0 };
   };
 }
@@ -74,13 +77,13 @@ test("AI_ORIGIN unset throws 500 and does not schedule", async () => {
     },
   });
   assert.equal(res.status, 500);
-  assert.equal((await res.json() as { error: { code: string } }).error.code, "NOT_CONFIGURED");
+  assert.equal((await jsonOf<{ error: { code: string } }>(res)).error.code, "NOT_CONFIGURED");
   assert.equal(calls, 0);
 });
 
 test("core wakes the VPS when AI_ORIGIN is set and still queues if the wake fails", async () => {
   resetLimits();
-  const sqls: string[] = [];
+  const sqls: Array<string> = [];
   const woke = { url: "", secret: "", internal: "", body: "" };
   const query = paidQuery();
   const wrapped: Deps["query"] = async (sql, params) => {
@@ -108,7 +111,7 @@ test("core wakes the VPS when AI_ORIGIN is set and still queues if the wake fail
   assert.equal(woke.internal, "1");
   assert.match(woke.body, /jobId/);
   assert.equal(sqls.some((sql) => sql.includes("chat_jobs")), true);
-  const op = await res.json() as { data: { status: string; result: { value: { jobId: string } }; id: string } };
+  const op = await jsonOf<{ data: { status: string; result: { value: { jobId: string } }; id: string } }>(res);
   assert.equal(op.data.status, "QUEUED");
   assert.equal(op.data.result.value.jobId, op.data.id);
 });

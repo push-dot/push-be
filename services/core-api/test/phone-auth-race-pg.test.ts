@@ -5,13 +5,16 @@ import { after, before, test } from "node:test";
 import { handle } from "../src/handler.ts";
 import { sha256Hex } from "../src/http.ts";
 import { resetLimits } from "../src/ratelimit.ts";
-import { livePg, type LivePg } from "./parity/pg.ts";
+import { livePg } from './parity/pg.ts';
+import type { LivePg } from './parity/pg.ts';
+
+const jsonOf = <T>(res: Response): Promise<T> => res.json();
 
 const URL_ = process.env.BILLING_PG_URL;
 const SKIP = "set BILLING_PG_URL to a migrated Postgres";
 
 let pg: LivePg | undefined;
-before(async () => { if (URL_) pg = await livePg(URL_, 30); });
+before(async () => { if (URL_) {pg = await livePg(URL_, 30);} });
 after(async () => { await pg?.close(); });
 
 const verify = (phone: string, code: string): Request => new Request("https://core.example/api/v1/auth/phone/verify", {
@@ -29,9 +32,9 @@ test("thirty concurrent wrong codes get five comparisons, not thirty", { skip: U
     [id, phone, await sha256Hex(`${id}:123456`)]);
   // Open every pooled connection first, so the thirty requests run side by side instead of queuing on a connect.
   await Promise.all(Array.from({ length: 30 }, () => pg!.query("SELECT pg_sleep(0.05)")));
-  const wrong = Array.from({ length: 30 }, (_, i) => String(200000 + i));
+  const wrong = Array.from({ length: 30 }, (_, i) => String(200_000 + i));
   const answers = await Promise.all(wrong.map((code) => handle(verify(phone, code), { APP_ENV: "production" }, { query: pg!.query })));
-  const codes = await Promise.all(answers.map(async (res) => (await res.json() as { error: { code: string } }).error.code));
+  const codes = await Promise.all(answers.map(async (res) => (await jsonOf<{ error: { code: string } }>(res)).error.code));
   assert.equal(codes.filter((code) => code === "PHONE_CODE_INVALID").length, 5);
   assert.equal(codes.filter((code) => code === "RATE_LIMITED").length, 25);
   const right = await handle(verify(phone, "123456"), { APP_ENV: "production" }, { query: pg!.query });

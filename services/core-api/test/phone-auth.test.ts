@@ -3,20 +3,29 @@ import { test } from "node:test";
 
 import { signPendingSignup } from "../src/auth/pending-signup.ts";
 import { pkceChallenge } from "../src/crypto.ts";
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { sha256Hex } from "../src/http.ts";
 import { resetLimits } from "../src/ratelimit.ts";
 import { createSmsSender } from "../src/sms/sender.ts";
 
+const jsonOf = async <T>(res: Response): Promise<T> => {
+  const value: T = await res.json();
+  return value;
+};
+
 const NOW = new Date("2026-10-21T00:00:00.000Z");
 const PHONE = "+821012345678";
-const OTHER = "+821099998888";
 const DEV = "dev-token";
 const OAUTH = "22222222-2222-4222-8222-222222222222";
 const OWNER = "33333333-3333-4333-8333-333333333333";
 
-type Row = Record<string, unknown>;
-type Err = { error: { code: string; message: string; details: { field?: string; retryAfterSec?: number; existingProviders?: string[]; attemptsLeft?: number; reason?: string; maxAttempts?: number; provider?: string } | null } };
+type Row = Awaited<ReturnType<Deps["query"]>>["rows"][number];
+type Param = Row[string];
+
+const param = (value: unknown): Param =>
+  (typeof value === "string" || typeof value === "number" || typeof value === "boolean" || value === null || value instanceof Date ? value : null);
+type Err = { error: { code: string; message: string; details: { field?: string; retryAfterSec?: number; existingProviders?: Array<string>; attemptsLeft?: number; reason?: string; maxAttempts?: number; provider?: string } | null } };
 type Session = { data: { created?: boolean; linked?: boolean; provider?: string; pendingToken?: string; accessToken?: string; user: { id: string; accountType: string } } };
 type Sent = { phone: string; code: string };
 
@@ -28,13 +37,17 @@ const env = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
   ...extra,
 });
 
-const post = (path: string, body: unknown, headers?: HeadersInit): Request => new Request("https://core.example" + path, {
-  method: "POST",
-  headers: { "content-type": "application/json", ...headers },
-  body: JSON.stringify(body),
-});
+const post = (path: string, body: unknown, headers?: HeadersInit): Request => {
+  const merged = new Headers({ "content-type": "application/json" });
+  for (const [name, value] of new Headers(headers)) {merged.set(name, value);}
+  return new Request("https://core.example" + path, {
+    method: "POST",
+    headers: merged,
+    body: JSON.stringify(body),
+  });
+};
 
-const userRow = (extra: Row): Row => ({
+const userRow = (extra: Row) => ({
   display_name: "Ada",
   locale: "ko",
   created_at: NOW.toISOString(),
@@ -49,22 +62,23 @@ const userRow = (extra: Row): Row => ({
 });
 
 const createDb = () => {
-  const users: Row[] = [];
-  const codes: Row[] = [];
-  const identities: Row[] = [];
-  const exchange: Row[] = [];
-  const sessions: Row[] = [];
+  const users: Array<Row> = [];
+  const codes: Array<Row> = [];
+  const identities: Array<Row> = [];
+  const exchange: Array<Row> = [];
+  const sessions: Array<Row> = [];
   let now = NOW;
 
-  const query: Deps["query"] = async (sql, params = []) => {
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("deletion_requested_at")) return { rows: [], rowCount: 1 };
+  const query: Deps["query"] = async (sql, rawParams = []) => {
+    const params = rawParams.map(param);
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("deletion_requested_at")) {return { rows: [], rowCount: 1 };}
     if (sql.startsWith("SELECT sent_at FROM phone_codes")) {
       const rows = codes.filter((row) => row.phone === params[0]).sort((a, b) => String(b.sent_at).localeCompare(String(a.sent_at)));
       return { rows: rows[0] ? [{ sent_at: rows[0].sent_at }] : [], rowCount: rows[0] ? 1 : 0 };
     }
     if (sql.startsWith("UPDATE phone_codes SET consumed_at") && sql.includes("WHERE phone")) {
-      for (const row of codes) if (row.phone === params[0] && row.consumed_at == null) row.consumed_at = params[1];
+      for (const row of codes) {if (row.phone === params[0] && (row.consumed_at === null || row.consumed_at === undefined)) {row.consumed_at = params[1];}}
       return { rows: [], rowCount: 1 };
     }
     if (sql.startsWith("INSERT INTO phone_codes")) {
@@ -75,18 +89,18 @@ const createDb = () => {
       return { rows: [], rowCount: 1 };
     }
     if (sql.startsWith("SELECT id, code_hash")) {
-      const open = codes.filter((row) => row.phone === params[0] && row.consumed_at == null)
+      const open = codes.filter((row) => row.phone === params[0] && (row.consumed_at === null || row.consumed_at === undefined))
         .sort((a, b) => String(b.sent_at).localeCompare(String(a.sent_at)));
       return { rows: open[0] ? [open[0]] : [], rowCount: open[0] ? 1 : 0 };
     }
     if (sql.startsWith("UPDATE phone_codes SET attempts")) {
-      const row = codes.find((item) => item.id === params[0] && Number(item.attempts) < Number(params[1]) && item.consumed_at == null);
-      if (row) row.attempts = Number(row.attempts) + 1;
+      const row = codes.find((item) => item.id === params[0] && Number(item.attempts) < Number(params[1]) && (item.consumed_at === null || item.consumed_at === undefined));
+      if (row) {row.attempts = Number(row.attempts) + 1;}
       return { rows: row ? [{ attempts: row.attempts }] : [], rowCount: row ? 1 : 0 };
     }
     if (sql.startsWith("UPDATE phone_codes SET consumed_at") && sql.includes("WHERE id")) {
-      const row = codes.find((item) => item.id === params[0] && item.consumed_at == null);
-      if (row) row.consumed_at = params[1];
+      const row = codes.find((item) => item.id === params[0] && (item.consumed_at === null || item.consumed_at === undefined));
+      if (row) {row.consumed_at = params[1];}
       return { rows: row ? [{ id: row.id }] : [], rowCount: row ? 1 : 0 };
     }
     if (sql.startsWith("SELECT id FROM users WHERE phone") || sql.startsWith("SELECT id, provider FROM users WHERE phone")) {
@@ -98,10 +112,10 @@ const createDb = () => {
       const phone = social ? params[6] : params[1];
       const email = social ? params[4] : null;
       const clash = (users.some((item) => item.phone === phone && item.is_employer === false))
-        || (email != null && email !== "" && users.some((item) => String(item.email ?? "").toLowerCase() === String(email).toLowerCase()));
+        || ((email !== null && email !== undefined) && email !== "" && users.some((item) => String(item.email ?? "").toLowerCase() === String(email).toLowerCase()));
       if (clash) {
         const err = new Error("duplicate key value violates unique constraint");
-        (err as { code?: string }).code = "23505";
+        Object.assign(err, { code: "23505" });
         throw err;
       }
       users.push(social
@@ -116,10 +130,10 @@ const createDb = () => {
     }
     if (sql.startsWith("UPDATE users SET phone")) {
       const row = users.find((item) => item.id === params[0] && item.is_employer === false);
-      if (!row) return { rows: [], rowCount: 0 };
+      if (!row) {return { rows: [], rowCount: 0 };}
       if (users.some((item) => item.phone === params[1] && item.id !== row.id && item.is_employer === false)) {
         const err = new Error("duplicate key value violates unique constraint");
-        (err as { code?: string }).code = "23505";
+        Object.assign(err, { code: "23505" });
         throw err;
       }
       row.phone = params[1];
@@ -135,10 +149,10 @@ const createDb = () => {
     }
     if (sql.startsWith("UPDATE users SET provider =")) {
       const row = users.find((item) => item.id === params[0] && item.provider === "phone");
-      if (!row) return { rows: [], rowCount: 0 };
+      if (!row) {return { rows: [], rowCount: 0 };}
       if (users.some((item) => item.id !== row.id && item.provider === params[1] && item.provider_subject === params[2])) {
         const err = new Error("duplicate key value violates unique constraint");
-        (err as { code?: string }).code = "23505";
+        Object.assign(err, { code: "23505" });
         throw err;
       }
       row.provider = params[1];
@@ -157,7 +171,7 @@ const createDb = () => {
     if (sql.startsWith("INSERT INTO user_identities")) {
       if (identities.some((item) => item.provider === params[1] && item.provider_subject === params[2])) {
         const err = new Error("duplicate key");
-        (err as { code?: string }).code = "23505";
+        Object.assign(err, { code: "23505" });
         throw err;
       }
       identities.push({ user_id: params[0], provider: params[1], provider_subject: params[2] });
@@ -165,12 +179,12 @@ const createDb = () => {
     }
     if (sql.startsWith("UPDATE user_identities SET user_id")) {
       const row = identities.find((item) => item.provider === params[1] && item.provider_subject === params[2] && item.user_id === params[3]);
-      if (row) row.user_id = params[0];
+      if (row) {row.user_id = params[0];}
       return { rows: [], rowCount: row ? 1 : 0 };
     }
     if (sql.startsWith("UPDATE users SET provider_subject")) {
       const row = users.find((item) => item.id === params[0] && item.provider_subject === params[2]);
-      if (row) row.provider_subject = params[1];
+      if (row) {row.provider_subject = params[1];}
       return { rows: [], rowCount: row ? 1 : 0 };
     }
     if (sql.includes("FROM exchange_codes WHERE code")) {
@@ -178,8 +192,8 @@ const createDb = () => {
       return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
     }
     if (sql.startsWith("UPDATE exchange_codes")) {
-      const row = exchange.find((item) => item.code === params[0] && item.used_at == null);
-      if (!row) return { rows: [], rowCount: 0 };
+      const row = exchange.find((item) => item.code === params[0] && (item.used_at === null || item.used_at === undefined));
+      if (!row) {return { rows: [], rowCount: 0 };}
       row.used_at = params[1];
       return { rows: [{ code: row.code }], rowCount: 1 };
     }
@@ -205,23 +219,23 @@ const createDb = () => {
   return { query, users, codes, identities, exchange, sessions, get now() { return now; }, set now(value: Date) { now = value; } };
 };
 
-const deps = (db: ReturnType<typeof createDb>, sent: Sent[]): Deps => ({
+const deps = (db: ReturnType<typeof createDb>, sent: Array<Sent>): Deps => ({
   query: db.query,
   now: () => db.now,
   sms: { send: async (phone, code) => { sent.push({ phone, code }); } },
 });
 
-const send = async (db: ReturnType<typeof createDb>, sent: Sent[], phone = PHONE, headers?: HeadersInit) => {
+const send = async (db: ReturnType<typeof createDb>, sent: Array<Sent>, phone = PHONE, headers?: HeadersInit) => {
   resetLimits();
   return handle(post("/api/v1/auth/phone/send", { phone }, headers), env(), deps(db, sent));
 };
 
 const verify = async (
   db: ReturnType<typeof createDb>,
-  sent: Sent[],
+  sent: Array<Sent>,
   code: string,
   phone = PHONE,
-  extra: Record<string, unknown> = {},
+  extra: Record<string, string | undefined> = {},
 ) => {
   resetLimits();
   return handle(post("/api/v1/auth/phone/verify", { phone, code, ...extra }), env(), deps(db, sent));
@@ -232,15 +246,15 @@ const pending = async (provider: string, subject: string, email: string | null =
 
 test("send stores a hash, enforces cooldown, and refuses a bad phone", async () => {
   const db = createDb();
-  const sent: Sent[] = [];
+  const sent: Array<Sent> = [];
   const bad = await send(db, sent, "01012345678");
   assert.equal(bad.status, 400);
-  assert.equal((await bad.json() as Err).error.details?.field, "phone");
+  assert.equal((await jsonOf<Err>(bad)).error.details?.field, "phone");
   assert.equal(sent.length, 0);
 
   const first = await send(db, sent);
   assert.equal(first.status, 202);
-  const body = await first.json() as { data: { cooldownSeconds: number; expiresAt: string } };
+  const body = await jsonOf<{ data: { cooldownSeconds: number; expiresAt: string } }>(first);
   assert.equal(body.data.cooldownSeconds, 168);
   assert.equal(body.data.expiresAt, "2026-10-21T00:03:00Z");
   assert.equal(sent.length, 1);
@@ -252,18 +266,18 @@ test("send stores a hash, enforces cooldown, and refuses a bad phone", async () 
 
   const again = await send(db, sent);
   assert.equal(again.status, 429);
-  assert.equal((await again.json() as Err).error.details?.retryAfterSec, 168);
+  assert.equal((await jsonOf<Err>(again)).error.details?.retryAfterSec, 168);
   assert.equal(sent.length, 1);
 });
 
 test("verify rejects a wrong code, an expired code, and too many attempts", async () => {
   const db = createDb();
-  const sent: Sent[] = [];
+  const sent: Array<Sent> = [];
   await send(db, sent);
   const wrong = sent[0].code === "000000" ? "000001" : "000000";
   const invalid = await verify(db, sent, wrong);
   assert.equal(invalid.status, 400);
-  const wrongBody = await invalid.json() as Err;
+  const wrongBody = await jsonOf<Err>(invalid);
   assert.equal(wrongBody.error.code, "PHONE_CODE_INVALID");
   assert.deepEqual(wrongBody.error.details, { attemptsLeft: 4 });
   assert.equal(db.codes[0].attempts, 1);
@@ -272,63 +286,63 @@ test("verify rejects a wrong code, an expired code, and too many attempts", asyn
   db.codes[0].expires_at = "2026-10-20T00:00:00.000Z";
   const expired = await verify(db, sent, sent[0].code);
   assert.equal(expired.status, 400);
-  assert.equal((await expired.json() as Err).error.code, "PHONE_CODE_EXPIRED");
+  assert.equal((await jsonOf<Err>(expired)).error.code, "PHONE_CODE_EXPIRED");
 
   db.codes[0].expires_at = "2026-10-21T00:03:00.000Z";
   db.codes[0].consumed_at = null;
   db.codes[0].attempts = 5;
   const limited = await verify(db, sent, wrong);
   assert.equal(limited.status, 429);
-  const limitedBody = await limited.json() as Err;
+  const limitedBody = await jsonOf<Err>(limited);
   assert.equal(limitedBody.error.code, "RATE_LIMITED");
   assert.deepEqual(limitedBody.error.details, { reason: "TOO_MANY_ATTEMPTS", maxAttempts: 5 });
 });
 
 test("the last wrong try reports no attempts left", async () => {
   const db = createDb();
-  const sent: Sent[] = [];
+  const sent: Array<Sent> = [];
   await send(db, sent);
   db.codes[0].attempts = 4;
   const wrong = sent[0].code === "000000" ? "000001" : "000000";
   const res = await verify(db, sent, wrong);
   assert.equal(res.status, 400);
-  assert.deepEqual((await res.json() as Err).error.details, { attemptsLeft: 0 });
+  assert.deepEqual((await jsonOf<Err>(res)).error.details, { attemptsLeft: 0 });
 });
 
 test("PHONE_TAKEN on a phone identity held elsewhere reports conflict PHONE, and send reveals nothing", async () => {
   const db = createDb();
-  const sent: Sent[] = [];
+  const sent: Array<Sent> = [];
   db.users.push(userRow({ id: OWNER, provider: "google", provider_subject: "gsub", phone: PHONE }));
   db.identities.push({ user_id: OAUTH, provider: "phone", provider_subject: PHONE });
   const sentRes = await send(db, sent);
   assert.equal(sentRes.status, 202);
   const taken = await verify(db, sent, sent[0].code);
   assert.equal(taken.status, 409);
-  const body = await taken.json() as Err;
+  const body = await jsonOf<Err>(taken);
   assert.equal(body.error.code, "PHONE_TAKEN");
   assert.deepEqual(body.error.details, { conflict: "PHONE", provider: "phone" });
 });
 
 test("PHONE_TAKEN for a pending identity held elsewhere reports conflict IDENTITY and that provider, not the phone owner's", async () => {
   const db = createDb();
-  const sent: Sent[] = [];
+  const sent: Array<Sent> = [];
   db.users.push(userRow({ id: OWNER, provider: "phone", provider_subject: PHONE, phone: PHONE }));
   db.identities.push({ user_id: OAUTH, provider: "google", provider_subject: "gsub" });
   await send(db, sent);
   const taken = await verify(db, sent, sent[0].code, PHONE, { pendingToken: await pending("google", "gsub") });
   assert.equal(taken.status, 409);
-  const body = await taken.json() as Err;
+  const body = await jsonOf<Err>(taken);
   assert.equal(body.error.code, "PHONE_TAKEN");
   assert.deepEqual(body.error.details, { conflict: "IDENTITY", provider: "google" });
 });
 
 test("verify creates a personal account once, then logs into it", async () => {
   const db = createDb();
-  const sent: Sent[] = [];
+  const sent: Array<Sent> = [];
   await send(db, sent);
   const created = await verify(db, sent, sent[0].code);
   assert.equal(created.status, 200);
-  const first = await created.json() as Session;
+  const first = await jsonOf<Session>(created);
   assert.equal(first.data.created, true);
   assert.equal(first.data.user.accountType, "PERSONAL");
   assert.equal(db.users.length, 1);
@@ -342,7 +356,7 @@ test("verify creates a personal account once, then logs into it", async () => {
   await send(db, sent);
   const again = await verify(db, sent, sent[1].code);
   assert.equal(again.status, 200);
-  const second = await again.json() as Session;
+  const second = await jsonOf<Session>(again);
   assert.equal(second.data.created, false);
   assert.equal(second.data.user.id, first.data.user.id);
   assert.equal(db.users.length, 1);
@@ -350,11 +364,11 @@ test("verify creates a personal account once, then logs into it", async () => {
 
 test("a new google identity and a new phone create one account", async () => {
   const db = createDb();
-  const sent: Sent[] = [];
+  const sent: Array<Sent> = [];
   await send(db, sent);
   const created = await verify(db, sent, sent[0].code, PHONE, { pendingToken: await pending("google", "gsub") });
   assert.equal(created.status, 200);
-  const body = await created.json() as Session;
+  const body = await jsonOf<Session>(created);
   assert.equal(body.data.created, true);
   assert.equal(body.data.linked, undefined);
   assert.equal(db.users.length, 1);
@@ -368,7 +382,7 @@ test("a new google identity and a new phone create one account", async () => {
   await send(db, sent);
   const again = await verify(db, sent, sent[1].code);
   assert.equal(again.status, 200);
-  const second = await again.json() as Session;
+  const second = await jsonOf<Session>(again);
   assert.equal(second.data.created, false);
   assert.equal(second.data.user?.id, body.data.user?.id);
   assert.equal(db.users.length, 1);
@@ -376,16 +390,16 @@ test("a new google identity and a new phone create one account", async () => {
 
 test("a phone-only account links one new social identity", async () => {
   const db = createDb();
-  const sent: Sent[] = [];
+  const sent: Array<Sent> = [];
   await send(db, sent);
   const created = await verify(db, sent, sent[0].code);
-  const first = await created.json() as Session;
+  const first = await jsonOf<Session>(created);
   const id = first.data.user?.id;
   db.now = new Date(NOW.getTime() + 169_000);
   await send(db, sent);
   const linked = await verify(db, sent, sent[1].code, PHONE, { pendingToken: await pending("google", "gsub") });
   assert.equal(linked.status, 200);
-  const body = await linked.json() as Session;
+  const body = await jsonOf<Session>(linked);
   assert.equal(body.data.linked, true);
   assert.equal(body.data.provider, "google");
   assert.equal(body.data.created, false);
@@ -415,7 +429,7 @@ test("a phone-only account links one new social identity", async () => {
     now: () => db.now,
   });
   assert.equal(back.status, 200);
-  const session = await back.json() as Session;
+  const session = await jsonOf<Session>(back);
   assert.equal(session.data.pendingToken, undefined);
   assert.equal(session.data.user?.id, id);
   assert.equal(db.users.length, 1);
@@ -423,14 +437,13 @@ test("a phone-only account links one new social identity", async () => {
 
 test("a phone that already has a social identity signs in to that account and attaches nothing", async () => {
   const db = createDb();
-  const sent: Sent[] = [];
+  const sent: Array<Sent> = [];
   db.users.push(userRow({ id: OWNER, provider: "google", provider_subject: "gsub", phone: PHONE }));
-  db.identities.push({ user_id: OWNER, provider: "google", provider_subject: "gsub" });
-  db.identities.push({ user_id: OWNER, provider: "phone", provider_subject: PHONE });
+  db.identities.push({ user_id: OWNER, provider: "google", provider_subject: "gsub" }, { user_id: OWNER, provider: "phone", provider_subject: PHONE });
   await send(db, sent);
   const other = await verify(db, sent, sent[0].code, PHONE, { pendingToken: await pending("apple", "asub", null) });
   assert.equal(other.status, 200);
-  const first = await other.json() as Session;
+  const first = await jsonOf<Session>(other);
   assert.equal(first.data.user.id, OWNER);
   assert.equal(first.data.created, false);
   assert.equal(first.data.linked, undefined);
@@ -441,21 +454,21 @@ test("a phone that already has a social identity signs in to that account and at
   await send(db, sent);
   const again = await verify(db, sent, sent[1].code, PHONE, { pendingToken: await pending("google", "other-sub") });
   assert.equal(again.status, 200);
-  assert.equal((await again.json() as Session).data.user.id, OWNER);
+  assert.equal((await jsonOf<Session>(again)).data.user.id, OWNER);
   assert.equal(db.identities.some((row) => row.provider_subject === "other-sub"), false);
   assert.equal(db.users.length, 1);
 });
 
 test("verify rejects an expired or forged pending token and keeps the code", async () => {
   const db = createDb();
-  const sent: Sent[] = [];
+  const sent: Array<Sent> = [];
   await send(db, sent);
   const token = await pending("google", "gsub");
   const [payload, mac] = token.split(".");
   const flipped = `${payload}.${mac.slice(0, -1)}${mac.endsWith("a") ? "b" : "a"}`;
   const bad = await verify(db, sent, sent[0].code, PHONE, { pendingToken: flipped });
   assert.equal(bad.status, 401);
-  assert.equal((await bad.json() as Err).error.code, "UNAUTHENTICATED");
+  assert.equal((await jsonOf<Err>(bad)).error.code, "UNAUTHENTICATED");
   assert.equal(db.users.length, 0);
   assert.equal(db.codes[0].consumed_at, null);
 
@@ -466,14 +479,14 @@ test("verify rejects an expired or forged pending token and keeps the code", asy
   );
   const old = await verify(db, sent, sent[0].code, PHONE, { pendingToken: expired.token });
   assert.equal(old.status, 401);
-  assert.equal((await old.json() as Err).error.code, "TOKEN_EXPIRED");
+  assert.equal((await jsonOf<Err>(old)).error.code, "TOKEN_EXPIRED");
   assert.equal(db.users.length, 0);
   assert.equal(db.codes[0].consumed_at, null);
 });
 
 test("a colliding email is stored null when the phone is new", async () => {
   const db = createDb();
-  const sent: Sent[] = [];
+  const sent: Array<Sent> = [];
   db.users.push(userRow({ id: OAUTH, provider: "email", provider_subject: "ada@push.app", email: "ada@push.app" }));
   await send(db, sent);
   const created = await verify(db, sent, sent[0].code, PHONE, { pendingToken: await pending("google", "gsub", "ada@push.app") });
@@ -487,7 +500,7 @@ test("a colliding email is stored null when the phone is new", async () => {
 
 test("an employer session cannot send a phone code", async () => {
   const db = createDb();
-  const sent: Sent[] = [];
+  const sent: Array<Sent> = [];
   db.users.push(userRow({ id: OAUTH, provider: "email", provider_subject: "a@push.app", is_employer: true, email: "a@push.app" }));
   resetLimits();
   const res = await handle(
@@ -496,15 +509,15 @@ test("an employer session cannot send a phone code", async () => {
     deps(db, sent),
   );
   assert.equal(res.status, 403);
-  assert.equal((await res.json() as Err).error.code, "FORBIDDEN");
+  assert.equal((await jsonOf<Err>(res)).error.code, "FORBIDDEN");
   assert.equal(sent.length, 0);
   assert.equal(db.codes.length, 0);
 });
 
 test("production log mode does not print the code and send returns 503", async () => {
-  const lines: string[] = [];
-  const orig = console.log;
-  console.log = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+  const lines: Array<string> = [];
+  const orig = console.info;
+  console.info = (...args: Array<unknown>) => { lines.push(args.map(String).join(" ")); };
   try {
     await createSmsSender({ APP_ENV: "development", PHONE_SMS_MODE: "log" }).send(PHONE, "123456");
     assert.equal(lines.some((line) => line.includes("123456")), true);
@@ -512,7 +525,7 @@ test("production log mode does not print the code and send returns 503", async (
     await assert.rejects(createSmsSender({ APP_ENV: "production", PHONE_SMS_MODE: "log" }).send(PHONE, "654321"));
     assert.equal(lines.some((line) => line.includes("654321")), false);
   } finally {
-    console.log = orig;
+    console.info = orig;
   }
   const db = createDb();
   resetLimits();
@@ -521,15 +534,14 @@ test("production log mode does not print the code and send returns 503", async (
     now: () => db.now,
   });
   assert.equal(res.status, 503);
-  assert.equal((await res.json() as Err).error.code, "NOT_CONFIGURED");
+  assert.equal((await jsonOf<Err>(res)).error.code, "NOT_CONFIGURED");
   assert.equal(db.codes.length, 0);
 });
 
 test("oauth exchange prefers the phone account linked to that provider", async () => {
   const verifier = "verifier-verifier-verifier-verifier-verifier";
   const db = createDb();
-  db.users.push(userRow({ id: OWNER, provider: "phone", provider_subject: PHONE, phone: PHONE, display_name: "Bea" }));
-  db.users.push(userRow({ id: OAUTH, provider: "email", provider_subject: "ada@push.app", email: "ada@push.app", is_employer: true, display_name: "Employer" }));
+  db.users.push(userRow({ id: OWNER, provider: "phone", provider_subject: PHONE, phone: PHONE, display_name: "Bea" }), userRow({ id: OAUTH, provider: "email", provider_subject: "ada@push.app", email: "ada@push.app", is_employer: true, display_name: "Employer" }));
   db.identities.push({ user_id: OWNER, provider: "google", provider_subject: "gsub" });
   db.exchange.push({
     code: "ex1",
@@ -550,7 +562,7 @@ test("oauth exchange prefers the phone account linked to that provider", async (
     now: () => db.now,
   });
   assert.equal(res.status, 200);
-  const body = await res.json() as Session;
+  const body = await jsonOf<Session>(res);
   assert.equal(body.data.user.id, OWNER);
   assert.equal(db.users.length, 2);
 });
@@ -585,17 +597,17 @@ const socialExchange = async (
 
 test("phone signup then a new social login stays on that account", async () => {
   const db = createDb();
-  const sent: Sent[] = [];
+  const sent: Array<Sent> = [];
   await send(db, sent);
   const created = await verify(db, sent, sent[0].code);
-  const phone = await created.json() as Session;
+  const phone = await jsonOf<Session>(created);
   const id = phone.data.user.id;
   assert.equal(db.users.length, 1);
   assert.equal(db.sessions[0]?.user_id, id);
 
   const first = await socialExchange(db, "ex-google", "google", "gsub");
   assert.equal(first.status, 200);
-  const pendingBody = await first.json() as Session;
+  const pendingBody = await jsonOf<Session>(first);
   assert.equal(typeof pendingBody.data.pendingToken, "string");
   assert.equal(pendingBody.data.user, undefined);
   assert.equal(db.users.length, 1);
@@ -605,7 +617,7 @@ test("phone signup then a new social login stays on that account", async () => {
   await send(db, sent);
   const linked = await verify(db, sent, sent[1].code, PHONE, { pendingToken: pendingBody.data.pendingToken });
   assert.equal(linked.status, 200);
-  const linkedBody = await linked.json() as Session;
+  const linkedBody = await jsonOf<Session>(linked);
   assert.equal(linkedBody.data.linked, true);
   assert.equal(linkedBody.data.provider, "google");
   assert.equal(linkedBody.data.created, false);
@@ -620,12 +632,12 @@ test("phone signup then a new social login stays on that account", async () => {
   await send(db, sent);
   const apple = await socialExchange(db, "ex-apple", "apple", "asub");
   assert.equal(apple.status, 200);
-  const appleBody = await apple.json() as Session;
+  const appleBody = await jsonOf<Session>(apple);
   assert.equal(typeof appleBody.data.pendingToken, "string");
   assert.equal(db.users.length, 1);
   const viaPhone = await verify(db, sent, sent[2].code, PHONE, { pendingToken: appleBody.data.pendingToken });
   assert.equal(viaPhone.status, 200);
-  const viaPhoneBody = await viaPhone.json() as Session;
+  const viaPhoneBody = await jsonOf<Session>(viaPhone);
   assert.equal(viaPhoneBody.data.user.id, id);
   assert.equal(viaPhoneBody.data.created, false);
   assert.equal(viaPhoneBody.data.linked, undefined);
@@ -635,7 +647,7 @@ test("phone signup then a new social login stays on that account", async () => {
 
   const again = await socialExchange(db, "ex-google-2", "google", "gsub");
   assert.equal(again.status, 200);
-  const back = await again.json() as Session;
+  const back = await jsonOf<Session>(again);
   assert.equal(back.data.pendingToken, undefined);
   assert.equal(back.data.user.id, id);
   assert.equal(db.users.length, 1);

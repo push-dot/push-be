@@ -1,4 +1,4 @@
-import type { Route, Schema } from "./shared.ts";
+import type { Route } from "./shared.ts";
 import { get, post, patch, del, ok, okPage, obj, closed, arr, str, int, num, bool, uuid, dateTime, date, nullable, ref, body, pathParam, query, pageParams, enumOf, noContent, redirect } from "./shared.ts";
 
 const stage = enumOf("DISCOVERED", "PREPARING", "READY", "APPLIED", "SCREENING", "INTERVIEW", "OFFER", "ACCEPTED", "REJECTED", "WITHDRAWN");
@@ -11,14 +11,14 @@ const expectedRevision = closed({ expectedRevision: int });
 const aiOpt = { ai: nullable(ref("CareerAiOptions")) };
 const companySourceIn = closed({
   sourceUrl: { type: "string", description: "http or https URL with a hostname and no username or password" },
-  sourceText: { type: "string", minLength: 1, maxLength: 20000 },
+  sourceText: { type: "string", minLength: 1, maxLength: 20_000 },
   accessedAt: { ...rfc3339, description: "RFC3339 timestamp; naive values are treated as UTC. Cannot be in the future." },
 });
 const companySourcesIn = { type: "array", maxItems: 10, items: companySourceIn };
 const op = { 202: ok(ref("Operation"), "Accepted") };
 const projectRun = [pathParam("id"), pathParam("runId")];
 
-export const routes: Route[] = [
+export const routes: Array<Route> = [
   get("core", "/api/v1/applications", {
     tag: "applications",
     summary: "List applications",
@@ -122,7 +122,7 @@ export const routes: Route[] = [
       title: { type: "string", minLength: 1, maxLength: 300 },
       sourceKind: enumOf("URL", "TEXT", "DOM"),
       sourceUrl: nullable({ type: "string", format: "uri", description: "http(s) without credentials; required for URL and DOM" }),
-      sourceText: { type: "string", minLength: 1, maxLength: 200000 },
+      sourceText: { type: "string", minLength: 1, maxLength: 200_000 },
       language: str,
       deadline: nullable(date),
       requirements: arr(str),
@@ -392,12 +392,12 @@ export const routes: Route[] = [
     tag: "ai",
     summary: "Generate free-form AI text for an application",
     description: "Runs synchronously; the AI_GENERATE operation is returned SUCCEEDED with result.value {text, citations, usage}. usage has inputTokens and outputTokens. 403 FEATURE_DISABLED when the monthly limit is reached or ultraResume is set without ULTRA. 503 NOT_CONFIGURED when managed AI or web search is not configured. Web search failure is 502 PROVIDER_ERROR.",
-    body: body(closed({ ai: ref("CareerAiOptions"), prompt: { type: "string", minLength: 1, maxLength: 20000 }, applicationId: uuid, evidenceIds: arr(uuid) }, ["ai", "prompt", "applicationId"])),
+    body: body(closed({ ai: ref("CareerAiOptions"), prompt: { type: "string", minLength: 1, maxLength: 20_000 }, applicationId: uuid, evidenceIds: arr(uuid) }, ["ai", "prompt", "applicationId"])),
     responses: op,
   }),
 ];
 
-export const schemas: Record<string, Schema> = {
+export const schemas = {
   CareerAiOptions: {
     ...obj({
       provider: str,

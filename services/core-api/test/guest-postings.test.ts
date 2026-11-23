@@ -2,22 +2,25 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { recorder } from "../test-support/recorder.ts";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
+
+const jsonOf = <T>(res: Response): Promise<T> => res.json();
 
 const NIL = "00000000-0000-0000-0000-000000000000";
 const POSTING = "11111111-1111-4111-8111-111111111111";
 
 const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
 
-type Call = { sql: string; params: unknown[] };
+type Call = { sql: string; params: Array<unknown> };
 
 const run = async (path: string, init?: RequestInit) => {
   resetLimits();
-  const calls: Call[] = [];
+  const calls: Array<Call> = [];
   const query: Deps["query"] = async (sql, params = []) => {
     calls.push({ sql, params });
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     return { rows: [], rowCount: 0 };
   };
   const res = await handle(new Request("https://core.example" + path, init), env(), {
@@ -27,7 +30,7 @@ const run = async (path: string, init?: RequestInit) => {
   return { res, calls };
 };
 
-const codeOf = async (res: Response) => (await res.json() as { error: { code: string } }).error.code;
+const codeOf = async (res: Response) => (await jsonOf<{ error: { code: string } }>(res)).error.code;
 
 test("guest listing binds the nil user", async () => {
   const { res, calls } = await run("/api/v1/postings");
@@ -61,29 +64,30 @@ test("locations group by city only when asked and reject other levels", async ()
   assert.equal(await codeOf(bad.res), "VALIDATION_ERROR");
 });
 
+const cityQuery: Deps["query"] = async (sql) => {
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+  if (sql.includes("regexp_split_to_array")) {return { rows: [{ location: "서울", count: 5 }, { location: "경기", count: 2 }], rowCount: 2 };}
+  return { rows: [], rowCount: 0 };
+};
+
 test("city locations return summed counts from the grouped rows", async () => {
   resetLimits();
-  const query: Deps["query"] = async (sql) => {
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("regexp_split_to_array")) return { rows: [{ location: "서울", count: 5 }, { location: "경기", count: 2 }], rowCount: 2 };
-    return { rows: [], rowCount: 0 };
-  };
-  const res = await handle(new Request("https://core.example/api/v1/postings/locations?level=city"), env(), { query, now: () => new Date("2026-10-21T00:00:00Z") });
-  assert.deepEqual((await res.json() as { data: unknown }).data, [{ location: "서울", count: 5 }, { location: "경기", count: 2 }]);
+  const res = await handle(new Request("https://core.example/api/v1/postings/locations?level=city"), env(), { query: cityQuery, now: () => new Date("2026-10-21T00:00:00Z") });
+  assert.deepEqual((await jsonOf<{ data: unknown }>(res)).data, [{ location: "서울", count: 5 }, { location: "경기", count: 2 }]);
 });
 
 test("employmentType facet lists every type with zeros and ignores its own filter", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query: Deps["query"] = async (sql, params = []) => {
     seen.push({ sql, params });
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("GROUP BY p.employment_type")) return { rows: [{ id: "intern", count: 4 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("GROUP BY p.employment_type")) {return { rows: [{ id: "intern", count: 4 }], rowCount: 1 };}
     return { rows: [], rowCount: 0 };
   };
   const res = await handle(new Request("https://core.example/api/v1/postings/facets?employmentType=full_time&category=dev"), env(), { query, now: () => new Date("2026-10-21T00:00:00Z") });
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { employmentType: { id: string; count: number }[] } };
+  const body = await jsonOf<{ data: { employmentType: Array<{ id: string; count: number }> } }>(res);
   assert.deepEqual(body.data.employmentType, [
     { id: "full_time", count: 0 }, { id: "contract", count: 0 }, { id: "intern", count: 4 },
     { id: "freelance", count: 0 }, { id: "dispatch", count: 0 },
@@ -149,8 +153,8 @@ const openPosting = { id: POSTING, company: "Acme", title: "BE", created_at: "20
 test("a guest can open a public posting without writing a view row for the nil user", async () => {
   const { handle } = await import("../src/handler.ts");
   const { calls, query } = recorder((sql) => {
-    if (sql.includes("INSERT INTO posting_views")) throw Object.assign(new Error("insert or update on table \"posting_views\" violates foreign key constraint"), { code: "23503" });
-    if (sql.includes("FROM job_postings p WHERE p.id = $1")) return [openPosting];
+    if (sql.includes("INSERT INTO posting_views")) {throw Object.assign(new Error("insert or update on table \"posting_views\" violates foreign key constraint"), { code: "23503" });}
+    if (sql.includes("FROM job_postings p WHERE p.id = $1")) {return [openPosting];}
     return null;
   });
   const res = await handle(new Request(`https://core.example/api/v1/postings/${POSTING}`), ENV, { query, now: () => NOW });
@@ -163,7 +167,7 @@ test("a guest can open a public posting without writing a view row for the nil u
 test("guest skill search is public and binds the query and limit", async () => {
   const { res, calls } = await run("/api/v1/skills?q=%20Kot%20&limit=5");
   assert.equal(res.status, 200);
-  assert.deepEqual((await res.json() as { data: unknown[] }).data, []);
+  assert.deepEqual((await jsonOf<{ data: Array<unknown> }>(res)).data, []);
   const call = calls.find((c) => c.sql.includes("jsonb_array_elements_text"))!;
   assert.deepEqual(call.params, [NIL, "Kot", 5]);
   assert.match(call.sql, /strpos\(lower\(sk\), lower\(\$2::text\)\) > 0/);
@@ -179,13 +183,14 @@ test("skill search defaults to 20 skills and rejects a bad limit or a long query
   }
 });
 
+const skillQuery: Deps["query"] = async (sql) => {
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+  if (sql.includes("jsonb_array_elements_text")) {return { rows: [{ name: "Kotlin", posting_count: 12 }], rowCount: 1 };}
+  return { rows: [], rowCount: 0 };
+};
+
 test("skill search maps rows to name and postingCount", async () => {
   resetLimits();
-  const query: Deps["query"] = async (sql) => {
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("jsonb_array_elements_text")) return { rows: [{ name: "Kotlin", posting_count: 12 }], rowCount: 1 };
-    return { rows: [], rowCount: 0 };
-  };
-  const res = await handle(new Request("https://core.example/api/v1/skills?q=kot"), env(), { query, now: () => new Date("2026-10-21T00:00:00Z") });
-  assert.deepEqual((await res.json() as { data: unknown }).data, [{ name: "Kotlin", postingCount: 12 }]);
+  const res = await handle(new Request("https://core.example/api/v1/skills?q=kot"), env(), { query: skillQuery, now: () => new Date("2026-10-21T00:00:00Z") });
+  assert.deepEqual((await jsonOf<{ data: unknown }>(res)).data, [{ name: "Kotlin", postingCount: 12 }]);
 });

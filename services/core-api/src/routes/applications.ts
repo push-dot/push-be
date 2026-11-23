@@ -3,6 +3,7 @@ import { parseTimeField, strictBody } from "../body.ts";
 import { isMissingRelation, isUndefinedColumn, one, query } from "../db.ts";
 import { HttpError, data, fieldError, hashJson, requireUuid } from "../http.ts";
 import { listPage, pageOf, ts } from "../page.ts";
+import type { JsonObject } from "../json.ts";
 import type { Ctx } from "../types.ts";
 import { rejectArchived } from "./documents.ts";
 
@@ -17,18 +18,18 @@ const EVENT_COLS = "id, user_id, application_id, type, payload, created_at";
 const DRAFT_COLS = "id, user_id, application_id, application_revision, mode, adapter, document_version_ids, confirmed_submitted, payload_hash, created_at";
 const SUB_COLS = "id, user_id, application_id, mode, adapter, status, document_version_ids, approval_id, receipt_url, error_code, created_at, updated_at";
 
-type Row = Record<string, unknown>;
+type Row = NonNullable<Awaited<ReturnType<typeof one>>>;
 
 const validStage = (stage: string): boolean => STAGE_ORDER.includes(stage) || stage === "REJECTED" || stage === "WITHDRAWN";
 const afterApplied = (stage: string): boolean => stage === "SCREENING" || stage === "INTERVIEW" || stage === "OFFER";
 const APPLIED_STAGES = ["APPLIED", "SCREENING", "INTERVIEW", "OFFER", ...TERMINAL];
-const isApplied = (stage: string, appliedAt: unknown): boolean => appliedAt != null || TERMINAL.has(stage) || stage === "APPLIED" || afterApplied(stage);
+const isApplied = (stage: string, appliedAt: unknown): boolean => (appliedAt !== null && appliedAt !== undefined) || TERMINAL.has(stage) || stage === "APPLIED" || afterApplied(stage);
 
 const canPatchStage = (from: string, to: string): boolean => {
-  if (from === to) return true;
-  if (TERMINAL.has(from)) return false;
-  if (to === "REJECTED" || to === "WITHDRAWN") return true;
-  if (to === "APPLIED") return false;
+  if (from === to) {return true;}
+  if (TERMINAL.has(from)) {return false;}
+  if (to === "REJECTED" || to === "WITHDRAWN") {return true;}
+  if (to === "APPLIED") {return false;}
   return STAGE_ORDER.indexOf(to) === STAGE_ORDER.indexOf(from) + 1;
 };
 
@@ -38,27 +39,34 @@ const transition = (message: string): HttpError => new HttpError(409, "INVALID_T
 const approvalRequired = (message: string): HttpError => new HttpError(409, "APPROVAL_REQUIRED", message);
 const approvalStale = (message: string): HttpError => new HttpError(409, "APPROVAL_STALE", message);
 
-const uuids = (value: unknown): string[] => (Array.isArray(value) ? value.map(String) : []);
+const uuids = (value: unknown): Array<string> => (Array.isArray(value) ? value.map(String) : []);
 
-export const stageEnteredAt = (row: Row): Record<string, string> => {
-  let raw: unknown = row.stage_entered_at;
+const isJsonObject = (value: unknown): value is JsonObject => typeof value === "object" && value !== null && !Array.isArray(value);
+
+type StageEnteredAt = { [stage: string]: string };
+
+export const stageEnteredAt = (row: Row) => {
+  let raw = row.stage_entered_at;
   if (typeof raw === "string" && raw) {
-    try { raw = JSON.parse(raw); } catch { raw = null; }
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      raw = isJsonObject(parsed) ? parsed : null;
+    } catch { raw = null; }
   }
-  const out: Record<string, string> = {};
+  const out: StageEnteredAt = {};
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    for (const [key, value] of Object.entries(raw)) {
       const at = ts(value);
-      if (at) out[key] = at;
+      if (at) {out[key] = at;}
     }
   }
-  if (Object.keys(out).length) return out;
+  if (Object.keys(out).length) {return out;}
   const at = ts(row.created_at);
   return at ? { [String(row.stage)]: at } : {};
 };
 
-const appDto = (row: Row): Row => {
-  const out: Row = {
+const appDto = (row: Row) => {
+  const head = {
     id: String(row.id),
     revision: Number(row.revision),
     jobId: String(row.job_id),
@@ -70,32 +78,30 @@ const appDto = (row: Row): Row => {
     nextActionAt: ts(row.next_action_at),
     imported: Boolean(row.imported),
   };
-  if (row.fit_score != null) out.fitScore = Number(row.fit_score);
-  out.createdAt = ts(row.created_at);
-  out.updatedAt = ts(row.updated_at);
-  out.stageEnteredAt = stageEnteredAt(row);
-  return out;
+  const tail = { createdAt: ts(row.created_at), updatedAt: ts(row.updated_at), stageEnteredAt: stageEnteredAt(row) };
+  if (row.fit_score === null || row.fit_score === undefined) {return { ...head, ...tail };}
+  return { ...head, fitScore: Number(row.fit_score), ...tail };
 };
 
-const queryLoose = async (ctx: Ctx, sql: string, fallback: string, params: unknown[]): Promise<void> => {
+const queryLoose = async (ctx: Ctx, sql: string, fallback: string, params: Array<unknown>): Promise<void> => {
   try {
     await query(ctx.deps.query, sql, params);
-  } catch (err) {
-    if (!isUndefinedColumn(err)) throw err;
+  } catch (error) {
+    if (!isUndefinedColumn(error)) {throw error;}
     await query(ctx.deps.query, fallback, params);
   }
 };
 
-const oneLoose = async (ctx: Ctx, sql: string, fallback: string, params: unknown[]): Promise<Row | null> => {
+const oneLoose = async (ctx: Ctx, sql: string, fallback: string, params: Array<unknown>): Promise<Row | null> => {
   try {
     return await one(ctx.deps.query, sql, params);
-  } catch (err) {
-    if (!isUndefinedColumn(err)) throw err;
+  } catch (error) {
+    if (!isUndefinedColumn(error)) {throw error;}
     return await one(ctx.deps.query, fallback, params);
   }
 };
 
-const eventDto = (row: Row): Row => ({
+const eventDto = (row: Row) => ({
   id: String(row.id),
   applicationId: String(row.application_id),
   type: String(row.type),
@@ -103,28 +109,28 @@ const eventDto = (row: Row): Row => ({
   createdAt: ts(row.created_at),
 });
 
-const draftDto = (row: Row): Row => ({
+const draftDto = (row: Row) => ({
   id: String(row.id),
   applicationId: String(row.application_id),
   applicationRevision: Number(row.application_revision),
   mode: String(row.mode),
-  adapter: row.adapter == null ? null : String(row.adapter),
+  adapter: (row.adapter === null || row.adapter === undefined) ? null : String(row.adapter),
   documentVersionIds: uuids(row.document_version_ids),
   confirmedSubmitted: Boolean(row.confirmed_submitted),
   payloadHash: String(row.payload_hash),
   createdAt: ts(row.created_at),
 });
 
-const submissionDto = (row: Row): Row => ({
+const submissionDto = (row: Row) => ({
   id: String(row.id),
   applicationId: String(row.application_id),
   mode: String(row.mode),
-  adapter: row.adapter == null ? null : String(row.adapter),
+  adapter: (row.adapter === null || row.adapter === undefined) ? null : String(row.adapter),
   status: String(row.status),
   documentVersionIds: uuids(row.document_version_ids),
-  approvalId: row.approval_id == null ? null : String(row.approval_id),
-  receiptUrl: row.receipt_url == null ? null : String(row.receipt_url),
-  errorCode: row.error_code == null ? null : String(row.error_code),
+  approvalId: (row.approval_id === null || row.approval_id === undefined) ? null : String(row.approval_id),
+  receiptUrl: (row.receipt_url === null || row.receipt_url === undefined) ? null : String(row.receipt_url),
+  errorCode: (row.error_code === null || row.error_code === undefined) ? null : String(row.error_code),
   createdAt: ts(row.created_at),
   updatedAt: ts(row.updated_at),
 });
@@ -132,28 +138,28 @@ const submissionDto = (row: Row): Row => ({
 
 const loadApp = async (ctx: Ctx, id: string): Promise<Row> => {
   const row = await one(ctx.deps.query, `SELECT ${APP_SELECT} FROM applications WHERE id = $1 AND user_id = $2`, [id, ctx.user.id]);
-  if (!row) throw notFound();
+  if (!row) {throw notFound();}
   return row;
 };
 
 const loadJob = async (ctx: Ctx, jobId: string): Promise<Row> => {
   const row = await one(ctx.deps.query, "SELECT company, title FROM jobs WHERE id = $1 AND user_id = $2", [jobId, ctx.user.id]);
-  if (!row) throw notFound();
+  if (!row) {throw notFound();}
   return row;
 };
 
 const failedUpdate = async (ctx: Ctx, table: string, id: string): Promise<never> => {
   const current = await one(ctx.deps.query, `SELECT revision FROM ${table} WHERE id = $1 AND user_id = $2`, [id, ctx.user.id]);
-  if (!current) throw notFound();
+  if (!current) {throw notFound();}
   throw conflict(current.revision);
 };
 
 export const listApplications = async (ctx: Ctx): Promise<Response> => {
   const page = pageOf(ctx.url);
   const stage = ctx.url.searchParams.get("stage") || null;
-  if (stage !== null && !validStage(stage)) throw fieldError("stage", "unsupported stage");
+  if (stage !== null && !validStage(stage)) {throw fieldError("stage", "unsupported stage");}
   const where = ["user_id = $1"];
-  const params: unknown[] = [ctx.user.id];
+  const params: Array<unknown> = [ctx.user.id];
   if (stage) {
     params.push(stage);
     where.push(`stage = $${params.length}`);
@@ -164,7 +170,7 @@ export const listApplications = async (ctx: Ctx): Promise<Response> => {
     where.push(`(company ILIKE $${params.length - 1} ESCAPE '\\' OR title ILIKE $${params.length} ESCAPE '\\')`);
   }
   const applied = ctx.url.searchParams.get("applied");
-  if (applied !== null && applied !== "true" && applied !== "false") throw fieldError("applied", "must be true or false");
+  if (applied !== null && applied !== "true" && applied !== "false") {throw fieldError("applied", "must be true or false");}
   if (applied === "true") {
     params.push(APPLIED_STAGES);
     where.push(`(applied_at IS NOT NULL OR stage = ANY($${params.length}::text[]))`);
@@ -181,18 +187,16 @@ const fitPoint = (value: unknown): number => {
   return Math.round(clamped * 10) / 10;
 };
 
-const parsedParts = (value: unknown): unknown => {
-  if (typeof value !== "string") return value;
-  try { return JSON.parse(value); } catch { return {}; }
-};
-
 const fitParts = (value: unknown): Record<string, number> => {
-  const parsed = parsedParts(value);
-  const raw = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
-  return Object.fromEntries(FIT_PARTS.map((key) => [key, fitPoint(raw[key] ?? 0)]));
+  let parsed = value;
+  if (typeof value === "string") {
+    try { parsed = JSON.parse(value); } catch { parsed = {}; }
+  }
+  const raw = new Map(parsed && typeof parsed === "object" && !Array.isArray(parsed) ? Object.entries(parsed) : []);
+  return Object.fromEntries(FIT_PARTS.map((key) => [key, fitPoint(raw.get(key) ?? 0)]));
 };
 
-const fitOf = (row: Row): Row => {
+const fitOf = (row: Row) => {
   const parts = fitParts(row.parts);
   const scored = FIT_PARTS.map((key, index) => ({ point: parts[key], index, weight: FIT_WEIGHTS[index] }));
   const gap = scored.reduce((best, item) => item.point < best.point || (item.point === best.point && item.index < best.index) ? item : best);
@@ -202,11 +206,11 @@ const fitOf = (row: Row): Row => {
   return {
     fitScore: stored,
     parts,
-    topGap: row.top_gap == null ? "" : String(row.top_gap),
+    topGap: (row.top_gap === null || row.top_gap === undefined) ? "" : String(row.top_gap),
     plan: plan || "FREE",
     reachable,
     documentId: String(row.document_id),
-    documentTitle: row.document_title == null || row.document_title === "" ? null : String(row.document_title),
+    documentTitle: (row.document_title === null || row.document_title === undefined) || row.document_title === "" ? null : String(row.document_title),
   };
 };
 
@@ -231,8 +235,8 @@ const loadFit = async (ctx: Ctx, id: string): Promise<Row | null> => {
     const row = await one(ctx.deps.query, linked, [id, ctx.user.id])
       ?? await one(ctx.deps.query, fallback, [id, ctx.user.id]);
     return row ? fitOf(row) : null;
-  } catch (err) {
-    if (!isMissingRelation(err)) throw err;
+  } catch (error) {
+    if (!isMissingRelation(error)) {throw error;}
     return null;
   }
 };
@@ -242,8 +246,7 @@ export const getApplication = async (ctx: Ctx, idRaw: string): Promise<Response>
   const row = await loadApp(ctx, id);
   const dto = appDto(row);
   const fit = await loadFit(ctx, id);
-  if (fit) dto.fit = fit;
-  return data(200, dto, ctx.rid);
+  return data(200, fit ? { ...dto, fit } : dto, ctx.rid);
 };
 
 export const createApplication = async (ctx: Ctx): Promise<Response> => {
@@ -251,7 +254,7 @@ export const createApplication = async (ctx: Ctx): Promise<Response> => {
   const jobId = String(values.jobId);
   const job = await loadJob(ctx, jobId);
   const now = ts(ctx.now);
-  const row: Row = {
+  const row = {
     id: crypto.randomUUID(), revision: 1, job_id: jobId, company: job.company, title: job.title,
     stage: "DISCOVERED", notes: String(values.notes ?? ""), applied_at: null, next_action_at: null,
     imported: false, created_at: now, updated_at: now, stage_entered_at: { DISCOVERED: now },
@@ -272,13 +275,13 @@ export const importApplication = async (ctx: Ctx): Promise<Response> => {
     confirmed: { kind: "bool" },
   });
   const appliedAt = parseTimeField(values.appliedAt, "appliedAt");
-  if (values.confirmed !== true) throw fieldError("confirmed", "must be true to record a past application");
+  if (values.confirmed !== true) {throw fieldError("confirmed", "must be true to record a past application");}
   const stage = String(values.stage);
-  if (!validStage(stage) || stage === "DISCOVERED") throw fieldError("stage", "unsupported stage for import");
+  if (!validStage(stage) || stage === "DISCOVERED") {throw fieldError("stage", "unsupported stage for import");}
   const jobId = String(values.jobId);
   const job = await loadJob(ctx, jobId);
   const now = ts(ctx.now);
-  const row: Row = {
+  const row = {
     id: crypto.randomUUID(), revision: 1, job_id: jobId, company: job.company, title: job.title, stage,
     notes: String(values.notes ?? ""), applied_at: appliedAt, next_action_at: null, imported: true,
     created_at: now, updated_at: now, stage_entered_at: { [stage]: now },
@@ -304,35 +307,35 @@ export const patchApplication = async (ctx: Ctx, idRaw: string): Promise<Respons
   let nextAt: string | null = null;
   let clearNext = false;
   if (present.has("nextActionAt")) {
-    if (values.nextActionAt === null) clearNext = true;
-    else nextAt = parseTimeField(values.nextActionAt, "nextActionAt");
+    if (values.nextActionAt === null) {clearNext = true;}
+    else {nextAt = parseTimeField(values.nextActionAt, "nextActionAt");}
   }
   const expected = Number(values.expectedRevision);
   const app = await loadApp(ctx, id);
-  if (Number(app.revision) !== expected) throw conflict(app.revision);
+  if (Number(app.revision) !== expected) {throw conflict(app.revision);}
   const now = ts(ctx.now);
   let event: { from: string; to: string } | null = null;
-  if (values.stage != null) {
+  if ((values.stage !== null && values.stage !== undefined)) {
     const to = String(values.stage);
     const from = String(app.stage);
-    if (!validStage(to)) throw fieldError("stage", "unsupported stage");
-    if (to === "APPLIED" && from !== "APPLIED") throw transition("APPLIED can only be reached through submissions");
-    if (!canPatchStage(from, to)) throw transition(`cannot move from ${from} to ${to}`);
+    if (!validStage(to)) {throw fieldError("stage", "unsupported stage");}
+    if (to === "APPLIED" && from !== "APPLIED") {throw transition("APPLIED can only be reached through submissions");}
+    if (!canPatchStage(from, to)) {throw transition(`cannot move from ${from} to ${to}`);}
     if (to !== from) {
       const times = stageEnteredAt(app);
-      if (now && !times[to]) times[to] = now;
+      if (now && !times[to]) {times[to] = now;}
       app.stage_entered_at = times;
       app.stage = to;
-      if (to === "APPLIED") app.applied_at = now;
+      if (to === "APPLIED") {app.applied_at = now;}
       event = { from, to };
     }
   }
-  if (values.notes != null) app.notes = values.notes;
-  if (clearNext) app.next_action_at = null;
-  else if (nextAt !== null) app.next_action_at = nextAt;
+  if ((values.notes !== null && values.notes !== undefined)) {app.notes = values.notes;}
+  if (clearNext) {app.next_action_at = null;}
+  else if (nextAt !== null) {app.next_action_at = nextAt;}
   app.updated_at = now;
-  const patchParams = [id, ctx.user.id, app.stage, app.notes, app.applied_at == null ? null : ts(app.applied_at),
-    app.next_action_at == null ? null : ts(app.next_action_at), Boolean(app.imported), now, expected,
+  const patchParams = [id, ctx.user.id, app.stage, app.notes, (app.applied_at === null || app.applied_at === undefined) ? null : ts(app.applied_at),
+    (app.next_action_at === null || app.next_action_at === undefined) ? null : ts(app.next_action_at), Boolean(app.imported), now, expected,
     crypto.randomUUID(), JSON.stringify(event ?? {}), event !== null];
   const updated = await oneLoose(ctx,
     `WITH upd AS (UPDATE applications SET revision = revision + 1, stage = $3, notes = $4, applied_at = $5, next_action_at = $6, imported = $7, updated_at = $8,
@@ -345,7 +348,7 @@ export const patchApplication = async (ctx: Ctx, idRaw: string): Promise<Respons
      ev AS (INSERT INTO application_events (${EVENT_COLS}) SELECT $10, $2, upd.id, 'STAGE_CHANGED', $11::jsonb, $8 FROM upd WHERE $12)
      SELECT id FROM upd`,
     patchParams);
-  if (!updated) await failedUpdate(ctx, "applications", id);
+  if (!updated) {await failedUpdate(ctx, "applications", id);}
   app.revision = expected + 1;
   return data(200, appDto(app), ctx.rid);
 };
@@ -390,29 +393,29 @@ export const createSubmissionDraft = async (ctx: Ctx, idRaw: string): Promise<Re
     confirmedSubmitted: { kind: "bool" },
   });
   const app = await loadApp(ctx, appId);
-  if (Number(app.revision) !== values.expectedRevision) throw conflict(app.revision);
+  if (Number(app.revision) !== values.expectedRevision) {throw conflict(app.revision);}
   const mode = String(values.mode);
-  const adapter = values.adapter == null ? null : String(values.adapter);
-  if (mode !== MANUAL && mode !== ADAPTER) throw fieldError("mode", "must be MANUAL_RECORD or ADAPTER");
-  if (mode === ADAPTER) throw new HttpError(403, "FEATURE_DISABLED", "adapter submission is not enabled for this site");
-  if (adapter !== null) throw fieldError("adapter", "adapter is only valid with ADAPTER mode");
+  const adapter = (values.adapter === null || values.adapter === undefined) ? null : String(values.adapter);
+  if (mode !== MANUAL && mode !== ADAPTER) {throw fieldError("mode", "must be MANUAL_RECORD or ADAPTER");}
+  if (mode === ADAPTER) {throw new HttpError(403, "FEATURE_DISABLED", "adapter submission is not enabled for this site");}
+  if (adapter !== null) {throw fieldError("adapter", "adapter is only valid with ADAPTER mode");}
   const versionIds = uuids(values.documentVersionIds);
-  if (!versionIds.length) throw fieldError("documentVersionIds", "at least one document version is required");
+  if (!versionIds.length) {throw fieldError("documentVersionIds", "at least one document version is required");}
   const loaded = await query(ctx.deps.query,
     "SELECT v.id, v.application_id, d.finalized_version_id, d.status FROM document_versions v LEFT JOIN documents d ON d.id = v.document_id AND d.user_id = v.user_id WHERE v.user_id = $1 AND v.id IN (SELECT jsonb_array_elements_text($2::jsonb)::uuid)",
     [ctx.user.id, JSON.stringify(versionIds)]);
   const versions = new Map(loaded.rows.map((row) => [String(row.id), row]));
   for (const vid of versionIds) {
     const version = versions.get(vid);
-    if (!version) throw fieldError("documentVersionIds", "version " + vid + " not found");
-    if (String(version.application_id) !== appId) throw fieldError("documentVersionIds", "version " + vid + " belongs to another application");
+    if (!version) {throw fieldError("documentVersionIds", "version " + vid + " not found");}
+    if (String(version.application_id) !== appId) {throw fieldError("documentVersionIds", "version " + vid + " belongs to another application");}
     rejectArchived(version);
-    if (version.finalized_version_id == null || String(version.finalized_version_id) !== vid) {
+    if ((version.finalized_version_id === null || version.finalized_version_id === undefined) || String(version.finalized_version_id) !== vid) {
       throw new HttpError(422, "DOCUMENT_NOT_FINALIZED", "document version " + vid + " is not finalized");
     }
   }
   const revision = Number(app.revision);
-  const row: Row = {
+  const row = {
     id: crypto.randomUUID(), application_id: appId, application_revision: revision, mode, adapter,
     document_version_ids: versionIds, confirmed_submitted: values.confirmedSubmitted === true,
     payload_hash: await hashJson({ applicationId: appId, applicationRevision: revision, mode, adapter, documentVersionIds: versionIds }),
@@ -434,31 +437,31 @@ export const submitApplication = async (ctx: Ctx, idRaw: string): Promise<Respon
   const expected = Number(values.expectedRevision);
   const approvalId = String(values.approvalId);
   const app = await loadApp(ctx, appId);
-  if (Number(app.revision) !== expected) throw conflict(app.revision);
+  if (Number(app.revision) !== expected) {throw conflict(app.revision);}
   const draft = await one(ctx.deps.query, `SELECT ${DRAFT_COLS} FROM submission_drafts WHERE id = $1 AND user_id = $2`, [values.draftId, ctx.user.id]);
-  if (!draft) throw fieldError("draftId", "draft not found");
-  if (String(draft.application_id) !== appId) throw fieldError("draftId", "draft belongs to another application");
+  if (!draft) {throw fieldError("draftId", "draft not found");}
+  if (String(draft.application_id) !== appId) {throw fieldError("draftId", "draft belongs to another application");}
   if (Number(draft.application_revision) !== Number(app.revision)) {
     throw approvalStale("application changed since the draft was created; create a new draft and approval");
   }
   const approval = await one(ctx.deps.query,
     "SELECT revision, kind, application_id, target_id, payload_hash, status, expires_at FROM approvals WHERE id = $1 AND user_id = $2",
     [approvalId, ctx.user.id]);
-  if (!approval) throw approvalRequired("approval not found");
+  if (!approval) {throw approvalRequired("approval not found");}
   if (approval.kind !== "APPLICATION_SUBMIT" || String(approval.application_id) !== appId || String(approval.target_id) !== String(draft.id)) {
     throw approvalRequired("approval does not cover this target");
   }
-  if (approval.expires_at != null && ctx.now.getTime() > Date.parse(String(ts(approval.expires_at)))) throw approvalRequired("approval expired");
-  if (approval.status !== "APPROVED") throw approvalRequired("approval is not approved");
-  if (draft.payload_hash && approval.payload_hash !== draft.payload_hash) throw approvalStale("approved content has changed");
+  if ((approval.expires_at !== null && approval.expires_at !== undefined) && ctx.now.getTime() > Date.parse(String(ts(approval.expires_at)))) {throw approvalRequired("approval expired");}
+  if (approval.status !== "APPROVED") {throw approvalRequired("approval is not approved");}
+  if (draft.payload_hash && approval.payload_hash !== draft.payload_hash) {throw approvalStale("approved content has changed");}
   if (draft.mode === MANUAL && !draft.confirmed_submitted) {
     throw fieldError("confirmedSubmitted", "manual submission requires confirming the external submission completed");
   }
   const stage = String(app.stage);
-  if (TERMINAL.has(stage)) throw transition("application is closed");
+  if (TERMINAL.has(stage)) {throw transition("application is closed");}
   const move = stage !== "APPLIED" && !afterApplied(stage);
   const now = ts(ctx.now);
-  const sub: Row = {
+  const sub = {
     id: crypto.randomUUID(), application_id: appId, mode: draft.mode, adapter: draft.adapter, status: "SUCCEEDED",
     document_version_ids: uuids(draft.document_version_ids), approval_id: approvalId, receipt_url: null, error_code: null,
     created_at: now, updated_at: now,
@@ -489,7 +492,7 @@ export const submitApplication = async (ctx: Ctx, idRaw: string): Promise<Respon
       JSON.stringify({ submissionId: sub.id, mode: sub.mode, status: "SUCCEEDED" })]);
   if (!done) {
     const latest = await loadApp(ctx, appId);
-    if (Number(latest.revision) !== expected) throw conflict(latest.revision);
+    if (Number(latest.revision) !== expected) {throw conflict(latest.revision);}
     await failedUpdate(ctx, "approvals", approvalId);
   }
   return data(201, submissionDto(sub), ctx.rid);
@@ -505,20 +508,20 @@ export const listSubmissions = async (ctx: Ctx, idRaw: string): Promise<Response
 export const dispatchApplications = async (ctx: Ctx, path: string): Promise<Response | null> => {
   const method = ctx.request.method;
   if (path === "/api/v1/applications") {
-    if (method === "GET") return listApplications(ctx);
-    if (method === "POST") return createApplication(ctx);
+    if (method === "GET") {return listApplications(ctx);}
+    if (method === "POST") {return createApplication(ctx);}
     return null;
   }
-  if (path === "/api/v1/applications/import") return method === "POST" ? importApplication(ctx) : null;
+  if (path === "/api/v1/applications/import") {return method === "POST" ? importApplication(ctx) : null;}
   const m = path.match(/^\/api\/v1\/applications\/([^/]+)(?:\/([a-z-]+))?$/);
-  if (!m) return null;
+  if (!m) {return null;}
   const [, id, sub] = m;
-  if (!sub && method === "GET") return getApplication(ctx, id);
-  if (!sub && method === "PATCH") return patchApplication(ctx, id);
-  if (sub === "timeline" && method === "GET") return applicationTimeline(ctx, id);
-  if (sub === "checklist" && method === "GET") return applicationChecklist(ctx, id);
-  if (sub === "submission-drafts" && method === "POST") return createSubmissionDraft(ctx, id);
-  if (sub === "submissions" && method === "POST") return submitApplication(ctx, id);
-  if (sub === "submissions" && method === "GET") return listSubmissions(ctx, id);
+  if (!sub && method === "GET") {return getApplication(ctx, id);}
+  if (!sub && method === "PATCH") {return patchApplication(ctx, id);}
+  if (sub === "timeline" && method === "GET") {return applicationTimeline(ctx, id);}
+  if (sub === "checklist" && method === "GET") {return applicationChecklist(ctx, id);}
+  if (sub === "submission-drafts" && method === "POST") {return createSubmissionDraft(ctx, id);}
+  if (sub === "submissions" && method === "POST") {return submitApplication(ctx, id);}
+  if (sub === "submissions" && method === "GET") {return listSubmissions(ctx, id);}
   return null;
 };

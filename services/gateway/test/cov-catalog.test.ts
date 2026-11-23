@@ -1,15 +1,21 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
+import { handle, resetLimits } from '../src/handler.ts';
+import type { Deps, FrontEnv, Query } from '../src/handler.ts';
+
+const jsonOf = async <T>(res: Response): Promise<T> => {
+  const value: T = await res.json();
+  return value;
+};
 
 const USER_A = "aaaaaaaa-0000-4000-8000-00000000000a";
 const NOW = new Date("2026-10-18T00:00:00Z");
 const MODELS = "https://push-be.example/api/v1/ai/models";
-const TOKENS: Record<string, string> = { [USER_A]: "tok-a" };
+const TOKENS = new Map([[USER_A, "tok-a"]]);
 const FREE = "deepseek/deepseek-v4.1-flash";
 
-type Seen = Array<[string, unknown[]]>;
+type Seen = Array<[string, Array<unknown>]>;
 
 const noBinding = { async fetch(): Promise<Response> { throw new Error("binding should not be called"); } };
 
@@ -25,7 +31,7 @@ const deps = (query: Query): Deps => ({
   query, sleep: async () => {}, now: () => NOW,
 });
 
-const userRow = (id: string): Record<string, unknown> => ({
+const userRow = (id: string) => ({
   id, display_name: "U", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
 });
 
@@ -40,22 +46,22 @@ type Fake = {
 const fake = (seen: Seen, f: Fake): Query => async (sql, params = []) => {
   seen.push([sql, params]);
   if (isShared(sql)) {
-    if (f.shared === "throw") throw new Error("db down");
-    if (f.shared === "none") return [];
+    if (f.shared === "throw") {throw new Error("db down");}
+    if (f.shared === "none") {return [];}
     return [{ ...userRow(f.user), hits: 1 }];
   }
-  if (isAuthOnly(sql)) return [userRow(f.user)];
-  if (sql.includes("FROM users u LEFT JOIN company_members")) return [userRow(f.user)];
-  if (sql.includes("rate_limits")) return [{ hits: 1 }];
+  if (isAuthOnly(sql)) {return [userRow(f.user)];}
+  if (sql.includes("FROM users u LEFT JOIN company_members")) {return [userRow(f.user)];}
+  if (sql.includes("rate_limits")) {return [{ hits: 1 }];}
   return [];
 };
 
 const get = (user: string, query = "", headers: Record<string, string> = {}): Request =>
-  new Request(MODELS + query, { headers: { authorization: `Bearer ${TOKENS[user]}`, ...headers } });
+  new Request(MODELS + query, { headers: { authorization: `Bearer ${TOKENS.get(user)}`, ...headers } });
 
 const freeAvailable = async (res: Response): Promise<boolean> => {
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { model: string; available: boolean }[] };
+  const body = await jsonOf<{ data: Array<{ model: string; available: boolean }> }>(res);
   assert.equal(body.data.some((m) => m.model.startsWith("opencode-go/")), false);
   return body.data.find((m) => m.model === FREE)!.available;
 };
@@ -63,7 +69,7 @@ const freeAvailable = async (res: Response): Promise<boolean> => {
 
 const warm = async (user: string, e: FrontEnv): Promise<void> => {
   const res = await handle(new Request("https://push-be.example/api/v1/auth/me", {
-    headers: { authorization: `Bearer ${TOKENS[user]}` },
+    headers: { authorization: `Bearer ${TOKENS.get(user)}` },
   }), e, deps(async () => [{ ...userRow(user), hits: 1, granted: 4 }]));
   assert.equal(res.status, 200);
 };
@@ -77,7 +83,7 @@ test("models needs a bearer token and validates provider", async () => {
   assert.equal(seen.length, 0);
   const bad = await handle(get(USER_A, "?provider=NOPE"), env(), deps(fake(seen, { user: USER_A })));
   assert.equal(bad.status, 400);
-  assert.equal((await bad.json() as { error: { details: { field: string } } }).error.details.field, "provider");
+  assert.equal((await jsonOf<{ error: { details: { field: string } } }>(bad)).error.details.field, "provider");
 });
 
 test("an unknown token on the shared read is 401 and the next request re-checks it", async () => {
@@ -117,7 +123,7 @@ test("a lease without cached auth revalidates, and a revoked token is 401", asyn
   resetLimits();
   await warm(USER_A, e);
   const revoked = await handle(get(USER_A), e, deps(async (sql) => {
-    if (isAuthOnly(sql)) return [];
+    if (isAuthOnly(sql)) {return [];}
     throw new Error("must not read keys for a revoked token");
   }));
   assert.equal(revoked.status, 401);
@@ -140,6 +146,6 @@ test("job sites needs a token and serves a public cached body", async () => {
   }), env({ JOB_SITES_CACHE_TTL: "junk" }), deps(fake([], { user: USER_A })));
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("cache-control"), "public, max-age=3600");
-  const body = await res.json() as { data: { provider: string }[] };
+  const body = await jsonOf<{ data: Array<{ provider: string }> }>(res);
   assert.deepEqual(body.data.map((s) => s.provider), ["WANTED", "JUMPIT", "JOBKOREA"]);
 });

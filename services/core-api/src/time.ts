@@ -24,7 +24,7 @@ export function parseUtc(value: unknown): UtcParts {
   );
   if (!m) {
     const date = new Date(s);
-    if (Number.isNaN(date.getTime())) throw new Error("bad timestamp");
+    if (Number.isNaN(date.getTime())) {throw new Error("bad timestamp");}
     return fromEpoch(date.getTime(), date.getUTCMilliseconds() * 1000);
   }
   const frac = (m[7] || "").padEnd(6, "0").slice(0, 6);
@@ -63,7 +63,7 @@ function base(p: UtcParts): string {
 
 export function formatJsonTimestamp(value: unknown): string {
   const p = parseUtc(value);
-  if (!p.micros) return base(p) + "Z";
+  if (!p.micros) {return base(p) + "Z";}
   return base(p) + "." + pad(p.micros, 6) + "Z";
 }
 
@@ -77,10 +77,10 @@ export function decodeCursor(s: string): { createdAt: string; id: string; sort?:
     const padLen = (4 - (s.length % 4)) % 4;
     const raw = atob(s.replaceAll("-", "+").replaceAll("_", "/") + "=".repeat(padLen));
     const parts = raw.split("|");
-    if (parts.length < 2 || parts.length > 3) throw new Error("bad cursor");
+    if (parts.length < 2 || parts.length > 3) {throw new Error("bad cursor");}
     const [createdAt, id, sort] = parts;
-    if (!createdAt || !id) throw new Error("bad cursor");
-    if (sort != null && sort !== "relevance" && sort !== "latest") throw new Error("bad cursor");
+    if (!createdAt || !id) {throw new Error("bad cursor");}
+    if (sort !== undefined && sort !== "relevance" && sort !== "latest") {throw new Error("bad cursor");}
     parseUtc(createdAt);
     return sort ? { createdAt, id, sort } : { createdAt, id };
   } catch {
@@ -90,17 +90,16 @@ export function decodeCursor(s: string): { createdAt: string; id: string; sort?:
 
 /** `json.dumps` separators and non-ASCII escapes used by FastAPI. */
 export function pyJson(value: unknown): string {
-  if (value === null || value === undefined) return "null";
-  if (typeof value === "number" || typeof value === "boolean") return JSON.stringify(value);
+  if (value === null || value === undefined) {return "null";}
+  if (typeof value === "number" || typeof value === "boolean") {return JSON.stringify(value);}
   if (typeof value === "string") {
-    return JSON.stringify(value).replace(/[\u007f-\uffff]/g, (ch) => {
-      return "\\u" + ch.charCodeAt(0).toString(16).padStart(4, "0");
+    return JSON.stringify(value).replaceAll(/[\u007f-\uffff]/g, (ch) => {
+      return String.raw`\u` + ch.charCodeAt(0).toString(16).padStart(4, "0");
     });
   }
-  if (Array.isArray(value)) return "[" + value.map((item) => pyJson(item)).join(", ") + "]";
+  if (Array.isArray(value)) {return "[" + value.map((item) => pyJson(item)).join(", ") + "]";}
   if (typeof value === "object") {
-    const obj = value as Record<string, unknown>;
-    return "{" + Object.keys(obj).map((k) => JSON.stringify(k) + ": " + pyJson(obj[k])).join(", ") + "}";
+    return "{" + Object.entries(value).map(([k, v]) => JSON.stringify(k) + ": " + pyJson(v)).join(", ") + "}";
   }
   return "null";
 }

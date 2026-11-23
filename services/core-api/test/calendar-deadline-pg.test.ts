@@ -1,33 +1,41 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
-import { botsPg, type BotsPg, type Person } from "../test-support/bots-pg.ts";
+import { botsPg } from '../test-support/bots-pg.ts';
+import type { BotsPg, Person } from '../test-support/bots-pg.ts';
+import type { Row } from "../test-support/recorder.ts";
 
 const URL_ = process.env.BILLING_PG_URL;
 const SKIP = "set BILLING_PG_URL to a migrated Postgres";
 
 let db: BotsPg | undefined;
-before(async () => { if (URL_) db = await botsPg(URL_); });
+before(async () => { if (URL_) {db = await botsPg(URL_);} });
 after(async () => { await db?.close(); });
 
-const sql = async (text: string, params: unknown[] = []) => (await db!.pg.query(text, params)).rows;
+const sql = async (text: string, params: Array<unknown> = []) => (await db!.pg.query(text, params)).rows;
 
 const posting = async (company: string, days: number | null): Promise<string> => {
   const id = await db!.posting(company);
-  if (days !== null) await sql("UPDATE job_postings SET deadline = (now() AT TIME ZONE 'Asia/Seoul')::date + $2::int WHERE id = $1", [id, days]);
+  if (days !== null) {await sql("UPDATE job_postings SET deadline = (now() AT TIME ZONE 'Asia/Seoul')::date + $2::int WHERE id = $1", [id, days]);}
   return id;
 };
 
 const eventsOf = async (user: Person) => {
-  const from = new Date(Date.now() - 30 * 86400_000).toISOString();
-  const to = new Date(Date.now() + 300 * 86400_000).toISOString();
+  const from = new Date(Date.now() - 30 * 86_400_000).toISOString();
+  const to = new Date(Date.now() + 300 * 86_400_000).toISOString();
   const res = await db!.call(user, "GET", `/calendar/events?from=${from}&to=${to}&limit=100`);
   assert.equal(res.status, 200);
-  return res.body.data as Array<Record<string, unknown>>;
+  const { data } = res.body;
+  if (!Array.isArray(data)) {throw new TypeError("calendar events are not a list");}
+  const events: Array<Row> = [];
+  for (const item of data) {
+    if (typeof item === "object" && item !== null && !Array.isArray(item)) {events.push(item);}
+  }
+  return events;
 };
 
 test("a bookmark adds one deadline event, and bookmarking again adds none", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const id = await posting("마감클라우드", 5);
   assert.equal((await db.call(user, "POST", `/postings/${id}/bookmark`)).status, 204);
@@ -45,7 +53,7 @@ test("a bookmark adds one deadline event, and bookmarking again adds none", asyn
 });
 
 test("a posting without a deadline or with a passed one adds nothing on bookmark", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   for (const days of [null, -1]) {
     const id = await posting("무마감", days);
@@ -55,11 +63,11 @@ test("a posting without a deadline or with a passed one adds nothing on bookmark
 });
 
 test("un-bookmarking removes the event, and an event the user made by hand stays", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const id = await posting("해제클라우드", 3);
   const hand = await db.call(user, "POST", "/calendar/events", {
-    type: "CUSTOM", title: "직접 만든 일정", startsAt: new Date(Date.now() + 86400_000).toISOString(), endsAt: new Date(Date.now() + 2 * 86400_000).toISOString(),
+    type: "CUSTOM", title: "직접 만든 일정", startsAt: new Date(Date.now() + 86_400_000).toISOString(), endsAt: new Date(Date.now() + 2 * 86_400_000).toISOString(),
   });
   assert.equal(hand.status, 201);
   await db.call(user, "POST", `/postings/${id}/bookmark`);
@@ -70,7 +78,7 @@ test("un-bookmarking removes the event, and an event the user made by hand stays
 });
 
 test("applying adds the event when there was no bookmark, and links it when there was", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const plain = await posting("지원만", 4);
   const marked = await posting("북마크후지원", 6);
@@ -90,7 +98,7 @@ test("applying adds the event when there was no bookmark, and links it when ther
 });
 
 test("an applied posting keeps its event after the bookmark is removed", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const id = await posting("지원유지", 4);
   await db.call(user, "POST", `/postings/${id}/bookmark`);
@@ -100,7 +108,7 @@ test("an applied posting keeps its event after the bookmark is removed", async (
 });
 
 test("a past deadline shows only when the user applied", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const id = await posting("지난마감", -2);
   await db.call(user, "POST", `/postings/${id}/bookmark`);
@@ -110,7 +118,7 @@ test("a past deadline shows only when the user applied", async (t) => {
 });
 
 test("deleting a bookmark from the materials bin removes its event, and restoring brings it back", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const id = await posting("보관함", 7);
   await db.call(user, "POST", `/postings/${id}/bookmark`);

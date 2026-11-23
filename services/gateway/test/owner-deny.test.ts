@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, resetLimits, type Deps, type FrontEnv } from "../src/handler.ts";
+import { handle, resetLimits } from '../src/handler.ts';
+import type { Deps, FrontEnv } from '../src/handler.ts';
 import { ownerOf } from "../src/routes/owner.ts";
 
 const ID = "12345678-1234-5678-1234-567812345678";
@@ -31,7 +32,7 @@ test("python gets only the routes its FastAPI app mounts", () => {
     ["GET", `/api/v1/conversations/${ID}/artifacts`],
     ["GET", `/api/v1/conversations/${ID}/turns`],
   ];
-  for (const [method, path] of python) assert.equal(ownerOf(method, path), "python", `${method} ${path}`);
+  for (const [method, path] of python) {assert.equal(ownerOf(method, path), "python", `${method} ${path}`);}
 });
 
 test("paths no service mounts are denied instead of reaching python", () => {

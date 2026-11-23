@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { enqueueResumeJob } from "../src/ai-jobs.ts";
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
+import type { Json, JsonObject } from "../src/json.ts";
 import { resetLimits } from "../src/ratelimit.ts";
-import type { Ctx } from "../src/types.ts";
+import type { Ctx, UserRow } from "../src/types.ts";
+
+const jsonOf = <T>(res: Response): Promise<T> => res.json();
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const CONV = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
@@ -13,7 +17,7 @@ const JOB = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const NOW = new Date("2026-10-21T00:00:00.000Z");
 const PREVIEW = "급여 명세는 비밀";
 
-type Call = { sql: string; params: unknown[] };
+type Call = { sql: string; params: Array<unknown> };
 type Thread = {
   bot_id: string | null;
   notifications_muted: boolean | null;
@@ -22,6 +26,8 @@ type Thread = {
   unread: boolean | null;
   allowed: boolean;
 };
+
+const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
 
 const env = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
   APP_ENV: "production",
@@ -32,27 +38,27 @@ const env = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
   ...extra,
 });
 
-const done = (body: Record<string, unknown>) => new Request("https://core.example/api/v1/internal/notifications/ai-done", {
+const done = (body: JsonObject) => new Request("https://core.example/api/v1/internal/notifications/ai-done", {
   method: "POST",
   headers: { authorization: "Bearer job-secret", "content-type": "application/json" },
   body: JSON.stringify({ userId: USER, conversationId: CONV, jobId: JOB, ...body }),
 });
 
 const recording = (thread: Thread | null) => {
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const claimed = new Set<string>();
-  const pushed: string[] = [];
+  const pushed: Array<string> = [];
   const query: Deps["query"] = async (sql, params = []) => {
     seen.push({ sql, params });
-    if (sql.includes("INSERT INTO ai_jobs")) return { rows: [{ id: params[0], queue: params[2] }], rowCount: 1 };
+    if (sql.includes("INSERT INTO ai_jobs")) {return { rows: [{ id: text(params[0]), queue: text(params[2]) }], rowCount: 1 };}
     if (sql.includes("INSERT INTO notification_dedupes")) {
       const key = String(params[0]);
-      if (claimed.has(key)) return { rows: [], rowCount: 0 };
+      if (claimed.has(key)) {return { rows: [], rowCount: 0 };}
       claimed.add(key);
       return { rows: [{ dedupe_key: key }], rowCount: 1 };
     }
-    if (sql.includes("FROM conversations")) return { rows: thread ? [thread] : [], rowCount: thread ? 1 : 0 };
-    if (sql.includes("user_devices")) return { rows: [{ token: "ExponentPushToken[abc]" }], rowCount: 1 };
+    if (sql.includes("FROM conversations")) {return { rows: thread ? [thread] : [], rowCount: thread ? 1 : 0 };}
+    if (sql.includes("user_devices")) {return { rows: [{ token: "ExponentPushToken[abc]" }], rowCount: 1 };}
     return { rows: [], rowCount: 0 };
   };
   const fetchImpl: typeof fetch = async (_input, init) => {
@@ -70,11 +76,13 @@ const bot = (extra: Partial<Thread> = {}): Thread => ({
   bot_id: BOT, notifications_muted: false, display_name: "Push Bot", last_message_preview: PREVIEW, unread: true, allowed: true, ...extra,
 });
 
-const payloadOf = (seen: Call[]): Record<string, unknown> =>
-  JSON.parse(String(seen.find((call) => call.sql.includes("INSERT INTO ai_jobs"))?.params[7]));
+const payloadOf = (seen: Array<Call>): JsonObject => {
+  const parsed: Json = JSON.parse(String(seen.find((call) => call.sql.includes("INSERT INTO ai_jobs"))?.params[7]));
+  return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
+};
 
 const idOf = async (res: Response): Promise<string | null> =>
-  (await res.json() as { data: { id: string | null } }).data.id;
+  (await jsonOf<{ data: { id: string | null } }>(res)).data.id;
 
 test("a muted bot sends nothing and does not claim the job", async () => {
   resetLimits();
@@ -206,27 +214,32 @@ test("postgres stores the conversation and pushes the fixed sentence, not the pr
 
 test("resume enqueue reads the last chat job, not a newer notify job", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query: Deps["query"] = async (sql, params = []) => {
     seen.push({ sql, params });
     if (sql.includes("FROM conversations")) {
       const chat = /type IN \('chat', 'employer_ai'\)/.test(sql);
-      const last = chat ? { ai: "kept", text: "old" } : { body: PREVIEW };
+      const last: JsonObject = chat ? { ai: "kept", text: "old" } : { body: PREVIEW };
       return { rows: [{ company_id: null, company_plan: null, user_plan: "FREE", last }], rowCount: 1 };
     }
-    if (sql.includes("balance_after FROM billing_ledger")) return { rows: [{ balance_after: "1000000000000" }], rowCount: 1 };
-    if (sql.includes("INSERT INTO ai_jobs")) return { rows: [{ id: params[0], queue: params[2] }], rowCount: 1 };
-    if (sql.includes("INSERT INTO chat_events")) return { rows: [{ job_id: "job" }], rowCount: 1 };
+    if (sql.includes("balance_after FROM billing_ledger")) {return { rows: [{ balance_after: "1000000000000" }], rowCount: 1 };}
+    if (sql.includes("INSERT INTO ai_jobs")) {return { rows: [{ id: text(params[0]), queue: text(params[2]) }], rowCount: 1 };}
+    if (sql.includes("INSERT INTO chat_events")) {return { rows: [{ job_id: "job" }], rowCount: 1 };}
     return { rows: [], rowCount: 0 };
   };
-  const ctx = {
+  const user: UserRow = {
+    id: USER, displayName: "Ada", locale: "ko", email: "ada@push.app", provider: "email", plan: "FREE", subscriptionStatus: "NONE",
+    stripeCustomerId: null, periodEndsAt: null, createdAt: NOW.toISOString(), accountType: "PERSONAL", companyId: null, companyRole: null,
+  };
+  const ctx: Ctx = {
     request: new Request("https://core.example"),
-    env: { QUEUE_BACKEND: "redis", DISPATCH_ORIGIN: "" },
-    deps: { query },
+    env: env(),
+    deps: { query, now: () => NOW },
     rid: "r",
     url: new URL("https://core.example"),
+    user,
     now: NOW,
-  } as Ctx;
+  };
   await enqueueResumeJob(ctx, { conversationId: CONV, userId: USER, payload: { text: "" } });
   const payload = payloadOf(seen);
   assert.equal(payload.ai, "kept");

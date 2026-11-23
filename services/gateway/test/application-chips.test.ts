@@ -2,7 +2,18 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
-import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
+import { handle, resetLimits } from '../src/handler.ts';
+import type { Deps, FrontEnv, Query } from '../src/handler.ts';
+import type { JsonObject, Row } from '../src/types.ts';
+
+const readJson = async <T>(res: Response): Promise<T> => {
+  const body: T = await res.json();
+  return body;
+};
+const parseJson = <T>(text: string): T => {
+  const value: T = JSON.parse(text);
+  return value;
+};
 
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const CONV = "11111111-1111-4111-8111-111111111111";
@@ -18,7 +29,7 @@ const env = (extra: Partial<FrontEnv> = {}): FrontEnv => ({
 
 const deps = (query: Query): Deps => ({ query, now: () => NOW });
 
-const message = (applicationId: string) => ({
+const message = (applicationId: string): JsonObject => ({
   id: MSG,
   conversation_id: CONV,
   role: "USER",
@@ -28,7 +39,7 @@ const message = (applicationId: string) => ({
   created_at: "2026-11-10T00:00:00Z",
 });
 
-const authRow = (rows: Record<string, unknown>[]) => ({
+const authRow = (rows: Array<JsonObject>) => ({
   id: USER, display_name: "Ada", locale: "ko",
   created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
   hits: 1, conversation_id: CONV, rows,
@@ -36,21 +47,21 @@ const authRow = (rows: Record<string, unknown>[]) => ({
 
 test("a company conversation names the applicant and lists submitted documents", async () => {
   resetLimits();
-  const seen: string[] = [];
+  const seen: Array<string> = [];
   const query: Query = async (sql) => {
     seen.push(sql);
     if (sql.includes("FROM applications a")) {
       return [{ id: APP, display_name: "김태윤", document_titles: ["이력서", "포트폴리오.pdf"] }];
     }
-    if (sql.includes("conversation_attachments")) return [];
-    if (sql.includes("json_agg") || sql.includes("access_tokens")) return [authRow([message(APP)])];
+    if (sql.includes("conversation_attachments")) {return [];}
+    if (sql.includes("json_agg") || sql.includes("access_tokens")) {return [authRow([message(APP)])];}
     return [];
   };
   const res = await handle(new Request(`https://push-be.example/api/v1/conversations/${CONV}/messages`, {
     headers: { authorization: "Bearer secret-token" },
   }), env(), deps(query));
   assert.equal(res.status, 200, await res.clone().text());
-  const body = await res.json() as { data: { attachments: Record<string, unknown>[] }[] };
+  const body = await readJson<{ data: Array<{ attachments: Array<JsonObject> }> }>(res);
   assert.deepEqual(body.data[0].attachments[0], {
     type: "APPLICATION",
     id: APP,
@@ -68,33 +79,33 @@ test("a company conversation names the applicant and lists submitted documents",
 test("an application from another company adds no title", async () => {
   resetLimits();
   const query: Query = async (sql) => {
-    if (sql.includes("FROM applications a")) return [];
-    if (sql.includes("conversation_attachments")) return [];
-    if (sql.includes("json_agg") || sql.includes("access_tokens")) return [authRow([message(APP)])];
+    if (sql.includes("FROM applications a")) {return [];}
+    if (sql.includes("conversation_attachments")) {return [];}
+    if (sql.includes("json_agg") || sql.includes("access_tokens")) {return [authRow([message(APP)])];}
     return [];
   };
   const res = await handle(new Request(`https://push-be.example/api/v1/conversations/${CONV}/messages`, {
     headers: { authorization: "Bearer secret-token" },
   }), env(), deps(query));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { attachments: Record<string, unknown>[] }[] };
+  const body = await readJson<{ data: Array<{ attachments: Array<JsonObject> }> }>(res);
   assert.deepEqual(body.data[0].attachments[0], { type: "APPLICATION", id: APP });
   assert.equal(Object.hasOwn(body.data[0].attachments[0], "title"), false);
   assert.equal(Object.hasOwn(body.data[0].attachments[0], "documentTitles"), false);
 });
 
 const URL_ = process.env.BILLING_PG_URL;
-let pg: { query: (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>; close: () => Promise<void> } | undefined;
+let pg: { query: (text: string, params?: Array<unknown>) => Promise<{ rows: Array<Row> }>; close: () => Promise<void> } | undefined;
 
 before(async () => {
-  if (!URL_) return;
+  if (!URL_) {return;}
   const { livePg } = await import("../../core-api/test/parity/pg.ts");
   pg = await livePg(URL_);
 });
 after(async () => { await pg?.close(); });
 
 test("gateway chips stay inside the conversation's company", async (t) => {
-  if (!pg) return t.skip("set BILLING_PG_URL to a migrated Postgres");
+  if (!pg) {return t.skip("set BILLING_PG_URL to a migrated Postgres");}
   const db = pg;
   const applicant = crypto.randomUUID();
   const member = crypto.randomUUID();
@@ -164,7 +175,7 @@ test("gateway chips stay inside the conversation's company", async (t) => {
     }), deps(async (sql, params) => (await db.query(sql, params)).rows));
     const text = await res.text();
     assert.equal(res.status, 200, text);
-    const body = JSON.parse(text) as { data: { attachments: Record<string, unknown>[] }[] };
+    const body = parseJson<{ data: Array<{ attachments: Array<JsonObject> }> }>(text);
     return body.data.flatMap((row) => row.attachments);
   };
 

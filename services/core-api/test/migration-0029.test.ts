@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 
-const sql = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../../db/migrations/0029_user_consent_terms.sql"), "utf8");
+const sql = readFileSync(resolve(import.meta.dirname, "../../../db/migrations/0029_user_consent_terms.sql"), "utf8");
 
 test("migration 0029 stores signup terms on user_consents", () => {
   assert.match(sql, /ADD COLUMN terms_version text/);

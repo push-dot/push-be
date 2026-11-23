@@ -4,20 +4,22 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
 import type { Query } from "../src/db.ts";
-import { handle, type CoreEnv } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
-import { livePg, type LivePg } from "./parity/pg.ts";
+import { livePg } from './parity/pg.ts';
+import type { LivePg } from './parity/pg.ts';
 
 const URL_ = process.env.BILLING_PG_URL;
 const env: CoreEnv = { APP_ENV: "production" };
 
 let pg: LivePg | undefined;
-before(async () => { if (URL_) pg = await livePg(URL_); });
+before(async () => { if (URL_) {pg = await livePg(URL_);} });
 after(async () => { await pg?.close(); });
 
 const dbFor = (userId: string): Query => async (sql, params = []) => {
-  if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-  if (sql.includes("idempotency_keys")) return sql.includes("INSERT") ? { rows: [{ id: "idem" }], rowCount: 1 } : { rows: [], rowCount: 0 };
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+  if (sql.includes("idempotency_keys")) {return sql.includes("INSERT") ? { rows: [{ id: "idem" }], rowCount: 1 } : { rows: [], rowCount: 0 };}
   if (sql.includes("access_tokens")) {
     return { rows: [{
       id: userId, display_name: "like fixture", locale: "ko", plan: "FREE", subscription_status: "NONE",
@@ -37,7 +39,7 @@ const find = async (userId: string, path: string, term: string): Promise<string>
 };
 
 test("a percent or underscore in a search term matches only itself", async (t) => {
-  if (!pg) return t.skip("set BILLING_PG_URL to a migrated Postgres");
+  if (!pg) {return t.skip("set BILLING_PG_URL to a migrated Postgres");}
   const user = crypto.randomUUID();
   const ids = { literal: crypto.randomUUID(), plain: crypto.randomUUID() };
   const tag = "like" + ids.literal.slice(0, 8);

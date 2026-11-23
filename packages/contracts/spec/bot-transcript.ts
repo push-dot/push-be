@@ -6,21 +6,27 @@ const id = pathParam("id", { type: "string", description: "A bot id, or the lite
 
 const at = { ...dateTime, description: "When the event was stored. A joined token has the time of its last row." };
 
+const isSchema = (value: unknown): value is Schema => typeof value === "object" && value !== null && !Array.isArray(value);
+const asSchema = (value: unknown): Schema => (isSchema(value) ? value : {});
+const schemaList = (value: unknown): Array<Schema> | undefined => (Array.isArray(value) ? value.filter(isSchema) : undefined);
+const stringList = (value: unknown): Array<string> => (Array.isArray(value) ? value.filter((item) => typeof item === "string") : []);
+const schemaMap = (value: unknown): Record<string, Schema> =>
+  (isSchema(value) ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, Schema] => isSchema(entry[1]))) : {});
+
 /** A stored event: seq and at are always present. */
 const stored = (event: Schema): Schema => {
-  const variants = (event.oneOf ?? event.anyOf) as Schema[] | undefined;
-  if (variants) return { ...event, [event.oneOf ? "oneOf" : "anyOf"]: variants.map(stored) };
-  const required = event.required as string[];
+  const variants = schemaList(event.oneOf ?? event.anyOf);
+  if (variants) {return { ...event, [event.oneOf ? "oneOf" : "anyOf"]: variants.map(stored) };}
   return {
     ...event,
-    properties: { ...(event.properties as Record<string, Schema>), at },
-    required: [...required.filter((field) => field !== "seq"), "seq", "at"],
+    properties: { ...schemaMap(event.properties), at },
+    required: [...stringList(event.required).filter((field) => field !== "seq"), "seq", "at"],
   };
 };
 
 /** A card carries the facts of its approvals row, so a card asked again reads the same after a reopen. */
 const card = (event: Schema): Schema => {
-  const properties = event.properties as Record<string, Schema>;
+  const properties = schemaMap(event.properties);
   return {
     ...event,
     properties: {
@@ -33,13 +39,13 @@ const card = (event: Schema): Schema => {
       expiresAt: { ...nullable(dateTime), description: "null when the card waits until it is answered" },
       retryable: { ...bool, description: "True for a tool card with a lifetime while no newer chat job of the thread exists" },
     },
-    required: [...(event.required as string[]), "resolution", "openedAt", "expiresAt", "retryable"],
+    required: [...stringList(event.required), "resolution", "openedAt", "expiresAt", "retryable"],
   };
 };
 
 const narrowed = (event: Schema, fields: Record<string, Schema>): Schema => ({
   ...event,
-  properties: { ...(event.properties as Record<string, Schema>), ...fields },
+  properties: { ...schemaMap(event.properties), ...fields },
 });
 
 // A bot thread is personal, so the employer cards never run in it. done ends a stored turn and is not kept.
@@ -49,8 +55,8 @@ const {
 } = chatEvents;
 
 // The shared event list is looser than the rows the AI service stores. These are the stored values.
-const todoItem = ((todo.properties as Record<string, Schema>).items as Schema).items as Schema;
-const storedShapes: Schema[] = [
+const todoItem = asSchema(asSchema(schemaMap(todo.properties).items).items);
+const storedShapes: Array<Schema> = [
   narrowed(plan, { id: enumOf("strategy", "feedback") }),
   narrowed(tool, {
     tier: enumOf("READ", "SAFE_WRITE", "RISKY_WRITE"),
@@ -59,18 +65,18 @@ const storedShapes: Schema[] = [
   narrowed(todo, { items: arr(narrowed(todoItem, { id: str })) }),
 ];
 
-const turnEvents: Schema[] = [
+const turnEvents: Array<Schema> = [
   ...Object.values(kept),
   ...storedShapes,
   ...statusPhases,
-  { ...cancelled, required: [...(cancelled.required as string[]), "resumable"] },
+  { ...cancelled, required: [...stringList(cancelled.required), "resumable"] },
   card(approval),
   card(choice),
 ].map(stored);
 
 const attachment = obj({ kind: enumOf("file", "document", "posting", "link"), id: uuid, title: str });
 
-export const schemas: Record<string, Schema> = {
+export const schemas = {
   BotTurn: obj({
     id: { type: "string", description: "Opaque. Equals turn on the frames of this run's stream." },
     status: enumOf("PENDING", "RUNNING", "DONE", "FAILED", "CANCELLED"),
@@ -99,7 +105,7 @@ export const schemas: Record<string, Schema> = {
   }),
 };
 
-export const routes: Route[] = [
+export const routes: Array<Route> = [
   get("ai", "/api/v1/bots/{id}/transcript", {
     tag: "bots",
     summary: "Read a bot's chat, newest turn first",

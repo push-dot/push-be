@@ -4,6 +4,8 @@ import { ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 import { readObject } from "./recruiting-shared.ts";
 
+type Row = NonNullable<Awaited<ReturnType<typeof one>>>;
+
 const PATH = "/api/v1/me/consents";
 const TERMS_PATH = "/api/v1/me/consents/terms";
 export const TERMS_VERSION = "1.0";
@@ -34,8 +36,8 @@ const REPLACE_TERMS = "WITH previous AS ("
   + "marketing_at = CASE WHEN $4::boolean THEN $2::timestamptz ELSE user_consents.marketing_at END "
   + "WHERE user_id = $1::uuid AND user_id IN (SELECT user_id FROM archived)";
 
-const termsOf = (row: Record<string, unknown> | null) => ({
-  version: row?.terms_version == null ? null : String(row.terms_version),
+const termsOf = (row: Row | null) => ({
+  version: row?.terms_version === null || row?.terms_version === undefined ? null : String(row.terms_version),
   age14At: ts(row?.age14_at),
   serviceTermsAt: ts(row?.service_terms_at),
   privacyAt: ts(row?.privacy_at),
@@ -43,24 +45,24 @@ const termsOf = (row: Record<string, unknown> | null) => ({
   marketingAt: ts(row?.marketing_at),
 });
 
-const view = (referenceData: boolean, updatedAt: string | null, row: Record<string, unknown> | null) => ({
+const view = (referenceData: boolean, updatedAt: string | null, row: Row | null) => ({
   referenceData,
   updatedAt,
   terms: termsOf(row),
 });
 
-const load = async (ctx: Ctx): Promise<Record<string, unknown> | null> =>
+const load = async (ctx: Ctx): Promise<Row | null> =>
   one(ctx.deps.query, SELECT, [ctx.user.id]);
 
 const getConsents = async (ctx: Ctx): Promise<Response> => {
   const row = await load(ctx);
-  if (!row) return data(200, view(false, null, null), ctx.rid);
+  if (!row) {return data(200, view(false, null, null), ctx.rid);}
   return data(200, view(asBool(row.reference_data), ts(row.updated_at), row), ctx.rid);
 };
 
 const putConsents = async (ctx: Ctx): Promise<Response> => {
   const body = await readObject(ctx.request);
-  if (typeof body.referenceData !== "boolean") throw fieldError("referenceData", "must be a boolean");
+  if (typeof body.referenceData !== "boolean") {throw fieldError("referenceData", "must be a boolean");}
   const now = ctx.now.toISOString();
   await query(ctx.deps.query,
     "INSERT INTO user_consents (user_id, reference_data, updated_at) VALUES ($1,$2,$3) ON CONFLICT (user_id) DO UPDATE SET reference_data = EXCLUDED.reference_data, updated_at = EXCLUDED.updated_at",
@@ -75,7 +77,7 @@ const putTerms = async (ctx: Ctx): Promise<Response> => {
   const body = await readObject(ctx.request);
   const allowed = new Set(["age14", "serviceTerms", "privacy", "marketing", "termsVersion"]);
   for (const key of Object.keys(body)) {
-    if (!allowed.has(key)) throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
+    if (!allowed.has(key)) {throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");}
   }
   const sent = REQUIRED.filter((key) => key in body);
   if (sent.length > 0 && sent.length !== REQUIRED.length) {
@@ -83,12 +85,12 @@ const putTerms = async (ctx: Ctx): Promise<Response> => {
     throw fieldError(missing, "must be true");
   }
   for (const key of sent) {
-    if (body[key] !== true) throw fieldError(key, "cannot be turned off");
+    if (body[key] !== true) {throw fieldError(key, "cannot be turned off");}
   }
   const agree = sent.length === REQUIRED.length;
   let version: string | null = null;
   if ("termsVersion" in body) {
-    if (!agree) throw fieldError("termsVersion", "send it with the required terms");
+    if (!agree) {throw fieldError("termsVersion", "send it with the required terms");}
     if (typeof body.termsVersion !== "string" || body.termsVersion.length < 1 || body.termsVersion.length > 64) {
       throw fieldError("termsVersion", "must be 1-64 characters");
     }
@@ -97,15 +99,15 @@ const putTerms = async (ctx: Ctx): Promise<Response> => {
     version = TERMS_VERSION;
   }
   const marketingSet = "marketing" in body;
-  if (marketingSet && typeof body.marketing !== "boolean") throw fieldError("marketing", "must be a boolean");
-  if (!agree && !marketingSet) throw new HttpError(400, "VALIDATION_ERROR", "request body required");
+  if (marketingSet && typeof body.marketing !== "boolean") {throw fieldError("marketing", "must be a boolean");}
+  if (!agree && !marketingSet) {throw new HttpError(400, "VALIDATION_ERROR", "request body required");}
   const now = ctx.now.toISOString();
   const marketing = marketingSet ? body.marketing : false;
   let replaced = false;
-  if (agree && version != null) {
+  if (agree && version !== null && version !== undefined) {
     const existing = await load(ctx);
-    const stored = existing?.terms_version == null ? null : String(existing.terms_version);
-    if (stored != null && stored !== version) {
+    const stored = existing?.terms_version === null || existing?.terms_version === undefined ? null : String(existing.terms_version);
+    if (stored !== null && stored !== version) {
       await query(ctx.deps.query, REPLACE_TERMS, [ctx.user.id, now, version, marketingSet, marketing, crypto.randomUUID()]);
       replaced = true;
     }
@@ -118,11 +120,11 @@ const putTerms = async (ctx: Ctx): Promise<Response> => {
 
 export const dispatchConsents = async (ctx: Ctx, path: string): Promise<Response | null> => {
   if (path === TERMS_PATH) {
-    if (ctx.request.method === "PUT") return putTerms(ctx);
+    if (ctx.request.method === "PUT") {return putTerms(ctx);}
     return null;
   }
-  if (path !== PATH) return null;
-  if (ctx.request.method === "GET") return getConsents(ctx);
-  if (ctx.request.method === "PUT") return putConsents(ctx);
+  if (path !== PATH) {return null;}
+  if (ctx.request.method === "GET") {return getConsents(ctx);}
+  if (ctx.request.method === "PUT") {return putConsents(ctx);}
   return null;
 };

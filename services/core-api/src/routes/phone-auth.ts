@@ -1,4 +1,5 @@
-import { readPendingSignup, type PendingSignup } from "../auth/pending-signup.ts";
+import { readPendingSignup } from '../auth/pending-signup.ts';
+import type { PendingSignup } from '../auth/pending-signup.ts';
 import { isUnique, one, query } from "../db.ts";
 import { HttpError, data, fieldError, sha256Hex } from "../http.ts";
 import { ts } from "../page.ts";
@@ -6,6 +7,8 @@ import { createSmsSender, smsConfigured } from "../sms/sender.ts";
 import type { Ctx, UserRow } from "../types.ts";
 import { clearDeletion, issue, resolveUser } from "./auth.ts";
 import { readObject } from "./recruiting-shared.ts";
+
+type Body = Awaited<ReturnType<typeof readObject>>;
 
 const SEND_PATH = "/api/v1/auth/phone/send";
 const VERIFY_PATH = "/api/v1/auth/phone/verify";
@@ -32,36 +35,36 @@ const IDENTITY = "SELECT user_id FROM user_identities WHERE provider = $1 AND pr
 const INSERT_IDENTITY = "INSERT INTO user_identities (user_id, provider, provider_subject, created_at) VALUES ($1,$2,$3,$4)";
 
 const envInt = (value: string | undefined, fallback: number, max: number): number => {
-  if (value == null || value.trim() === "") return fallback;
+  if ((value === null || value === undefined) || value.trim() === "") {return fallback;}
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > max) return fallback;
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > max) {return fallback;}
   return parsed;
 };
 
-const phoneOf = (body: Record<string, unknown>): string => {
+const phoneOf = (body: Body): string => {
   const phone = body.phone;
-  if (typeof phone !== "string" || !PHONE_RE.test(phone)) throw fieldError("phone", "must be E.164");
+  if (typeof phone !== "string" || !PHONE_RE.test(phone)) {throw fieldError("phone", "must be E.164");}
   return phone;
 };
 
-const codeOf = (body: Record<string, unknown>): string => {
+const codeOf = (body: Body): string => {
   const code = body.code;
-  if (typeof code !== "string" || !CODE_RE.test(code)) throw fieldError("code", "must be 6 digits");
+  if (typeof code !== "string" || !CODE_RE.test(code)) {throw fieldError("code", "must be 6 digits");}
   return code;
 };
 
 const six = (): string => {
   const buf = new Uint32Array(1);
   crypto.getRandomValues(buf);
-  return String(buf[0] % 1000000).padStart(6, "0");
+  return String(buf[0] % 1_000_000).padStart(6, "0");
 };
 
 const callerOf = async (ctx: Ctx): Promise<UserRow | null> => {
   const header = ctx.request.headers.get("authorization") || "";
-  if (!header) return null;
-  if (!header.startsWith("Bearer ")) throw new HttpError(401, "UNAUTHENTICATED", "missing bearer token");
+  if (!header) {return null;}
+  if (!header.startsWith("Bearer ")) {throw new HttpError(401, "UNAUTHENTICATED", "missing bearer token");}
   const user = await resolveUser(ctx, header.slice(7));
-  if (user.accountType === "EMPLOYER") throw new HttpError(403, "FORBIDDEN", "phone auth is for personal accounts");
+  if (user.accountType === "EMPLOYER") {throw new HttpError(403, "FORBIDDEN", "phone auth is for personal accounts");}
   return user;
 };
 
@@ -70,18 +73,18 @@ const taken = (provider: string): HttpError =>
   new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account", { conflict: provider === "phone" ? "PHONE" : "IDENTITY", provider });
 
 const bindIdentity = async (ctx: Ctx, userId: string, provider: string, subject: string): Promise<void> => {
-  if (!provider || !subject) return;
+  if (!provider || !subject) {return;}
   const existing = await one(ctx.deps.query, IDENTITY, [provider, subject]);
   if (existing) {
-    if (String(existing.user_id) === userId) return;
+    if (String(existing.user_id) === userId) {return;}
     throw taken(provider);
   }
   try {
     await query(ctx.deps.query, INSERT_IDENTITY, [userId, provider, subject, ctx.now.toISOString()]);
-  } catch (err) {
-    if (!isUnique(err)) throw err;
+  } catch (error) {
+    if (!isUnique(error)) {throw error;}
     const again = await one(ctx.deps.query, IDENTITY, [provider, subject]);
-    if (again && String(again.user_id) === userId) return;
+    if (again && String(again.user_id) === userId) {return;}
     throw taken(provider);
   }
 };
@@ -89,7 +92,7 @@ const bindIdentity = async (ctx: Ctx, userId: string, provider: string, subject:
 const session = async (ctx: Ctx, userId: string, created: boolean, link?: { provider: string }): Promise<Response> => {
   await clearDeletion(ctx, userId);
   const body = await issue(ctx, userId);
-  return data(200, { ...body, created, ...(link ? { linked: true, provider: link.provider } : {}) }, ctx.rid);
+  return data(200, link ? { ...body, created, linked: true, provider: link.provider } : { ...body, created }, ctx.rid);
 };
 
 const hasSocial = async (ctx: Ctx, userId: string): Promise<boolean> => {
@@ -98,9 +101,9 @@ const hasSocial = async (ctx: Ctx, userId: string): Promise<boolean> => {
   return [me?.provider, ...listed.rows.map((row) => row.provider)].some((provider) => provider && provider !== "phone");
 };
 
-const pendingOf = async (ctx: Ctx, body: Record<string, unknown>): Promise<PendingSignup | null> => {
-  if (body.pendingToken == null || body.pendingToken === "") return null;
-  if (typeof body.pendingToken !== "string") throw fieldError("pendingToken", "must be a string");
+const pendingOf = async (ctx: Ctx, body: Body): Promise<PendingSignup | null> => {
+  if ((body.pendingToken === null || body.pendingToken === undefined) || body.pendingToken === "") {return null;}
+  if (typeof body.pendingToken !== "string") {throw fieldError("pendingToken", "must be a string");}
   return readPendingSignup(ctx.env, body.pendingToken, ctx.now);
 };
 
@@ -110,9 +113,9 @@ const sendPhone = async (ctx: Ctx): Promise<Response> => {
   const cooldown = envInt(ctx.env.PHONE_CODE_COOLDOWN_SEC, DEFAULT_COOLDOWN, 3600);
   const ttl = envInt(ctx.env.PHONE_CODE_TTL_SEC, DEFAULT_TTL, 3600);
   const latest = await one(ctx.deps.query, LATEST_SENT, [phone]);
-  if (latest?.sent_at != null) {
+  if ((latest?.sent_at !== null && latest?.sent_at !== undefined)) {
     const wait = Math.ceil((Date.parse(String(latest.sent_at)) + cooldown * 1000 - ctx.now.getTime()) / 1000);
-    if (wait > 0) throw new HttpError(429, "RATE_LIMITED", "resend cooldown", { retryAfterSec: wait });
+    if (wait > 0) {throw new HttpError(429, "RATE_LIMITED", "resend cooldown", { retryAfterSec: wait });}
   }
   if (!ctx.deps.sms && !smsConfigured(ctx.env)) {
     throw new HttpError(503, "NOT_CONFIGURED", "sms provider is not configured");
@@ -126,8 +129,8 @@ const sendPhone = async (ctx: Ctx): Promise<Response> => {
   const sender = ctx.deps.sms ?? createSmsSender(ctx.env);
   try {
     await sender.send(phone, code);
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
+  } catch (error) {
+    if (error instanceof HttpError) {throw error;}
     throw new HttpError(503, "NOT_CONFIGURED", "sms provider is not configured");
   }
   return data(202, { cooldownSeconds: cooldown, expiresAt: ts(expires) }, ctx.rid);
@@ -139,15 +142,15 @@ const finishOwned = async (ctx: Ctx, userId: string, phone: string, created: boo
 };
 
 const linkOrBlock = async (ctx: Ctx, userId: string, pending: PendingSignup, phone: string): Promise<Response> => {
-  if (await hasSocial(ctx, userId)) return finishOwned(ctx, userId, phone, false);
+  if (await hasSocial(ctx, userId)) {return finishOwned(ctx, userId, phone, false);}
   const holder = await one(ctx.deps.query, IDENTITY, [pending.provider, pending.subject]);
   if (holder && String(holder.user_id) !== userId) {
     throw taken(pending.provider);
   }
   try {
     await query(ctx.deps.query, SET_SOCIAL, [userId, pending.provider, pending.subject]);
-  } catch (err) {
-    if (!isUnique(err)) throw err;
+  } catch (error) {
+    if (!isUnique(error)) {throw error;}
     throw taken(pending.provider);
   }
   await bindIdentity(ctx, userId, pending.provider, pending.subject);
@@ -164,17 +167,17 @@ const createFromPending = async (ctx: Ctx, pending: PendingSignup, phone: string
   const userId = crypto.randomUUID();
   try {
     await insertSocial(ctx, userId, pending, phone, pending.email);
-  } catch (err) {
-    if (!isUnique(err)) throw err;
+  } catch (error) {
+    if (!isUnique(error)) {throw error;}
     const raced = await one(ctx.deps.query, BY_PHONE, [phone]);
-    if (raced) return linkOrBlock(ctx, String(raced.id), pending, phone);
-    if (!pending.email) throw taken(pending.provider);
+    if (raced) {return linkOrBlock(ctx, String(raced.id), pending, phone);}
+    if (!pending.email) {throw taken(pending.provider);}
     try {
       await insertSocial(ctx, userId, pending, phone, null);
-    } catch (err2) {
-      if (!isUnique(err2)) throw err2;
+    } catch (error) {
+      if (!isUnique(error)) {throw error;}
       const again = await one(ctx.deps.query, BY_PHONE, [phone]);
-      if (again) return linkOrBlock(ctx, String(again.id), pending, phone);
+      if (again) {return linkOrBlock(ctx, String(again.id), pending, phone);}
       throw taken(pending.provider);
     }
   }
@@ -188,7 +191,7 @@ const verifyPhone = async (ctx: Ctx): Promise<Response> => {
   const code = codeOf(body);
   const max = envInt(ctx.env.PHONE_CODE_MAX_ATTEMPTS, DEFAULT_ATTEMPTS, 20);
   const row = await one(ctx.deps.query, ACTIVE_CODE, [phone]);
-  if (!row) throw new HttpError(400, "PHONE_CODE_INVALID", "code is invalid");
+  if (!row) {throw new HttpError(400, "PHONE_CODE_INVALID", "code is invalid");}
   if (Date.parse(String(row.expires_at)) <= ctx.now.getTime()) {
     await query(ctx.deps.query, CONSUME_ONE, [String(row.id), ctx.now.toISOString()]);
     throw new HttpError(400, "PHONE_CODE_EXPIRED", "code is expired");
@@ -206,26 +209,26 @@ const verifyPhone = async (ctx: Ctx): Promise<Response> => {
   }
   if (pending) {
     const owner = await one(ctx.deps.query, BY_PHONE, [phone]);
-    if (owner) return linkOrBlock(ctx, String(owner.id), pending, phone);
+    if (owner) {return linkOrBlock(ctx, String(owner.id), pending, phone);}
     return createFromPending(ctx, pending, phone);
   }
   const owner = await one(ctx.deps.query, BY_PHONE, [phone]);
-  if (owner) return finishOwned(ctx, String(owner.id), phone, false);
+  if (owner) {return finishOwned(ctx, String(owner.id), phone, false);}
   const userId = crypto.randomUUID();
   try {
     await query(ctx.deps.query, INSERT_USER, [userId, phone, ctx.now.toISOString()]);
-  } catch (err) {
-    if (!isUnique(err)) throw err;
+  } catch (error) {
+    if (!isUnique(error)) {throw error;}
     const raced = await one(ctx.deps.query, BY_PHONE, [phone]);
-    if (!raced) throw err;
+    if (!raced) {throw error;}
     return finishOwned(ctx, String(raced.id), phone, false);
   }
   return finishOwned(ctx, userId, phone, true);
 };
 
 export const dispatchPhoneAuth = async (ctx: Ctx, path: string): Promise<Response | null> => {
-  if (ctx.request.method !== "POST") return null;
-  if (path === SEND_PATH) return sendPhone(ctx);
-  if (path === VERIFY_PATH) return verifyPhone(ctx);
+  if (ctx.request.method !== "POST") {return null;}
+  if (path === SEND_PATH) {return sendPhone(ctx);}
+  if (path === VERIFY_PATH) {return verifyPhone(ctx);}
   return null;
 };

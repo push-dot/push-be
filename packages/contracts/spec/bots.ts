@@ -115,7 +115,7 @@ const updateBotBody = closed({
   color: botColor,
 }, ["expectedRevision"]);
 
-export const schemas: Record<string, Schema> = {
+export const schemas = {
   BotColor: enumOf("teal", "sky", "blue", "violet", "pink", "red", "coral", "amber", "green", "brown", "gray"),
   BotActivity: botActivity,
   BotOutcome: botOutcome,
@@ -130,7 +130,7 @@ export const schemas: Record<string, Schema> = {
   BotLinkPreview: linkPreview,
 };
 
-export const routes: Route[] = [
+export const routes: Array<Route> = [
   get("core", "/api/v1/bots", {
     tag: "bots",
     summary: "List the caller's bots, or find the bot of a posting's company",

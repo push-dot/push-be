@@ -1,29 +1,29 @@
-import type { Query } from "../db.ts";
+import type { Query, QueryResult } from "../db.ts";
 import { one } from "../db.ts";
 
 export const DISPLAY_MICRO = 6000;
 
-const PERSONAL: Record<string, number> = {
-  FREE: 1_800_000,
-  PRO: 27_000_000,
-  ULTRA: 108_000_000,
-};
+const PERSONAL = new Map([
+  ["FREE", 1_800_000],
+  ["PRO", 27_000_000],
+  ["ULTRA", 108_000_000],
+]);
 
-const EMPLOYER: Record<string, number> = {
-  BASIC: 18_000_000,
-  PRO: 90_000_000,
-  ULTRA: 180_000_000,
-};
+const EMPLOYER = new Map([
+  ["BASIC", 18_000_000],
+  ["PRO", 90_000_000],
+  ["ULTRA", 180_000_000],
+]);
 
 export const grantMicro = (audience: "PERSONAL" | "EMPLOYER", plan: string): number => {
   const table = audience === "EMPLOYER" ? EMPLOYER : PERSONAL;
-  return table[plan] ?? 0;
+  return table.get(plan) ?? 0;
 };
 
 export const iapTopupMicro = (raw: string | undefined): number => {
   const text = raw?.trim() ?? "";
-  if (text === "") return 300 * DISPLAY_MICRO;
-  if (!/^[1-9]\d*$/.test(text)) return 300 * DISPLAY_MICRO;
+  if (text === "") {return 300 * DISPLAY_MICRO;}
+  if (!/^[1-9]\d*$/.test(text)) {return 300 * DISPLAY_MICRO;}
   return Number(text) * DISPLAY_MICRO;
 };
 
@@ -33,11 +33,11 @@ export const iapTopupMicro = (raw: string | undefined): number => {
 // Bounds a transaction that takes the owner row lock, which a Stripe webhook holds across its Stripe calls (10 s each). A webhook
 // waits up to 15 s, past one slow Stripe call of the holder, then fails and Stripe retries it; a user request waits 3 s and then
 // gives up instead of hanging a chat send. statement_timeout stays above lock_timeout, or it would cut the lock wait first (57014).
-export const boundTransaction = (q: Query, lockTimeout: "3s" | "15s"): Promise<unknown> => q(
+export const boundTransaction = (q: Query, lockTimeout: "3s" | "15s"): Promise<QueryResult> => q(
   "SELECT set_config('lock_timeout', $1, true), set_config('statement_timeout', $2, true), set_config('idle_in_transaction_session_timeout', '30s', true)",
   [lockTimeout, lockTimeout === "15s" ? "20s" : "10s"]);
 
-export const lockOwner = (q: Query, audience: "PERSONAL" | "EMPLOYER", ownerId: string): Promise<Record<string, unknown> | null> =>
+export const lockOwner = (q: Query, audience: "PERSONAL" | "EMPLOYER", ownerId: string): ReturnType<typeof one> =>
   one(q, audience === "EMPLOYER" ? "SELECT id FROM companies WHERE id = $1 FOR NO KEY UPDATE" : "SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE", [ownerId]);
 
 const USER_GRANT = "INSERT INTO billing_ledger (id, user_id, type, amount_micro_credits, balance_after, reference_id, created_at) SELECT $1, $2, 'PURCHASE', $3, COALESCE((SELECT balance_after FROM billing_ledger WHERE user_id = $2 ORDER BY seq DESC LIMIT 1), 0) + $3, $4, $5 ON CONFLICT (user_id, type, reference_id) DO NOTHING";
@@ -51,7 +51,7 @@ const PERIOD_STEP = COMPANY_INSERT + "(SELECT $2::uuid AS id) c" + COMPANY_CONFL
 const COMPANY_GRANTS = "SELECT reference_id, amount_micro_credits FROM billing_ledger WHERE company_id = $1 AND user_id IS NULL AND type = 'PURCHASE' AND (reference_id = $2 OR reference_id LIKE $3)";
 
 const EMPLOYER_TIERS = ["BASIC", "PRO", "ULTRA"];
-const tiersUpTo = (plan: string): string[] => EMPLOYER_TIERS.slice(0, EMPLOYER_TIERS.indexOf(plan) + 1);
+const tiersUpTo = (plan: string): Array<string> => EMPLOYER_TIERS.slice(0, EMPLOYER_TIERS.indexOf(plan) + 1);
 export const monthKey = (now: Date): string => "monthly:" + now.toISOString().slice(0, 7);
 export const periodKey = (subscriptionId: string, start: Date): string => `period:${subscriptionId}:${Math.floor(start.getTime() / 1000)}`;
 
@@ -67,7 +67,7 @@ export const ensureMonthlyGrant = async (
 ): Promise<void> => {
   const plan = input.plan?.trim() || (input.audience === "PERSONAL" ? "FREE" : "");
   const amount = grantMicro(input.audience, plan);
-  if (amount <= 0) return;
+  if (amount <= 0) {return;}
   const month = monthKey(input.now);
   if (input.audience === "PERSONAL") {
     await q(USER_GRANT, [crypto.randomUUID(), input.ownerId, amount, month, input.now.toISOString()]);
@@ -75,7 +75,7 @@ export const ensureMonthlyGrant = async (
   }
   let below = 0;
   for (const tier of tiersUpTo(plan)) {
-    const total = EMPLOYER[tier] ?? 0;
+    const total = EMPLOYER.get(tier) ?? 0;
     await q(MONTH_STEP, [crypto.randomUUID(), input.ownerId, total - below, month + ":" + tier, input.now.toISOString(), month, total]);
     below = total;
   }
@@ -92,10 +92,12 @@ export const monthGranted = async (
 ): Promise<boolean> => {
   const plan = input.plan?.trim() || (input.audience === "PERSONAL" ? "FREE" : "");
   const amount = grantMicro(input.audience, plan);
-  if (amount <= 0) return true;
+  if (amount <= 0) {return true;}
   const month = monthKey(input.now);
-  if (input.audience === "PERSONAL") return (await one(q, USER_MONTH_GRANTED, [input.ownerId, month])) != null;
-  return (await one(q, COMPANY_MONTH_GRANTED, [input.ownerId, month + ":" + plan, month, amount])) != null;
+  const row = input.audience === "PERSONAL"
+    ? await one(q, USER_MONTH_GRANTED, [input.ownerId, month])
+    : await one(q, COMPANY_MONTH_GRANTED, [input.ownerId, month + ":" + plan, month, amount]);
+  return row !== null && row !== undefined;
 };
 
 /**
@@ -109,16 +111,16 @@ export const grantPeriod = async (
   const key = periodKey(input.subscriptionId, input.periodStart);
   let below = 0;
   for (const tier of tiersUpTo(input.plan)) {
-    const total = EMPLOYER[tier] ?? 0;
+    const total = EMPLOYER.get(tier) ?? 0;
     const amount = total <= input.carry ? 0 : total - Math.max(below, input.carry);
     await q(PERIOD_STEP, [crypto.randomUUID(), input.companyId, amount, key + ":" + tier, input.now.toISOString()]);
     below = total;
   }
 };
 
-const levelOf = (rows: Record<string, unknown>[], key: string): number => rows.reduce<number>((max, row) => {
+const levelOf = (rows: Array<NonNullable<Awaited<ReturnType<typeof one>>>>, key: string): number => rows.reduce<number>((max, row) => {
   const ref = String(row.reference_id);
-  const level = ref === key ? Number(row.amount_micro_credits) : EMPLOYER[ref.slice(key.length + 1)] ?? 0;
+  const level = ref === key ? Number(row.amount_micro_credits) : EMPLOYER.get(ref.slice(key.length + 1)) ?? 0;
   return Math.max(max, level);
 }, 0);
 
@@ -132,7 +134,7 @@ export const keyLevel = async (q: Query, companyId: string, key: string): Promis
  */
 export const subscriptionLevel = async (q: Query, companyId: string, subscriptionId: string, now: Date, calendar: boolean): Promise<number> => {
   const rows = (await q(COMPANY_GRANTS, [companyId, "", `period:${subscriptionId}:%`])).rows;
-  if (rows.length === 0) return calendar ? keyLevel(q, companyId, monthKey(now)) : 0;
+  if (rows.length === 0) {return calendar ? keyLevel(q, companyId, monthKey(now)) : 0;}
   const latest = Math.max(...rows.map((row) => Number(String(row.reference_id).split(":")[2])));
   const key = `period:${subscriptionId}:${latest}`;
   return levelOf(rows.filter((row) => String(row.reference_id).startsWith(key + ":")), key);

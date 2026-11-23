@@ -9,6 +9,12 @@
   "scripts": {
     "test": "npm test -w push-be-front && npm test -w push-be-core",
     "typecheck": "npm run typecheck -w push-be-front && npm run typecheck -w push-be-core",
-    "contracts": "npm run generate -w @push/contracts"
+    "contracts": "npm run generate -w @push/contracts",
+    "lint": "oxlint -c oxlint.config.mjs ."
+  },
+  "devDependencies": {
+    "@cloudflare/oxlint-config": "^0.1.0",
+    "oxlint": "^1.94.0",
+    "tsrs": "^0.25.0-ts7.1.0-beta"
   }
 }

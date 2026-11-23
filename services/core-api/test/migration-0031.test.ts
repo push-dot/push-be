@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 
-const sql = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../../db/migrations/0031_employer_harness.sql"), "utf8");
+const sql = readFileSync(resolve(import.meta.dirname, "../../../db/migrations/0031_employer_harness.sql"), "utf8");
 
 test("migration 0031 stores employer research, reviews and interview kits per conversation", () => {
   assert.match(sql, /ADD COLUMN IF NOT EXISTS profile jsonb/);

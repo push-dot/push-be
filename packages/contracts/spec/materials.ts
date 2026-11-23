@@ -42,7 +42,7 @@ const materialsPage = obj({
   sections: arr(obj({ section, items: arr(ref("Material")), nextCursor: nullable(str) })),
 });
 
-export const schemas: Record<string, Schema> = {
+export const schemas = {
   Material: material,
   MaterialsPage: materialsPage,
   MaterialDetail: {
@@ -55,7 +55,7 @@ export const schemas: Record<string, Schema> = {
 
 const keptForThirtyDays = "A deleted material leaves every list at once, is kept 30 days, and is then erased. Until then POST /materials/{kind}/{id}/restore brings it back.";
 
-export const routes: Route[] = [
+export const routes: Array<Route> = [
   get("core", "/api/v1/materials", {
     tag: "materials",
     summary: "List the caller's materials",

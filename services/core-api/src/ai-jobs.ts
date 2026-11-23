@@ -1,14 +1,16 @@
 import { one } from "./db.ts";
+import type { DbValue } from "./db.ts";
 import { HttpError } from "./http.ts";
 import { planTier } from "./jobs/config.ts";
 import { enqueueJob, kickDispatcher, withDispatcher } from "./jobs/enqueue.ts";
 import { scheduleChatJob } from "./conversations/schedule-chat-job.ts";
+import type { Json, JsonObject } from "./json.ts";
 import type { Ctx } from "./types.ts";
 
 export type ResumeJob = {
   conversationId: string;
   userId: string;
-  payload: Record<string, unknown>;
+  payload: JsonObject;
   idempotencyKey?: string;
 };
 
@@ -39,24 +41,30 @@ const STATUS = `INSERT INTO chat_events (job_id, type, payload) SELECT j.id, 'st
 
 const WAITING = JSON.stringify({ text: "대기 중" });
 
-const carried = (raw: unknown): Record<string, unknown> => {
-  const last = typeof raw === "string" ? JSON.parse(raw) as unknown : raw;
-  if (!last || typeof last !== "object") return {};
-  const source = last as Record<string, unknown>;
-  return Object.fromEntries(CARRIED.filter((key) => source[key] != null).map((key) => [key, source[key]]));
+const isJsonObject = (value: unknown): value is JsonObject => typeof value === "object" && value !== null && !Array.isArray(value);
+
+const carried = (raw: DbValue): JsonObject => {
+  const last: unknown = typeof raw === "string" ? JSON.parse(raw) : raw;
+  if (!isJsonObject(last)) {return {};}
+  const entries: Array<[string, Json]> = [];
+  for (const key of CARRIED) {
+    const value = last[key];
+    if (value !== null && value !== undefined) {entries.push([key, value]);}
+  }
+  return Object.fromEntries(entries);
 };
 
 export const enqueueResumeJob = async (ctx: Ctx, job: ResumeJob): Promise<string> => {
   const conversation = await one(ctx.deps.query, CONVERSATION, [job.conversationId, job.userId]);
-  if (!conversation) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  const payload: Record<string, unknown> = { ...carried(conversation.last), text: "", ...job.payload };
+  if (!conversation) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
+  const payload = { ...carried(conversation.last), text: "", ...job.payload };
   if ((ctx.env.QUEUE_BACKEND || "").trim().toLowerCase() !== "redis") {
     const jobId = crypto.randomUUID();
     await one(ctx.deps.query, LEGACY_INSERT, [jobId, job.userId, job.conversationId, JSON.stringify(payload), WAITING]);
     await scheduleChatJob(ctx, jobId);
     return jobId;
   }
-  const companyId = conversation.company_id == null ? undefined : String(conversation.company_id);
+  const companyId = (conversation.company_id === null || conversation.company_id === undefined) ? undefined : String(conversation.company_id);
   const { jobId, queue } = await enqueueJob(ctx.deps.query, {
     type: companyId ? "employer_ai" : "chat",
     userId: job.userId,

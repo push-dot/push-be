@@ -3,16 +3,18 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
-import { handle, type CoreEnv } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
 import { TERMS_VERSION } from "../src/routes/consents.ts";
-import { livePg, type LivePg } from "./parity/pg.ts";
+import { livePg } from './parity/pg.ts';
+import type { LivePg } from './parity/pg.ts';
 
 const URL_ = process.env.BILLING_PG_URL;
 const env: CoreEnv = { APP_ENV: "production", MANAGED_AI: "1", PENDING_SIGNUP_SECRET: "pending-test-secret" };
 
 let pg: LivePg | undefined;
-before(async () => { if (URL_) pg = await livePg(URL_); });
+before(async () => { if (URL_) {pg = await livePg(URL_);} });
 after(async () => { await pg?.close(); });
 
 const post = (path: string, body: unknown) => new Request("https://core.example" + path, {
@@ -22,10 +24,10 @@ const post = (path: string, body: unknown) => new Request("https://core.example"
 });
 
 test("employer email signup verifies and records age14, terms and privacy together", async (t) => {
-  if (!pg) return t.skip("set BILLING_PG_URL to a migrated Postgres");
+  if (!pg) {return t.skip("set BILLING_PG_URL to a migrated Postgres");}
   resetLimits();
   const email = `consent-${crypto.randomUUID().slice(0, 8)}@push.app`;
-  const sent: string[] = [];
+  const sent: Array<string> = [];
   const deps = { query: pg.query, now: () => new Date(), mailer: { send: async (mail: { text: string }) => { sent.push(mail.text); } } };
 
   const signup = await handle(post("/api/v1/auth/email/signup", {

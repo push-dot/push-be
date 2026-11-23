@@ -1,4 +1,5 @@
 import { pyJson } from "./time.ts";
+import type { Json, JsonObject } from "./json.ts";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -17,7 +18,7 @@ export class HttpError extends Error {
 
 export function requestIdOf(request: Request): string {
   const rid = request.headers.get("x-request-id") || "";
-  if (!rid || rid.length > 128) return "req_" + crypto.randomUUID();
+  if (!rid || rid.length > 128) {return "req_" + crypto.randomUUID();}
   return rid;
 }
 
@@ -38,14 +39,13 @@ export function data(status: number, value: unknown, rid: string): Response {
 }
 
 export function pageBody(
-  items: unknown[],
+  items: Array<unknown>,
   nextCursor: string | null,
   hasMore: boolean,
   rid: string,
   total?: number,
 ): Response {
-  const page: Record<string, unknown> = { nextCursor, hasMore };
-  if (total !== undefined) page.total = total;
+  const page = total === undefined ? { nextCursor, hasMore } : { nextCursor, hasMore, total };
   return jsonResponse(200, { data: items, page }, rid);
 }
 
@@ -61,8 +61,8 @@ export function errorResponse(status: number, code: string, message: string, rid
 
 export function errorOf(err: HttpError, rid: string): Response {
   const res = errorResponse(err.status, err.code, err.message, rid, err.details);
-  const details = err.details as { retryAfterSec?: number } | null;
-  if (err.status === 429 && details && typeof details.retryAfterSec === "number") {
+  const details = err.details;
+  if (err.status === 429 && typeof details === "object" && details !== null && "retryAfterSec" in details && typeof details.retryAfterSec === "number") {
     res.headers.set("retry-after", String(details.retryAfterSec));
   }
   return res;
@@ -73,7 +73,7 @@ export function fieldError(field: string, message: string): HttpError {
 }
 
 export function parseUuid(value: string): string | null {
-  if (UUID_RE.test(value)) return value.toLowerCase();
+  if (UUID_RE.test(value)) {return value.toLowerCase();}
   if (/^[0-9a-f]{32}$/i.test(value)) {
     const h = value.toLowerCase();
     return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
@@ -83,7 +83,7 @@ export function parseUuid(value: string): string | null {
 
 export function requireUuid(value: string, field: string): string {
   const id = parseUuid(value);
-  if (!id) throw fieldError(field, "must be a UUID");
+  if (!id) {throw fieldError(field, "must be a UUID");}
   return id;
 }
 
@@ -91,7 +91,7 @@ export function asBool(value: unknown): boolean {
   return value === true || value === "t" || value === "true" || value === 1;
 }
 
-export function jsonList(value: unknown): unknown[] {
+export function jsonList(value: unknown): Array<unknown> {
   let raw = value;
   if (typeof raw === "string") {
     try { raw = JSON.parse(raw); } catch { return []; }
@@ -108,25 +108,37 @@ export async function sha256Hex(value: string): Promise<string> {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-const sortDeep = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map(sortDeep);
+const byKey = ([a]: [string, unknown], [b]: [string, unknown]): number => {
+  if (a < b) {return -1;}
+  return a > b ? 1 : 0;
+};
+
+// undefined stands for what JSON.stringify drops: undefined, functions and symbols (null inside arrays).
+const sortDeep = (value: unknown): Json | undefined => {
+  if (Array.isArray(value)) {return value.map((item) => sortDeep(item) ?? null);}
   if (value && typeof value === "object") {
-    const obj = value as Record<string, unknown>;
-    return Object.fromEntries(Object.keys(obj).sort().map((key) => [key, sortDeep(obj[key])]));
+    const sorted: JsonObject = {};
+    for (const [key, child] of Object.entries(value).sort(byKey)) {
+      const json = sortDeep(child);
+      if (json !== undefined) {sorted[key] = json;}
+    }
+    return sorted;
   }
-  return value;
+  if (typeof value === "bigint") {throw new TypeError("Do not know how to serialize a BigInt");}
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {return value;}
+  return undefined;
 };
 
 /** Python `hash_json`: sha256 of `json.dumps(v, sort_keys=True, separators=(",", ":"))` (ASCII escapes). */
 export async function hashJson(value: unknown): Promise<string> {
-  const text = JSON.stringify(sortDeep(value)).replace(/[\u0080-\uffff]/g, (ch) => "\\u" + ch.charCodeAt(0).toString(16).padStart(4, "0"));
+  const text = JSON.stringify(sortDeep(value)).replaceAll(/[\u0080-\uffff]/g, (ch) => String.raw`\u` + ch.charCodeAt(0).toString(16).padStart(4, "0"));
   return sha256Hex(text);
 }
 
 export function randomToken(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   let bin = "";
-  for (const b of bytes) bin += String.fromCharCode(b);
+  for (const b of bytes) {bin += String.fromCharCode(b);}
   return btoa(bin).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
@@ -141,7 +153,7 @@ const NAMESPACE_URL = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
 function uuidBytes(id: string): Uint8Array {
   const hex = id.replaceAll("-", "");
   const out = new Uint8Array(16);
-  for (let i = 0; i < 16; i++) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  for (let i = 0; i < 16; i++) {out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);}
   return out;
 }
 

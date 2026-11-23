@@ -21,7 +21,7 @@ const offerParty = obj({
   avatarUrl: nullable(str),
 });
 
-const profileProps: Record<string, Schema> = {
+const profileProps = {
   userId: uuid,
   displayName: str,
   avatarUrl: nullable(str),
@@ -44,7 +44,7 @@ const profileProps: Record<string, Schema> = {
 const tag = "social";
 const id = pathParam("id");
 
-export const routes: Route[] = [
+export const routes: Array<Route> = [
   get("core", "/api/v1/profiles", {
     tag,
     summary: "List public profiles",
@@ -484,7 +484,7 @@ export const routes: Route[] = [
   }),
 ];
 
-export const schemas: Record<string, Schema> = {
+export const schemas = {
   SocialProfileCareer: obj({
     company: str,
     role: str,
@@ -592,4 +592,4 @@ export const schemas: Record<string, Schema> = {
     createdAt: dateTime,
   }),
   Comment: obj({ id: uuid, author: person, body: str, parentId: nullable(uuid), createdAt: dateTime }),
-};
+} satisfies Record<string, Schema>;

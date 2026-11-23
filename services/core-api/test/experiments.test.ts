@@ -19,8 +19,8 @@ const path = "/api/v1/experiments/%E0%A4%A/assignment";
 test("a first experiment assignment is written and read back in one statement", async () => {
   const { handle } = await import("../src/handler.ts");
   const { calls, query } = recorder((sql) => {
-    if (sql.startsWith("SELECT key, variants")) return [{ key: "onboarding", variants: ["a", "b"], status: "active", exclusion_group: "" }];
-    if (sql.startsWith("WITH ins AS")) return [{ experiment_key: "onboarding", variant: "b", created_at: "2026-10-21T00:00:00Z" }];
+    if (sql.startsWith("SELECT key, variants")) {return [{ key: "onboarding", variants: ["a", "b"], status: "active", exclusion_group: "" }];}
+    if (sql.startsWith("WITH ins AS")) {return [{ experiment_key: "onboarding", variant: "b", created_at: "2026-10-21T00:00:00Z" }];}
     return null;
   });
   const res = await handle(new Request("https://core.example/api/v1/experiments/onboarding/assignment", { headers: { authorization: "Bearer t" } }),

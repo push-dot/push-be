@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
 
 const OWNER = "12345678-1234-5678-1234-567812345678";
@@ -11,21 +12,24 @@ const PDF = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0x0a
 
 const env = (): CoreEnv => ({ APP_ENV: "production" });
 
-const files: Record<string, string> = {
-  "05_final_resume.pdf": Buffer.from(PDF).toString("base64"),
-  "05_final_resume.md": Buffer.from("# 이력서\n경력", "utf8").toString("base64"),
-  "이력서 최종.md": Buffer.from("본문", "utf8").toString("base64"),
-};
+const files = new Map([
+  ["05_final_resume.pdf", Buffer.from(PDF).toString("base64")],
+  ["05_final_resume.md", Buffer.from("# 이력서\n경력", "utf8").toString("base64")],
+  ["이력서 최종.md", Buffer.from("본문", "utf8").toString("base64")],
+]);
+
+type Row = Awaited<ReturnType<Deps["query"]>>["rows"][number];
+
+const rows = (list: Array<Row>) => ({ rows: list, rowCount: list.length });
 
 const query = (caller: string): Deps["query"] => async (sql, params = []) => {
-  const rows = (list: Record<string, unknown>[]) => ({ rows: list, rowCount: list.length });
   if (sql.includes("access_tokens")) {
     return rows([{ id: caller, display_name: "Ada", locale: "ko", plan: "PRO", created_at: "2026-01-02T03:04:05Z", token_expires_at: "2099-01-01T00:00:00Z" }]);
   }
-  if (sql.includes("rate_limits")) return rows([{ hits: 1 }]);
+  if (sql.includes("rate_limits")) {return rows([{ hits: 1 }]);}
   if (sql.includes("FROM workspace_files")) {
     const visible = params[0] === CONV && params[1] === caller && caller === OWNER;
-    const content = files[String(params[2])];
+    const content = files.get(String(params[2]));
     return rows(visible && content ? [{ content }] : []);
   }
   return rows([]);

@@ -1,32 +1,34 @@
 import { base64ToBytes } from "../crypto.ts";
 import { QUEUED_STATUS, enqueueResumeJob } from "../ai-jobs.ts";
 import { scheduleChatJob } from "../conversations/schedule-chat-job.ts";
+import type { Row } from "../db.ts";
 import { one, query } from "../db.ts";
 import { HttpError, asBool, codePoints, data, noContent, requireUuid, uuid5Url } from "../http.ts";
 import { checkBackpressure } from "../jobs/backpressure.ts";
 import { assertPlanAllows, planTier, queueFor } from "../jobs/config.ts";
 import { enqueueJob, kickDispatcher, withDispatcher } from "../jobs/enqueue.ts";
+import type { JsonObject } from "../json.ts";
 import { revisionUpdate, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 import { rejectArchived } from "./documents.ts";
 
 const AI_PROVIDERS = new Set(["OPENAI", "OPENROUTER", "CLAUDE", "GEMINI", "GROK"]);
 const EFFORTS = new Set(["LOW", "MEDIUM", "HIGH", "MAX"]);
-const PLAN_EFFORT: Record<string, string> = {
-  "PERSONAL:FREE": "LOW",
-  "PERSONAL:PRO": "MEDIUM",
-  "PERSONAL:ULTRA": "HIGH",
-  "EMPLOYER:BASIC": "MEDIUM",
-  "EMPLOYER:PRO": "HIGH",
-  "EMPLOYER:ULTRA": "MAX",
-};
+const PLAN_EFFORT = new Map([
+  ["PERSONAL:FREE", "LOW"],
+  ["PERSONAL:PRO", "MEDIUM"],
+  ["PERSONAL:ULTRA", "HIGH"],
+  ["EMPLOYER:BASIC", "MEDIUM"],
+  ["EMPLOYER:PRO", "HIGH"],
+  ["EMPLOYER:ULTRA", "MAX"],
+]);
 
 export const effortFor = (audience: "PERSONAL" | "EMPLOYER", plan: unknown): string => {
-  const tier = plan == null ? "" : String(plan).trim().toUpperCase();
-  if (audience === "EMPLOYER") return PLAN_EFFORT[`EMPLOYER:${tier}`] ?? "MEDIUM";
-  return PLAN_EFFORT[`PERSONAL:${tier || "FREE"}`] ?? "LOW";
+  const tier = (plan === null || plan === undefined) ? "" : String(plan).trim().toUpperCase();
+  if (audience === "EMPLOYER") {return PLAN_EFFORT.get(`EMPLOYER:${tier}`) ?? "MEDIUM";}
+  return PLAN_EFFORT.get(`PERSONAL:${tier || "FREE"}`) ?? "LOW";
 };
-const CREDITS: Record<string, number> = { FREE: 1_800_000, PRO: 27_000_000, ULTRA: 108_000_000 };
+const CREDITS = new Map([["FREE", 1_800_000], ["PRO", 27_000_000], ["ULTRA", 108_000_000]]);
 const INTENTS = new Set([
   "posting", "review", "interview", "general",
   "match_posting", "fit", "gaps", "experience", "boost",
@@ -38,7 +40,12 @@ export const PERSONAL_INTENTS = new Set([
   "find_postings", "deadline_postings", "applications", "calendar",
   "hub_profile", "offer_reply", "coffee_chat", "career_post",
 ]);
-export const CANONICAL_ACCESS: Record<string, string> = {
+/** Saved and requested access modes, each mapped to the mode the worker understands. */
+interface AccessModes {
+  [mode: string]: string;
+}
+
+export const CANONICAL_ACCESS: AccessModes = {
   ALWAYS_ASK: "ALWAYS_ASK",
   AUTO: "AUTO",
   BYPASS: "BYPASS",
@@ -69,28 +76,30 @@ function flag(value: string | undefined): boolean {
   return v === "1" || v === "true" || v === "yes";
 }
 
-async function readObject(request: Request): Promise<Record<string, unknown>> {
+const isJsonObject = (value: unknown): value is JsonObject => typeof value === "object" && value !== null && !Array.isArray(value);
+
+async function readObject(request: Request): Promise<JsonObject> {
   const raw = await request.text();
-  if (!raw) throw new HttpError(400, "VALIDATION_ERROR", "request body required");
+  if (!raw) {throw new HttpError(400, "VALIDATION_ERROR", "request body required");}
   let body: unknown;
   try { body = JSON.parse(raw); } catch { throw new HttpError(400, "VALIDATION_ERROR", "invalid request body"); }
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
+  if (!isJsonObject(body)) {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
-  return body as Record<string, unknown>;
+  return body;
 }
 
-export function forbidExtra(body: Record<string, unknown>, allowed: string[]): void {
+export function forbidExtra(body: JsonObject, allowed: Array<string>): void {
   for (const key of Object.keys(body)) {
-    if (!allowed.includes(key)) throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
+    if (!allowed.includes(key)) {throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");}
   }
 }
 
-export function convDto(row: Record<string, unknown>): Record<string, unknown> {
+export function convDto(row: Row) {
   return {
     id: String(row.id),
     revision: Number(row.revision),
-    applicationId: row.application_id == null ? null : String(row.application_id),
+    applicationId: (row.application_id === null || row.application_id === undefined) ? null : String(row.application_id),
     title: String(row.title ?? ""),
     pinned: row.pinned === true || row.pinned === "t",
     createdAt: ts(row.created_at),
@@ -99,7 +108,7 @@ export function convDto(row: Record<string, unknown>): Record<string, unknown> {
 }
 
 const optionalUuid = (value: unknown, field: string): string | null => {
-  if (value == null) return null;
+  if ((value === null || value === undefined)) {return null;}
   return requireUuid(String(value), field);
 };
 
@@ -111,9 +120,9 @@ const visibleConversation = (idParam: string, userParam: string): string =>
 
 const COMPANY_APPLICATION = "SELECT a.id FROM applications a JOIN jobs j ON j.id = a.job_id JOIN job_postings p ON p.id = j.source_posting_id WHERE a.id = $1 AND p.company_id = $2";
 
-const createEmployerConversation = async (ctx: Ctx, body: Record<string, unknown>): Promise<Response> => {
+const createEmployerConversation = async (ctx: Ctx, body: JsonObject): Promise<Response> => {
   forbidExtra(body, ["audience", "title", "postingId", "applicationId"]);
-  if (typeof body.title !== "string") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
+  if (typeof body.title !== "string") {throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");}
   if (codePoints(body.title) > 300) {
     throw new HttpError(400, "VALIDATION_ERROR", "title must be at most 300 characters", { field: "title" });
   }
@@ -122,7 +131,7 @@ const createEmployerConversation = async (ctx: Ctx, body: Record<string, unknown
   const member = await one(ctx.deps.query,
     "SELECT m.company_id, m.role, c.verified_at, c.plan FROM company_members m JOIN companies c ON c.id = m.company_id WHERE m.user_id = $1",
     [ctx.user.id]);
-  if (!member || member.verified_at == null) {
+  if (!member || (member.verified_at === null || member.verified_at === undefined)) {
     throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
   }
   const companyId = String(member.company_id);
@@ -130,7 +139,7 @@ const createEmployerConversation = async (ctx: Ctx, body: Record<string, unknown
     postingId ? one(ctx.deps.query, "SELECT id FROM job_postings WHERE id = $1 AND (status <> 'DRAFT' OR company_id = $2)", [postingId, companyId]) : null,
     applicationId ? one(ctx.deps.query, COMPANY_APPLICATION, [applicationId, companyId]) : null,
   ]);
-  if ((postingId && !posting) || (applicationId && !application)) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if ((postingId && !posting) || (applicationId && !application)) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   const id = crypto.randomUUID();
   const now = ctx.now.toISOString();
   await query(ctx.deps.query,
@@ -143,21 +152,21 @@ const createEmployerConversation = async (ctx: Ctx, body: Record<string, unknown
 
 export async function createConversation(ctx: Ctx): Promise<Response> {
   const body = await readObject(ctx.request);
-  if (body.audience === "EMPLOYER") return createEmployerConversation(ctx, body);
-  forbidExtra(body, body.audience == null ? ["applicationId", "title"] : ["applicationId", "title", "audience"]);
+  if (body.audience === "EMPLOYER") {return createEmployerConversation(ctx, body);}
+  forbidExtra(body, (body.audience === null || body.audience === undefined) ? ["applicationId", "title"] : ["applicationId", "title", "audience"]);
   await requireAgentConsent(ctx);
-  if (body.audience != null && body.audience !== "PERSONAL") {
+  if ((body.audience !== null && body.audience !== undefined) && body.audience !== "PERSONAL") {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
-  if (typeof body.title !== "string") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
+  if (typeof body.title !== "string") {throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");}
   if (codePoints(body.title) > 300) {
     throw new HttpError(400, "VALIDATION_ERROR", "title must be at most 300 characters", { field: "title" });
   }
   let applicationId: string | null = null;
-  if (body.applicationId != null) {
+  if ((body.applicationId !== null && body.applicationId !== undefined)) {
     applicationId = requireUuid(String(body.applicationId), "applicationId");
     const app = await one(ctx.deps.query, "SELECT id FROM applications WHERE id = $1 AND user_id = $2", [applicationId, ctx.user.id]);
-    if (!app) throw new HttpError(404, "NOT_FOUND", "resource not found");
+    if (!app) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   }
   const id = crypto.randomUUID();
   const now = ctx.now.toISOString();
@@ -179,21 +188,21 @@ export async function patchConversation(ctx: Ctx, idRaw: string): Promise<Respon
   const current = await one(ctx.deps.query,
     "SELECT id, revision, application_id, title, pinned, archived, created_at FROM conversations WHERE " + visibleConversation("$1", "$2"),
     [id, ctx.user.id]);
-  if (!current) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (!current) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   if (Number(current.revision) !== body.expectedRevision) {
     throw new HttpError(409, "REVISION_CONFLICT", "resource was modified", { currentRevision: Number(current.revision) });
   }
   let title = String(current.title ?? "");
-  if (body.title != null) {
-    if (typeof body.title !== "string") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
+  if ((body.title !== null && body.title !== undefined)) {
+    if (typeof body.title !== "string") {throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");}
     if (codePoints(body.title) > 300) {
       throw new HttpError(400, "VALIDATION_ERROR", "title must be at most 300 characters", { field: "title" });
     }
     title = body.title;
   }
   let pinned = current.pinned === true || current.pinned === "t";
-  if (body.pinned != null) {
-    if (typeof body.pinned !== "boolean") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
+  if ((body.pinned !== null && body.pinned !== undefined)) {
+    if (typeof body.pinned !== "boolean") {throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");}
     pinned = body.pinned;
   }
   const now = ctx.now.toISOString();
@@ -217,18 +226,18 @@ const DELETE_COMPANY = "WITH owned AS (SELECT id FROM conversations WHERE id = $
 export async function deleteConversation(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "id");
   const row = await one(ctx.deps.query, "SELECT user_id, company_id FROM conversations WHERE id = $1", [id]);
-  if (!row) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  if (row.company_id != null) {
+  if (!row) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
+  if ((row.company_id !== null && row.company_id !== undefined)) {
     const member = await one(ctx.deps.query,
       "SELECT role FROM company_members WHERE user_id = $1 AND company_id = $2",
       [ctx.user.id, row.company_id]);
-    if (!member || String(member.role) !== "ADMIN") throw new HttpError(403, "FORBIDDEN", "admin required");
+    if (!member || String(member.role) !== "ADMIN") {throw new HttpError(403, "FORBIDDEN", "admin required");}
     const gone = await one(ctx.deps.query, DELETE_COMPANY, [id]);
-    if (!gone) throw new HttpError(404, "NOT_FOUND", "resource not found");
+    if (!gone) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
     return noContent(ctx.rid);
   }
   const gone = await one(ctx.deps.query, DELETE_OWNED, [id, ctx.user.id]);
-  if (!gone) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (!gone) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   return noContent(ctx.rid);
 }
 
@@ -242,7 +251,7 @@ export async function archiveConversation(ctx: Ctx, idRaw: string, archived = tr
   const current = await one(ctx.deps.query,
     "SELECT id, revision, application_id, title, pinned, created_at, company_id FROM conversations WHERE " + visibleConversation("$1", "$2"),
     [id, ctx.user.id]);
-  if (!current) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (!current) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   if (Number(current.revision) !== body.expectedRevision) {
     throw new HttpError(409, "REVISION_CONFLICT", "resource was modified", { currentRevision: Number(current.revision) });
   }
@@ -251,7 +260,7 @@ export async function archiveConversation(ctx: Ctx, idRaw: string, archived = tr
     "UPDATE conversations SET revision = revision + 1, application_id = $3, title = $4, pinned = $5, archived = " + (archived ? "true" : "false") + ", updated_at = $6 WHERE " + visibleConversation("$1", "$2") + " AND revision = $7 RETURNING id, revision, application_id, title, pinned, created_at, updated_at",
     [id, ctx.user.id, current.application_id, current.title, current.pinned === true || current.pinned === "t", now, body.expectedRevision],
     id, ctx.user.id);
-  if (archived && current.company_id != null) {
+  if (archived && (current.company_id !== null && current.company_id !== undefined)) {
     await query(ctx.deps.query, "DELETE FROM conversation_attachments WHERE conversation_id = $1", [id]);
   }
   if (archived) {
@@ -264,19 +273,19 @@ export async function archiveConversation(ctx: Ctx, idRaw: string, archived = tr
   return data(200, convDto(updated), ctx.rid);
 }
 
-export function aiDto(raw: unknown): Record<string, unknown> | null {
-  if (raw == null) return null;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+export function aiDto(raw: unknown): JsonObject | null {
+  if ((raw === null || raw === undefined)) {return null;}
+  if (!isJsonObject(raw)) {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
-  const ai = raw as Record<string, unknown>;
+  const ai = raw;
   forbidExtra(ai, ["provider", "model", "effort", "ultraResume", "webSearch", "models"]);
   if (typeof ai.provider !== "string" || typeof ai.model !== "string") {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
-  if (!AI_PROVIDERS.has(ai.provider)) throw new HttpError(400, "VALIDATION_ERROR", "unsupported provider", { field: "ai.provider" });
-  if (!ai.model) throw new HttpError(400, "VALIDATION_ERROR", "model is required", { field: "ai.model" });
-  if (ai.effort != null && (typeof ai.effort !== "string" || !EFFORTS.has(ai.effort))) {
+  if (!AI_PROVIDERS.has(ai.provider)) {throw new HttpError(400, "VALIDATION_ERROR", "unsupported provider", { field: "ai.provider" });}
+  if (!ai.model) {throw new HttpError(400, "VALIDATION_ERROR", "model is required", { field: "ai.model" });}
+  if ((ai.effort !== null && ai.effort !== undefined) && (typeof ai.effort !== "string" || !EFFORTS.has(ai.effort))) {
     throw new HttpError(400, "VALIDATION_ERROR", "unsupported effort", { field: "ai.effort" });
   }
   return {
@@ -285,12 +294,12 @@ export function aiDto(raw: unknown): Record<string, unknown> | null {
     effort: "LOW",
     ultraResume: ai.ultraResume === true,
     webSearch: ai.webSearch === true,
-    models: ai.models && typeof ai.models === "object" && !Array.isArray(ai.models) ? ai.models : {},
+    models: isJsonObject(ai.models) ? ai.models : {},
   };
 }
 
-export async function allowChat(ctx: Ctx, ai: Record<string, unknown> | null): Promise<void> {
-  if (!ai) return;
+export async function allowChat(ctx: Ctx, ai: JsonObject | null): Promise<void> {
+  if (!ai) {return;}
   const start = new Date(Date.UTC(ctx.now.getUTCFullYear(), ctx.now.getUTCMonth(), 1)).toISOString();
   const [user, spent] = await Promise.all([
     one(ctx.deps.query, "SELECT plan FROM users WHERE id = $1", [ctx.user.id]),
@@ -298,13 +307,13 @@ export async function allowChat(ctx: Ctx, ai: Record<string, unknown> | null): P
       "SELECT COALESCE(SUM(cost_micro_credits), 0) AS spent FROM ai_usage WHERE user_id = $1 AND managed AND created_at >= $2 AND status IN ('SETTLED', 'RESERVED')",
       [ctx.user.id, start]),
   ]);
-  if (!user) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (!user) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   if (ai.ultraResume === true && String(user.plan) !== "ULTRA") {
     throw new HttpError(403, "FEATURE_DISABLED", "ultraResume requires the ULTRA plan");
   }
-  const raw = user.plan == null ? "" : String(user.plan).trim();
+  const raw = (user.plan === null || user.plan === undefined) ? "" : String(user.plan).trim();
   const plan = raw === "" ? "FREE" : raw;
-  if (Number(spent?.spent || 0) >= (CREDITS[plan] ?? 0)) {
+  if (Number(spent?.spent || 0) >= (CREDITS.get(plan) ?? 0)) {
     throw new HttpError(403, "FEATURE_DISABLED", "monthly managed AI usage limit reached for plan " + plan);
   }
   if (!flag(ctx.env.MANAGED_AI)) {
@@ -318,15 +327,15 @@ export { scheduleChatJob };
 export const enqueueChatMessage = async (
   ctx: Ctx,
   conversationId: string,
-  payload: Record<string, unknown>,
+  payload: JsonObject,
   text: string,
-  attachments: Record<string, unknown>[] = [],
+  attachments: Array<JsonObject> = [],
 ): Promise<Response> => {
   const owned = await one(ctx.deps.query,
     "SELECT c.id, c.company_id, co.plan AS company_plan, u.plan AS user_plan FROM conversations c LEFT JOIN companies co ON co.id = c.company_id LEFT JOIN users u ON u.id = $2 WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
     [conversationId, ctx.user.id]);
-  if (!owned) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  const companyId = owned.company_id == null ? undefined : String(owned.company_id);
+  if (!owned) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
+  const companyId = (owned.company_id === null || owned.company_id === undefined) ? undefined : String(owned.company_id);
   const plan = planTier(companyId ? owned.company_plan : owned.user_plan);
   const type = companyId ? "employer_ai" : "chat";
   const audience = companyId ? "EMPLOYER" : "PERSONAL";
@@ -351,10 +360,10 @@ export const enqueueChatMessage = async (
     + "msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $4, $1, conv.id, 'USER', $5, $6::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), "
     + REJECT_WAITING + ", ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT j.id, 'status', " + QUEUED_STATUS + " FROM ai_jobs j WHERE j.id = $3 AND EXISTS (SELECT 1 FROM msg) RETURNING job_id) SELECT conv.id FROM conv",
     [ctx.user.id, conversationId, jobId, messageId, text, JSON.stringify(attachments)]);
-  if (!inserted) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (!inserted) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   const kick = withDispatcher(ctx.env, ctx.deps.fetch ?? fetch, () => kickDispatcher(queue));
-  if (ctx.deps.waitUntil) ctx.deps.waitUntil(kick);
-  else await kick;
+  if (ctx.deps.waitUntil) {ctx.deps.waitUntil(kick);}
+  else {await kick;}
   const now = ts(ctx.now);
   return data(202, {
     id: jobId,
@@ -374,65 +383,66 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   const conversationId = requireUuid(idRaw, "id");
   const body = await readObject(ctx.request);
   forbidExtra(body, ["text", "context", "ai", "accessMode", "intent", "applicationId"]);
-  if (typeof body.text !== "string" || codePoints(body.text) < 1 || codePoints(body.text) > 20000) {
+  if (typeof body.text !== "string" || codePoints(body.text) < 1 || codePoints(body.text) > 20_000) {
     throw new HttpError(400, "VALIDATION_ERROR", "text must be 1-20000 characters", { field: "text" });
   }
   const access = typeof body.accessMode === "string" ? body.accessMode : "";
   if (access && !CANONICAL_ACCESS[access]) {
     throw new HttpError(400, "VALIDATION_ERROR", "must be ALWAYS_ASK, AUTO, BYPASS, SUGGEST, or CONFIRM_ACTIONS", { field: "accessMode" });
   }
-  let context: Record<string, unknown> = {};
-  if (body.context != null) {
-    if (!body.context || typeof body.context !== "object" || Array.isArray(body.context)) {
+  let context: JsonObject = {};
+  const rawContext = body.context;
+  if ((rawContext !== null && rawContext !== undefined)) {
+    if (!isJsonObject(rawContext)) {
       throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
     }
-    const c = body.context as Record<string, unknown>;
+    const c = rawContext;
     forbidExtra(c, ["documentId", "versionId", "evidenceIds"]);
-    const evidence: string[] = [];
-    if (c.evidenceIds != null) {
-      if (!Array.isArray(c.evidenceIds)) throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
-      for (const item of c.evidenceIds) evidence.push(requireUuid(String(item), "evidenceIds"));
+    const evidence: Array<string> = [];
+    if ((c.evidenceIds !== null && c.evidenceIds !== undefined)) {
+      if (!Array.isArray(c.evidenceIds)) {throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");}
+      for (const item of c.evidenceIds) {evidence.push(requireUuid(String(item), "evidenceIds"));}
     }
     context = {
-      documentId: c.documentId == null ? null : requireUuid(String(c.documentId), "documentId"),
-      versionId: c.versionId == null ? null : requireUuid(String(c.versionId), "versionId"),
+      documentId: (c.documentId === null || c.documentId === undefined) ? null : requireUuid(String(c.documentId), "documentId"),
+      versionId: (c.versionId === null || c.versionId === undefined) ? null : requireUuid(String(c.versionId), "versionId"),
       evidenceIds: evidence,
     };
   }
   const ai = aiDto(body.ai);
   let intent: string | null = null;
-  if (body.intent != null) {
+  if ((body.intent !== null && body.intent !== undefined)) {
     if (typeof body.intent !== "string" || !INTENTS.has(body.intent)) {
       throw new HttpError(400, "VALIDATION_ERROR", "unsupported intent", { field: "intent" });
     }
     intent = body.intent;
   }
   const messageApplicationId = optionalUuid(body.applicationId, "applicationId");
-  const contextDocumentId = context.documentId == null ? null : String(context.documentId);
+  const contextDocumentId = (context.documentId === null || context.documentId === undefined) ? null : String(context.documentId);
   const [saved, owned, contextDocument] = await Promise.all([
     access ? null : one(ctx.deps.query, SAVED_ACCESS_MODE, [ctx.user.id]),
     one(ctx.deps.query,
       "SELECT c.company_id, co.plan, co.verified_at FROM conversations c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
       [conversationId, ctx.user.id]),
-    contextDocumentId == null ? null : one(ctx.deps.query, "SELECT status FROM documents WHERE id = $1 AND user_id = $2", [contextDocumentId, ctx.user.id]),
+    (contextDocumentId === null || contextDocumentId === undefined) ? null : one(ctx.deps.query, "SELECT status FROM documents WHERE id = $1 AND user_id = $2", [contextDocumentId, ctx.user.id]),
   ]);
-  if (!owned) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (!owned) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   // The worker reads context.documentId into the prompt; only the caller's live documents may go there.
-  if (contextDocumentId != null && !contextDocument) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if ((contextDocumentId !== null && contextDocumentId !== undefined) && !contextDocument) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   rejectArchived(contextDocument);
-  if (owned.company_id == null) await requireAgentConsent(ctx);
+  if ((owned.company_id === null || owned.company_id === undefined)) {await requireAgentConsent(ctx);}
   await allowChat(ctx, ai);
   const canonical = access ? CANONICAL_ACCESS[access] : CANONICAL_ACCESS[String(saved?.ai_access_mode ?? "")] ?? "AUTO";
-  if (ai && owned && owned.company_id != null) ai.effort = effortFor("EMPLOYER", owned.plan);
-  else if (ai) ai.effort = effortFor("PERSONAL", ctx.user.plan);
-  if (owned.company_id != null) {
-    if (intent != null && PERSONAL_INTENTS.has(intent)) {
+  if (ai && owned && (owned.company_id !== null && owned.company_id !== undefined)) {ai.effort = effortFor("EMPLOYER", owned.plan);}
+  else if (ai) {ai.effort = effortFor("PERSONAL", ctx.user.plan);}
+  if ((owned.company_id !== null && owned.company_id !== undefined)) {
+    if ((intent !== null && intent !== undefined) && PERSONAL_INTENTS.has(intent)) {
       throw new HttpError(400, "VALIDATION_ERROR", "unsupported intent", { field: "intent" });
     }
-    if (owned.verified_at == null) throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
-    if (intent === "interview") assertPlanAllows(owned.plan, "employer_interview");
+    if ((owned.verified_at === null || owned.verified_at === undefined)) {throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");}
+    if (intent === "interview") {assertPlanAllows(owned.plan, "employer_interview");}
   }
-  const payload: Record<string, unknown> = {
+  const payload = {
     text: body.text, context, ai, accessMode: canonical, access_mode: canonical, intent, applicationId: messageApplicationId,
   };
   if ((ctx.env.QUEUE_BACKEND || "").trim().toLowerCase() === "redis") {
@@ -446,7 +456,7 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     + "msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $6, $1, conv.id, 'USER', $7, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), "
     + REJECT_WAITING + ", ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT job.id, 'status', $5::jsonb FROM job RETURNING job_id) SELECT job.id FROM job JOIN ev ON ev.job_id = job.id LEFT JOIN msg ON true",
     [ctx.user.id, conversationId, jobId, JSON.stringify(payload), JSON.stringify({ text: "대기 중" }), messageId, body.text]);
-  if (!inserted) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (!inserted) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   await scheduleChatJob(ctx, jobId);
   const now = ts(ctx.now);
   return data(202, {
@@ -468,8 +478,8 @@ export const postAttachment = async (ctx: Ctx, idRaw: string): Promise<Response>
   const row = await one(ctx.deps.query,
     "SELECT c.id, c.company_id, co.plan, co.verified_at FROM conversations c JOIN company_members m ON m.company_id = c.company_id AND m.user_id = $2 JOIN companies co ON co.id = c.company_id WHERE c.id = $1",
     [conversationId, ctx.user.id]);
-  if (!row) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  if (row.verified_at == null) {
+  if (!row) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
+  if ((row.verified_at === null || row.verified_at === undefined)) {
     throw new HttpError(403, "BUSINESS_NOT_VERIFIED", "company is not verified");
   }
   assertPlanAllows(row.plan, "pdf_attachment");
@@ -495,20 +505,20 @@ export const postAttachment = async (ctx: Ctx, idRaw: string): Promise<Response>
   return data(201, { id, fileName: file.name, mimeType: file.type, size: content.byteLength }, ctx.rid);
 };
 
-const cardOptionIds = (raw: unknown): string[] => {
-  const list = typeof raw === "string" ? JSON.parse(raw) as unknown : raw;
-  if (!Array.isArray(list)) return [];
-  return list.map((item) => (item && typeof item === "object" ? String((item as Record<string, unknown>).id ?? "") : ""));
+const cardOptionIds = (raw: unknown): Array<string> => {
+  const list: unknown = typeof raw === "string" ? JSON.parse(raw) : raw;
+  if (!Array.isArray(list)) {return [];}
+  return list.map((item: unknown) => (isJsonObject(item) ? String(item.id ?? "") : ""));
 };
 
-const selectedOptions = (body: Record<string, unknown>, allowed: string[]): { optionId: string; optionIds?: string[] } => {
+const selectedOptions = (body: JsonObject, allowed: Array<string>) => {
   const single = typeof body.optionId === "string" ? body.optionId : "";
   if (body.optionIds !== undefined) {
     const raw = body.optionIds;
     if (!Array.isArray(raw) || raw.length === 0 || raw.some((id) => typeof id !== "string" || !id)) {
       throw new HttpError(400, "VALIDATION_ERROR", "optionIds is required", { field: "optionIds" });
     }
-    const optionIds = raw as string[];
+    const optionIds = raw.filter((id): id is string => typeof id === "string");
     if (optionIds.some((id) => !allowed.includes(id))) {
       throw new HttpError(400, "VALIDATION_ERROR", "unknown option", { field: "optionIds" });
     }
@@ -517,8 +527,8 @@ const selectedOptions = (body: Record<string, unknown>, allowed: string[]): { op
     }
     return { optionId: single || optionIds[0], optionIds };
   }
-  if (!single) throw new HttpError(400, "VALIDATION_ERROR", "optionId is required", { field: "optionId" });
-  if (!allowed.includes(single)) throw new HttpError(400, "VALIDATION_ERROR", "unknown option", { field: "optionId" });
+  if (!single) {throw new HttpError(400, "VALIDATION_ERROR", "optionId is required", { field: "optionId" });}
+  if (!allowed.includes(single)) {throw new HttpError(400, "VALIDATION_ERROR", "unknown option", { field: "optionId" });}
   return { optionId: single };
 };
 
@@ -530,45 +540,45 @@ export const resolveApproval = async (ctx: Ctx, idRaw: string, approvalRaw: stri
   const row = await one(ctx.deps.query,
     "SELECT id, status, kind, options, job_id, expires_at FROM approvals WHERE id = $1 AND conversation_id = $2 AND user_id = $3",
     [approvalId, conversationId, ctx.user.id]);
-  if (!row) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (!row) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   const picked = selectedOptions(body, cardOptionIds(row.options));
   const optionId = picked.optionId;
   const expired = row.status === "EXPIRED"
-    || (row.status === "PENDING" && row.expires_at != null && Date.parse(String(row.expires_at)) <= ctx.now.getTime());
+    || (row.status === "PENDING" && (row.expires_at !== null && row.expires_at !== undefined) && Date.parse(String(row.expires_at)) <= ctx.now.getTime());
   // 닫기 on an expired card answers reject. It closes the card and resumes nothing.
   if (expired && optionId === "reject") {
     const closed = await one(ctx.deps.query,
       "UPDATE approvals SET status = 'REJECTED', option_id = $2, decided_at = now(), updated_at = now(), revision = revision + 1 WHERE id = $1 AND status IN ('PENDING', 'EXPIRED') RETURNING id",
       [approvalId, optionId]);
-    if (!closed) throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");
+    if (!closed) {throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");}
     return data(200, { id: approvalId, status: "REJECTED", optionId }, ctx.rid);
   }
   if (expired) {
     await query(ctx.deps.query, "UPDATE approvals SET status = 'EXPIRED', updated_at = now() WHERE id = $1 AND status = 'PENDING'", [approvalId]);
     throw new HttpError(410, "APPROVAL_EXPIRED", "approval expired");
   }
-  if (row.status !== "PENDING") throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");
+  if (row.status !== "PENDING") {throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");}
   const kind = String(row.kind ?? "");
   const status = kind === "TOOL_ACTION" && optionId === "reject" ? "REJECTED" : "APPROVED";
   const updated = await one(ctx.deps.query,
     "UPDATE approvals SET status = $1, option_id = $2, decided_at = now(), updated_at = now(), revision = revision + 1 WHERE id = $3 AND status = 'PENDING' RETURNING id",
     [status, optionId, approvalId]);
-  if (!updated) throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");
-  const result = { id: approvalId, status, optionId, ...(picked.optionIds ? { optionIds: picked.optionIds } : {}) };
-  const resumes = RESUMABLE.has(kind) || row.job_id != null;
-  if (!resumes) return data(200, result, ctx.rid);
-  const resume: Record<string, unknown> = { approvalId, optionId };
-  if (picked.optionIds) resume.optionIds = picked.optionIds;
+  if (!updated) {throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");}
+  const result = { id: approvalId, status, optionId, ...(picked.optionIds ? { optionIds: picked.optionIds } : undefined) };
+  const resumes = RESUMABLE.has(kind) || (row.job_id !== null && row.job_id !== undefined);
+  if (!resumes) {return data(200, result, ctx.rid);}
+  const resume: JsonObject = { approvalId, optionId };
+  if (picked.optionIds) {resume.optionIds = picked.optionIds;}
   try {
     const jobId = await enqueueResumeJob(ctx, {
       conversationId, userId: ctx.user.id, payload: { resume }, idempotencyKey: `approval:${approvalId}`,
     });
     return data(202, { ...result, jobId }, ctx.rid);
-  } catch (err) {
+  } catch (error) {
     await query(ctx.deps.query,
       "UPDATE approvals SET status = 'PENDING', option_id = NULL, decided_at = NULL, updated_at = now() WHERE id = $1 AND status = $2",
       [approvalId, status]);
-    throw err;
+    throw error;
   }
 };
 
@@ -576,29 +586,30 @@ const APPROVAL_PATH = /^\/api\/v1\/(?:conversations|bots)\/[^/]+\/approvals\/([^
 
 export const withApprovalAnswerKey = async (ctx: Ctx, path: string): Promise<Ctx> => {
   const approval = path.match(APPROVAL_PATH);
-  if (!approval || ctx.request.headers.has("idempotency-key")) return ctx;
+  if (!approval || ctx.request.headers.has("idempotency-key")) {return ctx;}
   let mark = "";
   try {
-    const body = JSON.parse(await ctx.request.clone().text()) as Record<string, unknown>;
+    const body: unknown = JSON.parse(await ctx.request.clone().text());
+    if (!isJsonObject(body)) {return ctx;}
     if (Array.isArray(body.optionIds) && body.optionIds.length > 0) {
       mark = body.optionIds.filter((id): id is string => typeof id === "string").join(",");
     }
-    if (!mark && typeof body.optionId === "string") mark = body.optionId;
+    if (!mark && typeof body.optionId === "string") {mark = body.optionId;}
   } catch {
     return ctx;
   }
-  if (!mark) return ctx;
+  if (!mark) {return ctx;}
   const headers = new Headers(ctx.request.headers);
   headers.set("idempotency-key", await uuid5Url(`push:approval-answer:${approval[1]}:${mark}`));
   return { ...ctx, request: new Request(ctx.request, { headers }) };
 };
 
-const ARTIFACT_TYPES: Record<string, string> = {
-  pdf: "application/pdf",
-  md: "text/markdown; charset=utf-8",
-  json: "application/json; charset=utf-8",
-  txt: "text/plain; charset=utf-8",
-};
+const ARTIFACT_TYPES = new Map([
+  ["pdf", "application/pdf"],
+  ["md", "text/markdown; charset=utf-8"],
+  ["json", "application/json; charset=utf-8"],
+  ["txt", "text/plain; charset=utf-8"],
+]);
 
 const artifactName = (raw: string): string => {
   let name: string;
@@ -618,14 +629,14 @@ export const getArtifact = async (ctx: Ctx, idRaw: string, nameRaw: string): Pro
   const id = requireUuid(idRaw, "id");
   const name = artifactName(nameRaw);
   const row = await one(ctx.deps.query, ARTIFACT_SQL, [id, ctx.user.id, name]);
-  if (!row || row.content == null) throw new HttpError(404, "NOT_FOUND", "resource not found");
-  const bytes = base64ToBytes(String(row.content).replace(/\s+/g, ""));
+  if (!row || (row.content === null || row.content === undefined)) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
+  const bytes = base64ToBytes(String(row.content).replaceAll(/\s+/g, ""));
   const ext = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : "";
-  const ascii = name.replace(/[^\x20-\x7e]|["\\]/g, "_");
-  return new Response(bytes as Uint8Array<ArrayBuffer>, {
+  const ascii = name.replaceAll(/[^\u0020-\u007e]|["\\]/g, "_");
+  return new Response(new Uint8Array(bytes), {
     status: 200,
     headers: {
-      "content-type": ARTIFACT_TYPES[ext] ?? "application/octet-stream",
+      "content-type": ARTIFACT_TYPES.get(ext) ?? "application/octet-stream",
       "content-disposition": `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`,
       "x-content-type-options": "nosniff",
       "x-request-id": ctx.rid,

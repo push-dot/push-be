@@ -1,5 +1,5 @@
 // Cloudflare Workers rejects PBKDF2 above 100000 iterations, so this is the maximum it allows.
-const ITERATIONS = 100000;
+const ITERATIONS = 100_000;
 const SALT_BYTES = 16;
 const HASH_BITS = 256;
 
@@ -11,14 +11,14 @@ const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer => {
 
 const bytesToBase64 = (bytes: Uint8Array): string => {
   let bin = "";
-  for (const b of bytes) bin += String.fromCharCode(b);
+  for (const b of bytes) {bin += String.fromCharCode(b);}
   return btoa(bin);
 };
 
 const base64ToBytes = (value: string): Uint8Array => {
   const bin = atob(value);
   const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  for (let i = 0; i < bin.length; i++) {out[i] = bin.charCodeAt(i);}
   return out;
 };
 
@@ -40,7 +40,7 @@ export const hashPassword = async (password: string): Promise<string> => {
 
 export const verifyPassword = async (password: string, stored: string): Promise<boolean> => {
   const parts = stored.split("$");
-  if (parts.length !== 4 || parts[0] !== "pbkdf2" || parts[1] !== String(ITERATIONS)) return false;
+  if (parts.length !== 4 || parts[0] !== "pbkdf2" || parts[1] !== String(ITERATIONS)) {return false;}
   let salt: Uint8Array;
   let expected: Uint8Array;
   try {
@@ -49,10 +49,10 @@ export const verifyPassword = async (password: string, stored: string): Promise<
   } catch {
     return false;
   }
-  if (salt.length !== SALT_BYTES) return false;
+  if (salt.length !== SALT_BYTES) {return false;}
   const actual = await derive(password, salt);
-  if (actual.length !== expected.length) return false;
+  if (actual.length !== expected.length) {return false;}
   let diff = 0;
-  for (let i = 0; i < actual.length; i++) diff |= actual[i] ^ expected[i];
+  for (let i = 0; i < actual.length; i++) {diff |= actual[i] ^ expected[i];}
   return diff === 0;
 };

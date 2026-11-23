@@ -2,17 +2,17 @@
 
 /** Clamp a TTL in seconds. `0` disables that cache. */
 export function clampTtl(raw: string | undefined, fallback: number, max: number): number {
-  if (raw == null || raw === "") return fallback;
+  if ((raw === null || raw === undefined) || raw === "") {return fallback;}
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) return fallback;
+  if (!Number.isFinite(n) || n < 0) {return fallback;}
   return Math.min(Math.floor(n), max);
 }
 
 export function weakEtag(body: string): string {
-  let h = 0x811c9dc5;
+  let h = 0x81_1c_9d_c5;
   for (let i = 0; i < body.length; i++) {
     h ^= body.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
+    h = Math.imul(h, 0x01_00_01_93);
   }
   return `W/"${(h >>> 0).toString(16).padStart(8, "0")}"`;
 }
@@ -49,7 +49,7 @@ export function createIsolateCache(): IsolateCache {
     },
     getAuth(hash, nowMs) {
       const hit = auth.get(hash);
-      if (!hit) return undefined;
+      if (!hit) {return undefined;}
       if (hit.until <= nowMs) {
         auth.delete(hash);
         return undefined;
@@ -61,7 +61,7 @@ export function createIsolateCache(): IsolateCache {
       auth.set(hash, { user, until: nowMs + ttlMs });
       while (auth.size > AUTH_CAP) {
         const oldest = auth.keys().next().value;
-        if (oldest === undefined) return;
+        if (oldest === undefined) {return;}
         auth.delete(oldest);
       }
     },

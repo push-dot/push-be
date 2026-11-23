@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
+import type { JsonObject } from "../src/json.ts";
 import { resetLimits } from "../src/ratelimit.ts";
+
+const jsonOf = <T>(res: Response): Promise<T> => res.json();
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const OTHER = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -16,12 +20,12 @@ function deps(query: Deps["query"]): Deps {
   return { query, now: () => NOW };
 }
 
-type Call = { sql: string; params: unknown[] };
+type Call = { sql: string; params: Array<unknown> };
 
-function authed(seen: Call[], employer: boolean, extra?: Deps["query"]): Deps["query"] {
+function authed(seen: Array<Call>, employer: boolean, extra?: Deps["query"]): Deps["query"] {
   return async (sql, params = []) => {
     seen.push({ sql, params });
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     if (sql.includes("access_tokens")) {
       return {
         rows: [{
@@ -35,12 +39,12 @@ function authed(seen: Call[], employer: boolean, extra?: Deps["query"]): Deps["q
     if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {
       return { rows: [{ id: "11111111-1111-4111-8111-111111111111" }], rowCount: 1 };
     }
-    if (sql.includes("idempotency_keys")) return { rows: [], rowCount: 1 };
+    if (sql.includes("idempotency_keys")) {return { rows: [], rowCount: 1 };}
     if (sql.includes("is_employer")) {
       return { rows: [{ is_employer: employer, display_name: "Ada" }], rowCount: 1 };
     }
-    if (extra) return extra(sql, params);
-    if (sql.includes("count(*)")) return { rows: [{ total: 0 }], rowCount: 1 };
+    if (extra) {return extra(sql, params);}
+    if (sql.includes("count(*)")) {return { rows: [{ total: 0 }], rowCount: 1 };}
     return { rows: [], rowCount: 0 };
   };
 }
@@ -87,15 +91,15 @@ const storedLink = (): LinkRow => ({
   created_at: "2026-01-02T03:04:05Z",
 });
 
-const linkUpdate = (row: LinkRow, sql: string, params: unknown[] = []): LinkRow | null => {
-  if (!sql.includes("UPDATE user_links") || !/RETURNING/i.test(sql)) return null;
-  if (String(params[0]) !== row.id || String(params[1]) !== USER) return null;
+const linkUpdate = (row: LinkRow, sql: string, params: Array<unknown> = []): LinkRow | null => {
+  if (!sql.includes("UPDATE user_links") || !/RETURNING/i.test(sql)) {return null;}
+  if (String(params[0]) !== row.id || String(params[1]) !== USER) {return null;}
   const next = { ...row };
   const take = (column: string, write: (value: unknown) => void) => {
     const match = sql.match(new RegExp(`${column}\\s*=\\s*(?:COALESCE\\s*\\(\\s*)?\\$(\\d+)`, "i"));
-    if (!match) return;
+    if (!match) {return;}
     const value = params[Number(match[1]) - 1];
-    if (value !== null && value !== undefined) write(value);
+    if (value !== null && value !== undefined) {write(value);}
   };
   take("title", (value) => { next.title = String(value); });
   take("kind", (value) => { next.kind = String(value); });
@@ -108,7 +112,7 @@ const linkUpdate = (row: LinkRow, sql: string, params: unknown[] = []): LinkRow 
 
 test("posting filters become SQL parameters", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(new Request(
     "https://core.example/api/v1/postings?q=" + encodeURIComponent("백엔드")
       + "&category=dev,data&skills=Kotlin,Java&careerYears=1-3,10%2B"
@@ -117,7 +121,7 @@ test("posting filters become SQL parameters", async () => {
     { headers: { authorization: "Bearer secret-token" } },
   ), env(), deps(authed(seen, false)));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: unknown[]; page: { total: number; hasMore: boolean } };
+  const body = await jsonOf<{ data: Array<unknown>; page: { total: number; hasMore: boolean } }>(res);
   assert.deepEqual(body.data, []);
   assert.equal(body.page.total, 0);
   assert.equal(body.page.hasMore, false);
@@ -135,7 +139,7 @@ test("posting filters become SQL parameters", async () => {
 
 test("bookmarking the same posting twice is idempotent", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   let inserts = 0;
   const query = authed(seen, false, async (sql) => {
     if (sql.includes("FROM job_postings") && sql.includes("closed_at IS NULL")) {
@@ -159,7 +163,7 @@ test("bookmarking the same posting twice is idempotent", async () => {
 
 test("a non-employer cannot create a posting", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(post("/api/v1/postings", {
     title: "Backend",
     jobCategory: "dev",
@@ -170,16 +174,16 @@ test("a non-employer cannot create a posting", async () => {
     description: "Build APIs",
   }, "33333333-3333-4333-8333-333333333333"), env(), deps(authed(seen, false)));
   assert.equal(res.status, 403);
-  assert.equal((await res.json() as { error: { code: string } }).error.code, "FORBIDDEN");
+  assert.equal((await jsonOf<{ error: { code: string } }>(res)).error.code, "FORBIDDEN");
   assert.equal(seen.some((call) => call.sql.includes("INSERT INTO job_postings")), false);
 });
 
 test("following yourself is rejected", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(post(`/api/v1/users/${USER}/follow`, {}, "44444444-4444-4444-8444-444444444444"), env(), deps(authed(seen, false)));
   assert.equal(res.status, 400);
-  const body = await res.json() as { error: { code: string; details: { field: string } } };
+  const body = await jsonOf<{ error: { code: string; details: { field: string } } }>(res);
   assert.equal(body.error.code, "VALIDATION_ERROR");
   assert.equal(body.error.details.field, "userId");
   assert.equal(seen.some((call) => call.sql.includes("INSERT INTO follows")), false);
@@ -187,14 +191,14 @@ test("following yourself is rejected", async () => {
 
 test("an unknown post category is 422", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(post("/api/v1/posts", {
     category: "nope",
     title: "hello",
     body: "world",
   }, "55555555-5555-4555-8555-555555555555"), env(), deps(authed(seen, false)));
   assert.equal(res.status, 422);
-  const body = await res.json() as { error: { code: string; details: { field: string } } };
+  const body = await jsonOf<{ error: { code: string; details: { field: string } } }>(res);
   assert.equal(body.error.code, "VALIDATION_ERROR");
   assert.equal(body.error.details.field, "category");
   assert.equal(seen.some((call) => call.sql.includes("INSERT INTO posts")), false);
@@ -204,7 +208,7 @@ test("posting list queries reference every bound parameter", async () => {
   resetLimits();
   // Postgres rejects a bind whose parameter count differs from the statement's placeholders.
   for (const qs of ["sort=latest&limit=10", "category=dev&careerYears=1-3&limit=1"]) {
-    const seen: Call[] = [];
+    const seen: Array<Call> = [];
     const res = await handle(
       new Request("https://core.example/api/v1/postings?" + qs, { headers: { authorization: "Bearer secret-token" } }),
       env(),
@@ -220,7 +224,7 @@ test("posting list queries reference every bound parameter", async () => {
 
 test("patch link title and aiRead keeps the stored url", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const row = storedLink();
   const res = await handle(
     patch(`/api/v1/me/links/${LINK}`, { title: "New title", aiRead: true }),
@@ -231,7 +235,7 @@ test("patch link title and aiRead keeps the stored url", async () => {
     })),
   );
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: Record<string, unknown> };
+  const body = await jsonOf<{ data: JsonObject }>(res);
   assert.deepEqual(body.data, {
     id: LINK,
     kind: "github",
@@ -246,7 +250,7 @@ test("patch link title and aiRead keeps the stored url", async () => {
 
 test("patch link kind and url", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const row = storedLink();
   const res = await handle(
     patch(`/api/v1/me/links/${LINK}`, { kind: "portfolio", url: "https://example.com/work" }),
@@ -257,7 +261,7 @@ test("patch link kind and url", async () => {
     })),
   );
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: Record<string, unknown> };
+  const body = await jsonOf<{ data: JsonObject }>(res);
   assert.deepEqual(body.data, {
     id: LINK,
     kind: "portfolio",
@@ -272,7 +276,7 @@ test("patch link kind and url", async () => {
 
 test("patch of an unknown link id is 404", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const missing = "99999999-9999-4999-8999-999999999999";
   const res = await handle(
     patch(`/api/v1/me/links/${missing}`, { title: "Gone" }),
@@ -283,20 +287,20 @@ test("patch of an unknown link id is 404", async () => {
     })),
   );
   assert.equal(res.status, 404);
-  assert.equal((await res.json() as { error: { code: string } }).error.code, "NOT_FOUND");
+  assert.equal((await jsonOf<{ error: { code: string } }>(res)).error.code, "NOT_FOUND");
   assert.equal(seen.some((call) => call.sql.includes("UPDATE user_links")), true);
 });
 
 test("patch link rejects an unsupported kind", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(
     patch(`/api/v1/me/links/${LINK}`, { kind: "nope" }),
     env(),
     deps(authed(seen, false)),
   );
   assert.equal(res.status, 422);
-  const body = await res.json() as { error: { code: string; details: { field: string } } };
+  const body = await jsonOf<{ error: { code: string; details: { field: string } } }>(res);
   assert.equal(body.error.code, "VALIDATION_ERROR");
   assert.equal(body.error.details.field, "kind");
   assert.equal(seen.some((call) => call.sql.includes("UPDATE user_links") || call.sql.includes("INSERT INTO user_links")), false);

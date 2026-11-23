@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { Transaction } from "../src/db.ts";
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import type { Row, Transaction } from "../src/db.ts";
+import type { Json, JsonObject } from "../src/json.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { uuid5Url } from "../src/http.ts";
 import { resetLimits } from "../src/ratelimit.ts";
 import { plainLine, snippetOf } from "../src/routes/bots.ts";
+
+const jsonOf = <T>(res: Response): Promise<T> => res.json();
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const POSTING = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -15,10 +19,10 @@ const NOW = new Date("2026-10-18T00:00:00Z");
 const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
 const deps = (query: Deps["query"]): Deps => ({ query, now: () => NOW });
 
-type Call = { sql: string; params: unknown[] };
-type Rows = Record<string, unknown>[];
+type Call = { sql: string; params: Array<unknown> };
+type Rows = Array<Row>;
 
-const botRow = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+const botRow = (over: JsonObject = {}) => ({
   id: BOT, kind: "company", company_id: null, company_name: "Acme", color: "teal", posting_id: POSTING, posting_url: null,
   display_name: "Acme", avatar_key: null, mascot_key: null, notifications_muted: false, revision: 1,
   created_at: NOW.toISOString(), updated_at: NOW.toISOString(),
@@ -26,7 +30,7 @@ const botRow = (over: Record<string, unknown> = {}): Record<string, unknown> => 
 });
 
 /** A row of bot_state_v for `bot`: no thread, nothing running, nothing unread, unless `state` says so. */
-const stateRow = (bot: Record<string, unknown>, state: Record<string, unknown> = {}): Record<string, unknown> => {
+const stateRow = (bot: JsonObject, state: JsonObject = {}): JsonObject => {
   const { id, company_id: _companyId, ...own } = bot;
   return {
     bot_id: id, user_id: USER, ...own, thread_id: null,
@@ -38,12 +42,12 @@ const stateRow = (bot: Record<string, unknown>, state: Record<string, unknown> =
   };
 };
 
-const authed = (seen: Call[], plan: string, answer: (sql: string, params: unknown[]) => Rows | null = () => null): Deps["query"] =>
+const authed = (seen: Array<Call>, plan: string, answer: (sql: string, params: Array<unknown>) => Rows | null = () => null): Deps["query"] =>
   async (sql, params = []) => {
     seen.push({ sql, params });
-    if (sql.includes("set_config") && sql.includes("lock_timeout")) return { rows: [{}], rowCount: 1 };
-    if (sql.includes("FOR NO KEY UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("set_config") && sql.includes("lock_timeout")) {return { rows: [{}], rowCount: 1 };}
+    if (sql.includes("FOR NO KEY UPDATE")) {return { rows: [{ id: USER }], rowCount: 1 };}
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     if (sql.includes("access_tokens")) {
       return {
         rows: [{
@@ -57,14 +61,14 @@ const authed = (seen: Call[], plan: string, answer: (sql: string, params: unknow
     if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {
       return { rows: [{ id: "11111111-1111-4111-8111-111111111111" }], rowCount: 1 };
     }
-    if (sql.includes("idempotency_keys")) return { rows: [], rowCount: 1 };
+    if (sql.includes("idempotency_keys")) {return { rows: [], rowCount: 1 };}
     const rows = answer(sql, params) ?? [];
     return { rows, rowCount: rows.length };
   };
 
 type World = {
-  consent?: boolean; posting?: Record<string, unknown> | false; existing?: string; count?: number;
-  bot?: Record<string, unknown> | null; state?: Record<string, unknown>; insertWins?: boolean; hits?: Rows;
+  consent?: boolean; posting?: JsonObject | false; existing?: string; count?: number;
+  bot?: JsonObject | null; state?: JsonObject; insertWins?: boolean; hits?: Rows;
   pushMissing?: boolean;
 };
 
@@ -77,17 +81,17 @@ const world = (w: World = {}) => {
     pushMade = true;
     return [];
   }
-  if (!pushMade && (sql.includes("bot_state_v") || sql.includes("FROM bots b"))) return [];
-  if (sql.includes("user_consents")) return [{ reference_data: w.consent ?? true }];
-  if (sql.includes("FROM job_postings")) return w.posting === false ? [] : [{ ...POSTING_ROW, ...w.posting }];
-  if (sql.includes("WITH hits")) return w.hits ?? [{ total: 0, id: null }];
-  if (sql.includes("bot_state_v")) return w.bot === null ? [] : [stateRow(w.bot ?? botRow(), w.state)];
-  if (sql.includes("bot_company_key")) return w.existing ? [{ id: w.existing }] : [];
-  if (sql.includes("count(*)")) return [{ n: w.count ?? 0 }];
-  if (sql.includes("INSERT INTO bots") && sql.includes("'company'")) return w.insertWins === false ? [] : [{ id: BOT }];
-  if (sql.includes("UPDATE bots SET revision")) return [{ id: BOT }];
-  if (sql.includes("DELETE FROM bots")) return w.bot === null ? [] : [{ id: BOT }];
-  if (sql.includes("FROM bots b")) return w.bot === null ? [] : [w.bot ?? botRow()];
+  if (!pushMade && (sql.includes("bot_state_v") || sql.includes("FROM bots b"))) {return [];}
+  if (sql.includes("user_consents")) {return [{ reference_data: w.consent ?? true }];}
+  if (sql.includes("FROM job_postings")) {return w.posting === false ? [] : [{ ...POSTING_ROW, ...w.posting }];}
+  if (sql.includes("WITH hits")) {return w.hits ?? [{ total: 0, id: null }];}
+  if (sql.includes("bot_state_v")) {return w.bot === null ? [] : [stateRow(w.bot ?? botRow(), w.state)];}
+  if (sql.includes("bot_company_key")) {return w.existing ? [{ id: w.existing }] : [];}
+  if (sql.includes("count(*)")) {return [{ n: w.count ?? 0 }];}
+  if (sql.includes("INSERT INTO bots") && sql.includes("'company'")) {return w.insertWins === false ? [] : [{ id: BOT }];}
+  if (sql.includes("UPDATE bots SET revision")) {return [{ id: BOT }];}
+  if (sql.includes("DELETE FROM bots")) {return w.bot === null ? [] : [{ id: BOT }];}
+  if (sql.includes("FROM bots b")) {return w.bot === null ? [] : [w.bot ?? botRow()];}
   return null;
   };
 };
@@ -97,25 +101,25 @@ const request = (method: string, path: string, body?: unknown): Request => new R
   headers: {
     authorization: "Bearer secret-token",
     "content-type": "application/json",
-    ...(method === "POST" ? { "idempotency-key": crypto.randomUUID() } : {}),
+    ...(method === "POST" ? { "idempotency-key": crypto.randomUUID() } : undefined),
   },
   body: body === undefined ? undefined : JSON.stringify(body),
 });
 
 const call = async (method: string, path: string, body: unknown, w: World = {}, plan = "PRO", extra: Partial<Deps> = {}) => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(request(method, path, body), env(), { ...deps(authed(seen, plan, world(w))), ...extra });
-  const json = res.status === 204 ? null : await res.json() as {
-    data?: Record<string, unknown> & Record<string, unknown>[];
-    limit?: Record<string, unknown>;
-    page?: Record<string, unknown>;
-    error?: { code: string; details: Record<string, unknown> };
-  };
+  const json = res.status === 204 ? null : await jsonOf<{
+    data?: JsonObject & Array<JsonObject>;
+    limit?: JsonObject;
+    page?: JsonObject;
+    error?: { code: string; details: JsonObject };
+  }>(res);
   return { res, json, seen };
 };
 
-const wrote = (seen: Call[], marker: string): boolean => seen.some((c) => c.sql.includes(marker));
+const wrote = (seen: Array<Call>, marker: string): boolean => seen.some((c) => c.sql.includes(marker));
 
 test("GET /bots makes the Push Bot on first use and lists it", async () => {
   const { res, json, seen } = await call("GET", "/api/v1/bots", undefined, { bot: botRow({ kind: "push", display_name: "Push Bot", company_name: "" }), pushMissing: true });
@@ -150,7 +154,7 @@ test("GET /bots?postingId= answers the caller's bot for that posting's company, 
   const found = await call("GET", `/api/v1/bots?postingId=${POSTING}`, undefined, { existing: BOT });
   assert.deepEqual([found.res.status, found.json!.data!.map((bot) => bot.id), found.json!.limit], [200, [BOT], undefined]);
   assert.ok(!wrote(found.seen, "INSERT INTO bots"));
-  for (const w of [{}, { posting: false }, { existing: BOT, posting: { company: "   " } }] as World[]) {
+  for (const w of [{}, { posting: false }, { existing: BOT, posting: { company: "   " } }] as Array<World>) {
     assert.deepEqual((await call("GET", `/api/v1/bots?postingId=${POSTING}`, undefined, w)).json, { data: [] });
   }
   const bad = await call("GET", "/api/v1/bots?postingId=nope", undefined);
@@ -160,7 +164,7 @@ test("GET /bots?postingId= answers the caller's bot for that posting's company, 
 test("a bot's activity is its open card, else what its run is doing, else nothing", async () => {
   const at = "2026-10-18T00:01:00Z";
   const card = { card_id: POSTING, card_title: "수정 적용", card_kind: "DOCUMENT_EDIT", card_for: "confirm", card_at: at, card_expires_at: null };
-  const run = (phase: string, more: Record<string, unknown> = {}) => ({ job_id: POSTING, job_at: at, job_phase: phase, ...more });
+  const run = (phase: string, more: JsonObject = {}) => ({ job_id: POSTING, job_at: at, job_phase: phase, ...more });
   const waiting = { phase: "waiting", since: at, for: "confirm", cardId: POSTING, cardTitle: "이 변경을 이력서에 반영할까요?", expiresAt: null };
   for (const [name, state, activity, status] of [
     ["idle", {}, null, "DONE"],
@@ -248,7 +252,7 @@ test("POST /bots answers 200 when a parallel create for the same company won", a
   let lookups = 0;
   resetLimits();
   const res = await handle(request("POST", "/api/v1/bots", { postingId: POSTING }), env(), deps(authed([], "ULTRA", (sql) => {
-    if (sql.includes("bot_company_key")) return lookups++ === 0 ? [] : [{ id: BOT }];
+    if (sql.includes("bot_company_key")) {return lookups++ === 0 ? [] : [{ id: BOT }];}
     return world({ insertWins: false })(sql);
   })));
   assert.equal(res.status, 200);
@@ -278,6 +282,19 @@ test("POST /bots refuses every body key but postingId, displayName and color", a
   }
 });
 
+const transaction: Transaction = async (work) => work(async (sql) => {
+  if (sql.includes("FROM job_postings")) {return { rows: [POSTING_ROW], rowCount: 1 };}
+  if (sql.includes("set_config")) {return { rows: [{}], rowCount: 1 };}
+  throw Object.assign(new Error("lock timeout"), { code: "55P03" });
+});
+
+test("POST /bots answers 429 RATE_LIMITED on a lock timeout", async () => {
+  const { res, json } = await call("POST", "/api/v1/bots", { postingId: POSTING }, {}, "FREE", { transaction });
+  assert.equal(res.status, 429);
+  assert.equal(json!.error!.code, "RATE_LIMITED");
+  assert.equal(json!.error!.details.retryAfterSec, 1);
+});
+
 test("POST /bots needs reference-data consent and an existing posting", async () => {
   const refused = await call("POST", "/api/v1/bots", { postingId: POSTING }, { consent: false });
   assert.equal(refused.res.status, 403);
@@ -285,18 +302,6 @@ test("POST /bots needs reference-data consent and an existing posting", async ()
   assert.ok(!wrote(refused.seen, "INSERT INTO bots"));
   const missing = await call("POST", "/api/v1/bots", { postingId: POSTING }, { posting: false });
   assert.equal(missing.res.status, 404);
-});
-
-test("POST /bots answers 429 RATE_LIMITED on a lock timeout", async () => {
-  const transaction: Transaction = async (work) => work(async (sql) => {
-    if (sql.includes("FROM job_postings")) return { rows: [POSTING_ROW], rowCount: 1 };
-    if (sql.includes("set_config")) return { rows: [{}], rowCount: 1 };
-    throw Object.assign(new Error("lock timeout"), { code: "55P03" });
-  });
-  const { res, json } = await call("POST", "/api/v1/bots", { postingId: POSTING }, {}, "FREE", { transaction });
-  assert.equal(res.status, 429);
-  assert.equal(json!.error!.code, "RATE_LIMITED");
-  assert.equal(json!.error!.details.retryAfterSec, 1);
 });
 
 test("the literal id push addresses the caller's Push Bot on every bot route", async () => {
@@ -386,7 +391,7 @@ test("POST /bots/link-preview resolves a posting URL to the posting's facts and 
     status: "found", postingId: POSTING, company: "Acme", title: "Backend",
     deadline: null, careerMin: 0, careerMax: 5, location: null, host: "careers.acme.example",
   });
-  for (const w of [{ posting: false }, { posting: { company: "  " } }] as World[]) {
+  for (const w of [{ posting: false }, { posting: { company: "  " } }] as Array<World>) {
     assert.deepEqual((await call("POST", "/api/v1/bots/link-preview", { url: "https://example.com/jobs/1" }, w)).json!.data, { status: "not_a_posting" });
   }
   assert.equal((await call("POST", "/api/v1/bots/link-preview", { url: "ftp://example.com/jobs/1" })).res.status, 400);
@@ -401,7 +406,7 @@ test("GET /bots/search answers bots with a line and message hits with a snippet"
     hits: [hit(POSTING, "Acme 공고 마감이 이번 주 금요일이에요"), hit(BOT, "two"), hit(USER, "three")],
   });
   assert.equal(res.status, 200);
-  const found = json!.data as unknown as { bots: Record<string, unknown>[]; botTotal: number; messages: unknown[]; messageTotal: number };
+  const found: SearchData = searchData(json);
   assert.deepEqual([found.bots.map((bot) => [bot.id, bot.line]), found.botTotal], [[[BOT, "Acme · Backend"]], 1]);
   assert.deepEqual(found.messages[0], {
     bot: { id: BOT, kind: "company", displayName: "Acme", color: "teal" },
@@ -412,7 +417,28 @@ test("GET /bots/search answers bots with a line and message hits with a snippet"
   const none = await call("GET", "/api/v1/bots/search?q=zzz", undefined, { bot: null });
   assert.deepEqual([none.json!.data, none.json!.page], [{ bots: [], botTotal: 0, messages: [], messageTotal: 0 }, { nextCursor: null, hasMore: false }]);
   const lone = await call("GET", "/api/v1/bots/search?q=push", undefined, { bot: botRow({ kind: "push", display_name: "Push Bot", company_name: "", posting_id: null }) });
-  assert.equal((lone.json!.data as unknown as { bots: Record<string, unknown>[] }).bots[0].line, "Push Bot");
+  assert.equal(searchData(lone.json).bots[0].line, "Push Bot");
+});
+
+type SearchData = { bots: Array<JsonObject>; botTotal: number; messages: Array<Json>; messageTotal: number };
+
+// The call helper types data as a list-or-object; the search route answers an object with these fields.
+const searchData = (json: { data?: JsonObject } | null): SearchData => {
+  const data = json?.data;
+  if (!data || !Array.isArray(data.bots) || !Array.isArray(data.messages)) {throw new Error("not a search answer");}
+  return { bots: data.bots.filter(isObject), botTotal: Number(data.botTotal), messages: data.messages, messageTotal: Number(data.messageTotal) };
+};
+
+const isObject = (value: Json): value is JsonObject => typeof value === "object" && value !== null && !Array.isArray(value);
+
+const collations = async (q: string): Promise<Array<boolean>> => {
+  const { seen } = await call("GET", `/api/v1/bots/search?q=${encodeURIComponent(q)}`, undefined);
+  return seen.filter((c) => c.sql.includes("ILIKE")).map((c) => c.sql.includes('COLLATE "C"'));
+};
+
+test("search folds case by the database's locale only when q holds a cased letter outside ASCII", async () => {
+  for (const q of ["acme", "모아페이", "100%", "AWS 경력"]) {assert.deepEqual(await collations(q), [true, true], q);}
+  for (const q of ["résumé", "Ünal", "я"]) {assert.deepEqual(await collations(q), [false, false], q);}
 });
 
 test("GET /bots/search refuses a missing, blank or too long q and a bad page", async () => {
@@ -428,21 +454,13 @@ test("GET /bots/search refuses a missing, blank or too long q and a bad page", a
   }
 });
 
-test("an empty ?limit= on /bots/search pages like a missing one", async () => {
-  const pageSize = async (query: string): Promise<unknown> =>
-    (await call("GET", `/api/v1/bots/search?q=acme${query}`, undefined)).seen.find((c) => c.sql.includes("LIMIT $5"))!.params[4];
-  assert.equal(await pageSize(""), 21);
-  assert.equal(await pageSize("&limit="), 21);
-  assert.equal(await pageSize("&limit=7"), 8);
-});
+const pageSize = async (query: string): Promise<Array<unknown>> =>
+  (await call("GET", `/api/v1/bots/search?q=acme${query}`, undefined)).seen.find((c) => c.sql.includes("LIMIT $5"))!.params;
 
-test("search folds case by the database's locale only when q holds a cased letter outside ASCII", async () => {
-  const collations = async (q: string): Promise<boolean[]> => {
-    const { seen } = await call("GET", `/api/v1/bots/search?q=${encodeURIComponent(q)}`, undefined);
-    return seen.filter((c) => c.sql.includes("ILIKE")).map((c) => c.sql.includes('COLLATE "C"'));
-  };
-  for (const q of ["acme", "모아페이", "100%", "AWS 경력"]) assert.deepEqual(await collations(q), [true, true], q);
-  for (const q of ["résumé", "Ünal", "я"]) assert.deepEqual(await collations(q), [false, false], q);
+test("an empty ?limit= on /bots/search pages like a missing one", async () => {
+  assert.equal((await pageSize(""))[4], 21);
+  assert.equal((await pageSize("&limit="))[4], 21);
+  assert.equal((await pageSize("&limit=7"))[4], 8);
 });
 
 test("a search snippet is the match with up to 30 characters before it and 60 after", () => {

@@ -1,13 +1,15 @@
 import { Client, neon, types } from "@neondatabase/serverless";
 
-import { inTransaction, type QueryResult, type Transaction } from "./db.ts";
-import { handle, type CoreEnv } from "./handler.ts";
+import { inTransaction } from './db.ts';
+import type { QueryResult, Transaction } from './db.ts';
+import { handle } from './handler.ts';
+import type { CoreEnv } from './handler.ts';
 import { ReadCache } from "./read-cache.ts";
 
 types.setTypeParser(1114, (value: string) => value);
 types.setTypeParser(1184, (value: string) => value);
 
-const readCache = new ReadCache();
+const readCache = new ReadCache<QueryResult>();
 
 const queryOf = (env: CoreEnv) => (env.DATABASE_URL
   ? neonQuery(env.DATABASE_URL)
@@ -22,8 +24,8 @@ export default {
       return await handle(request, env, {
         query: queryOf(env),
         cache: readCache,
-        ...(env.DATABASE_URL ? { transaction: neonTransaction(env.DATABASE_URL) } : {}),
-        ...(waitUntil ? { waitUntil: (promise: Promise<unknown>) => waitUntil.call(ctx, promise) } : {}),
+        ...(env.DATABASE_URL ? { transaction: neonTransaction(env.DATABASE_URL) } : undefined),
+        ...(waitUntil ? { waitUntil: (promise: Promise<unknown>) => waitUntil.call(ctx, promise) } : undefined),
       });
     } catch {
       return new Response(
@@ -37,7 +39,7 @@ export default {
       method: "POST",
       headers: { authorization: `Bearer ${env.INTERNAL_JOB_TOKEN ?? ""}` },
     });
-    const deps = { query: queryOf(env), ...(env.DATABASE_URL ? { transaction: neonTransaction(env.DATABASE_URL) } : {}) };
+    const deps = { query: queryOf(env), ...(env.DATABASE_URL ? { transaction: neonTransaction(env.DATABASE_URL) } : undefined) };
     const renewal = new Request("https://core.internal/api/v1/internal/billing/toss-renew", {
       method: "POST",
       headers: { authorization: `Bearer ${env.INTERNAL_JOB_TOKEN ?? ""}` },
@@ -49,9 +51,9 @@ export default {
 
 function neonQuery(databaseUrl: string) {
   const sql = neon(databaseUrl);
-  return async (text: string, params: unknown[] = []): Promise<QueryResult> => {
+  return async (text: string, params: Array<unknown> = []): Promise<QueryResult> => {
     const result = await sql.query(text, params, { fullResults: true });
-    const rows = (result.rows || []) as Record<string, unknown>[];
+    const rows: QueryResult["rows"] = result.rows || [];
     return { rows, rowCount: result.rowCount ?? rows.length };
   };
 }

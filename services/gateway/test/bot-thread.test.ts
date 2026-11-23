@@ -3,7 +3,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
+import { handle, resetLimits } from '../src/handler.ts';
+import type { Deps, FrontEnv, Query } from '../src/handler.ts';
+import type { Json, JsonObject } from "../src/types.ts";
 import { isBotThreadProbe, STORED } from "./fakes.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
@@ -13,7 +15,7 @@ const JOB = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const SINCE = "2026-10-18T00:00:00.000000Z";
 const BASE = "https://push-be.example/api/v1";
 
-const forwarded: string[] = [];
+const forwarded: Array<string> = [];
 const env: FrontEnv = {
   APP_ENV: "production",
   SSE_MAX_POLLS: "1",
@@ -22,11 +24,11 @@ const env: FrontEnv = {
   CORE: { fetch: async (request) => { forwarded.push(request.url); return new Response("{}", { status: 200 }); } },
 };
 
-const world = (events: Record<string, unknown>[]): Deps => {
+const world = (events: Array<JsonObject>): Deps => {
   const query: Query = async (sql, params) => {
-    if (isBotThreadProbe(sql)) return params[0] === THREAD ? [{ "?column?": 1 }] : [];
-    if (sql.includes("FROM chat_events")) return events.map((row, index) => ({ id: index + 1, created_at: STORED, ...row }));
-    if (sql.includes("FROM bots b")) return [{ bot_id: BOT, job_id: JOB }];
+    if (isBotThreadProbe(sql)) {return params[0] === THREAD ? [{ "?column?": 1 }] : [];}
+    if (sql.includes("FROM chat_events")) {return events.map((row, index) => ({ id: index + 1, created_at: STORED, ...row }));}
+    if (sql.includes("FROM bots b")) {return [{ bot_id: BOT, job_id: JOB }];}
     if (sql.includes("access_tokens")) {
       return [{
         id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z",
@@ -43,10 +45,13 @@ const call = (method: string, path: string, deps: Deps): Promise<Response> => {
   return handle(new Request(BASE + path, { method, headers: { authorization: "Bearer secret-token" }, body: method === "GET" ? undefined : "{}" }), env, deps);
 };
 
-const framesOf = async (res: Response): Promise<Record<string, unknown>[]> => (await res.text()).split("\n\n")
+const framesOf = async (res: Response): Promise<Array<JsonObject>> => (await res.text()).split("\n\n")
   .map((block) => block.split("\n").find((line) => line.startsWith("data: ")))
   .filter((line): line is string => line !== undefined)
-  .map((line) => JSON.parse(line.slice("data: ".length)) as Record<string, unknown>);
+  .flatMap((line) => {
+    const frame: unknown = JSON.parse(line.slice("data: ".length));
+    return typeof frame === "object" && frame !== null ? [Object.fromEntries(Object.entries(frame))] : [];
+  });
 
 test("a path that names a bot's thread is 404 before any route, whichever worker owns the route", async () => {
   forwarded.length = 0;
@@ -55,7 +60,7 @@ test("a path that names a bot's thread is 404 before any route, whichever worker
     ["PATCH", ""], ["DELETE", ""], ["POST", "/messages"], ["POST", "/approvals/x"], ["GET", "/turns"], ["POST", "/share"],
   ]) {
     const res = await call(method, `/conversations/${THREAD}${path}`, world([]));
-    assert.deepEqual([res.status, ((await res.json()) as { error: { code: string } }).error.code], [404, "NOT_FOUND"], `${method} ${path}`);
+    assert.deepEqual([res.status, member(await readJson(res), "error", "code")], [404, "NOT_FOUND"], `${method} ${path}`);
   }
   for (const id of [`%7B${THREAD}%7D`, `urn:uuid:${THREAD}`, "not-an-id"]) {
     assert.equal((await call("GET", `/conversations/${id}/turns`, world([]))).status, 400, id);
@@ -65,7 +70,7 @@ test("a path that names a bot's thread is 404 before any route, whichever worker
   assert.equal((await call("GET", "/conversations/shared/some-token", world([]))).status, 200, "a share token is not an id");
 });
 
-const RUN: Record<string, unknown>[] = [
+const RUN: Array<JsonObject> = [
   { type: "status", payload: { text: "대기 중", phase: "queued", since: SINCE, ahead: 2, extra: "not sent" } },
   { type: "status", payload: { text: "공고를 읽는 중" } },
   { type: "status", payload: { text: "확인을 기다리고 있어요", phase: "waiting", since: SINCE, for: "confirm", cardId: "card-1" } },
@@ -85,3 +90,18 @@ test("a bot stream sends no status that has no phase", async () => {
   const res = await call("GET", `/bots/${BOT}/stream`, world(RUN));
   assert.deepEqual(await framesOf(res), [QUEUED, WAITING, CANCELLED]);
 });
+
+// One typed boundary for response bodies in this test file.
+async function readJson(res: Pick<Response, "json">): Promise<Json> {
+  const body: Json = await res.json();
+  return body;
+}
+
+function member(value: Json, ...keys: Array<string>): Json {
+  let at = value;
+  for (const key of keys) {
+    if (typeof at !== "object" || at === null || Array.isArray(at) || !(key in at)) {throw new Error(`missing ${key}`);}
+    at = at[key] ?? null;
+  }
+  return at;
+}
