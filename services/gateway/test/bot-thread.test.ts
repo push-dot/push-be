@@ -40,9 +40,11 @@ const world = (events: Array<JsonObject>): Deps => {
   return { query, sleep: async () => {}, now: () => new Date("2026-10-18T00:00:00Z"), fetch: async (input) => { forwarded.push(String(input)); return new Response("{}"); } };
 };
 
-const call = (method: string, path: string, deps: Deps): Promise<Response> => {
+const call = (method: string, path: string, deps: Deps, headers: Record<string, string> = {}): Promise<Response> => {
   resetLimits();
-  return handle(new Request(BASE + path, { method, headers: { authorization: "Bearer secret-token" }, body: method === "GET" ? undefined : "{}" }), env, deps);
+  return handle(new Request(BASE + path, {
+    method, headers: { authorization: "Bearer secret-token", ...headers }, body: method === "GET" ? undefined : "{}",
+  }), env, deps);
 };
 
 const framesOf = async (res: Response): Promise<Array<JsonObject>> => (await res.text()).split("\n\n")
@@ -89,6 +91,19 @@ test("a conversation stream sends a status with the fields that say what the run
 test("a bot stream sends no status that has no phase", async () => {
   const res = await call("GET", `/bots/${BOT}/stream`, world(RUN));
   assert.deepEqual(await framesOf(res), [QUEUED, WAITING, CANCELLED]);
+});
+
+test("a bot stream sends a card in the A2UI version the request names, v0.9.1 by default", async () => {
+  const card = [{ type: "todo", payload: { id: "analyze", a2ui: {
+    "v0.9.1": { surfaceId: "t", messages: [{ version: "v0.9.1" }] },
+    "1.0": { surfaceId: "t", messages: [{ version: "1.0" }] },
+  } } }];
+  const version = async (headers: Record<string, string>) => {
+    const frames = await framesOf(await call("GET", `/bots/${BOT}/stream`, world(card), headers));
+    return frames.map((frame) => JSON.stringify(frame.messages));
+  };
+  assert.deepEqual(await version({}), [JSON.stringify([{ version: "v0.9.1" }])]);
+  assert.deepEqual(await version({ "A2UI-Version": "1.0" }), [JSON.stringify([{ version: "1.0" }])]);
 });
 
 // One typed boundary for response bodies in this test file.
