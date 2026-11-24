@@ -5,21 +5,22 @@ import { readFileSync } from "node:fs";
 import { after, before, test } from "node:test";
 
 import { BOT_COLORS } from "../src/routes/bots.ts";
-import { botsPg, type BotsPg, type Person } from "../test-support/bots-pg.ts";
+import { botsPg } from '../test-support/bots-pg.ts';
+import type { BotsPg, Person } from '../test-support/bots-pg.ts';
 
 const URL_ = process.env.BILLING_PG_URL;
 const SKIP = "set BILLING_PG_URL to a migrated Postgres";
 
 let db: BotsPg | undefined;
-before(async () => { if (URL_) db = await botsPg(URL_); });
+before(async () => { if (URL_) {db = await botsPg(URL_);} });
 after(async () => { await db?.close(); });
 
-const companyBots = async (user: Person): Promise<Record<string, unknown>[]> => (await db!.pg.query(
+const companyBots = async (user: Person) => (await db!.pg.query(
   "SELECT id, company_id, company_name, display_name, color FROM bots WHERE user_id = $1::uuid AND kind = 'company' AND deleted_at IS NULL",
   [user.id])).rows;
 
 test("parallel FREE creates at the limit allow only one more company bot", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("FREE");
   for (const company of ["Acme", "Beta"]) {
     assert.equal((await db.call(user, "POST", "/bots", { postingId: await db.posting(company) })).status, 201);
@@ -29,7 +30,7 @@ test("parallel FREE creates at the limit allow only one more company bot", async
     db.call(user, "POST", "/bots", { postingId: gamma }),
     db.call(user, "POST", "/bots", { postingId: delta }),
   ]);
-  assert.deepEqual(answers.map((a) => a.status).sort(), [201, 403]);
+  assert.deepEqual(answers.map((a) => a.status).sort((a, b) => a - b), [201, 403]);
   const limited = answers.find((a) => a.status === 403)!;
   assert.equal(limited.error!.code, "BOT_LIMIT");
   assert.deepEqual(limited.error!.details, { limit: 3, plan: "FREE" });
@@ -37,27 +38,27 @@ test("parallel FREE creates at the limit allow only one more company bot", async
 });
 
 test("two parallel creates for one company give 201 and 200 and one bot", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const { person, posting, call } = db;
   // FREE starts one bot under its limit of 3: the loser must get the winner's bot, not BOT_LIMIT.
   for (const [plan, others] of [["FREE", ["Acme", "Beta"]], ["ULTRA", []]] as const) {
     const user = await person(plan);
-    for (const company of others) await call(user, "POST", "/bots", { postingId: await posting(company) });
+    for (const company of others) {await call(user, "POST", "/bots", { postingId: await posting(company) });}
     const [first, second] = [await posting("Moa Pay"), await posting("  moa pay ")];
     const answers = await Promise.all([
       call(user, "POST", "/bots", { postingId: first }),
       call(user, "POST", "/bots", { postingId: second }),
     ]);
-    assert.deepEqual(answers.map((a) => a.status).sort(), [200, 201], plan);
+    assert.deepEqual(answers.map((a) => a.status).sort((a, b) => a - b), [200, 201], plan);
     assert.equal(answers[0].data.id, answers[1].data.id, plan);
     assert.equal((await companyBots(user)).length, others.length + 1, plan);
   }
 });
 
 test("a create for a company the caller already has a bot for answers 200 at the limit", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("FREE");
-  const made: string[] = [];
+  const made: Array<string> = [];
   for (const company of ["Acme", "Beta", "Gamma"]) {
     const answer = await db.call(user, "POST", "/bots", { postingId: await db.posting(company) });
     made.push(String(answer.data.id));
@@ -73,7 +74,7 @@ test("a create for a company the caller already has a bot for answers 200 at the
 });
 
 test("a company bot takes its company from the posting and is never an employer's", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const answer = await db.call(user, "POST", "/bots", { postingId: await db.posting("모아페이"), color: "violet" });
   assert.equal(answer.status, 201);
@@ -88,7 +89,7 @@ test("a company bot takes its company from the posting and is never an employer'
 });
 
 test("create is refused without consent, for a draft posting, and for any body key outside the contract", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const stranger = await db.person("PRO", false);
   const postingId = await db.posting("Acme");
   const refused = await db.call(stranger, "POST", "/bots", { postingId });
@@ -106,7 +107,7 @@ test("create is refused without consent, for a draft posting, and for any body k
 });
 
 test("push works on every bot route before the first list", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   for (const [method, path, body, status] of [
     ["GET", "/bots/push", undefined, 200],
     ["PATCH", "/bots/push", { expectedRevision: 1, notificationsMuted: true }, 200],
@@ -119,7 +120,7 @@ test("push works on every bot route before the first list", async (t) => {
     assert.equal(answer.status, status, `${method} ${path}`);
     const listed = await db.pg.query("SELECT id, kind FROM bots WHERE user_id = $1::uuid", [user.id]);
     assert.deepEqual(listed.rows.map((row) => row.kind), ["push"], `${method} ${path}`);
-    if (status === 200 && method !== "POST") assert.equal(answer.data.id, listed.rows[0].id);
+    if (status === 200 && method !== "POST") {assert.equal(answer.data.id, listed.rows[0].id);}
   }
   const user = await db.person("FREE");
   const answers = await Promise.all(Array.from({ length: 8 }, () => db!.call(user, "GET", "/bots/push")));
@@ -128,7 +129,7 @@ test("push works on every bot route before the first list", async (t) => {
 });
 
 test("PATCH stores colour and mute, and keeps the Push Bot's name and colour fixed", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const bot = await db.call(user, "POST", "/bots", { postingId: await db.posting("Acme") });
   const patched = await db.call(user, "PATCH", `/bots/${bot.data.id}`, { expectedRevision: 1, color: "coral", notificationsMuted: true });
@@ -144,12 +145,11 @@ test("PATCH stores colour and mute, and keeps the Push Bot's name and colour fix
 });
 
 test("the colours the route accepts are the colours of the database and of the contract", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const check = await db.pg.query("SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'bots_color_chk'");
   const names = [...String(check.rows[0].def).matchAll(/'([a-z]+)'/g)].map((match) => match[1]);
   assert.deepEqual(names, [...BOT_COLORS]);
-  const contract = JSON.parse(readFileSync(new URL("../../../packages/contracts/openapi.json", import.meta.url), "utf8")) as {
-    components: { schemas: { BotColor: { enum: string[] } } };
-  };
+  const contract: { components: { schemas: { BotColor: { enum: Array<string> } } } } =
+    JSON.parse(readFileSync(new URL("../../../packages/contracts/openapi.json", import.meta.url), "utf8"));
   assert.deepEqual(contract.components.schemas.BotColor.enum, [...BOT_COLORS]);
 });

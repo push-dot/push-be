@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import type { QueryResult } from "../src/db.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
+import type { Json } from "../src/json.ts";
 import { resetLimits } from "../src/ratelimit.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
@@ -12,14 +15,14 @@ const FILE = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 const NOW = "2026-10-21T00:00:00.000Z";
 const PDF = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
 
-type Call = { sql: string; params: unknown[] };
+type Call = { sql: string; params: Array<unknown> };
 
 const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
 const deps = (query: Deps["query"]): Deps => ({ query, now: () => new Date(NOW) });
 
-const authed = (seen: Call[], employer: boolean, extra: Deps["query"]): Deps["query"] => async (sql, params = []) => {
+const authed = (seen: Array<Call>, employer: boolean, extra: Deps["query"]): Deps["query"] => async (sql, params = []) => {
   seen.push({ sql, params });
-  if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
   if (sql.includes("access_tokens")) {
     return {
       rows: [{
@@ -32,14 +35,14 @@ const authed = (seen: Call[], employer: boolean, extra: Deps["query"]): Deps["qu
   if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {
     return { rows: [{ id: "11111111-1111-4111-8111-111111111111" }], rowCount: 1 };
   }
-  if (sql.includes("idempotency_keys")) return { rows: [], rowCount: 0 };
+  if (sql.includes("idempotency_keys")) {return { rows: [], rowCount: 0 };}
   if (sql.includes("is_employer") && sql.includes("FROM users") && !sql.includes("access_tokens")) {
     return { rows: [{ is_employer: employer, display_name: "Ada" }], rowCount: 1 };
   }
   return extra(sql, params);
 };
 
-const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
+const empty: QueryResult = { rows: [], rowCount: 0 };
 
 const post = (path: string, body: unknown, key: string): Request => new Request("https://core.example" + path, {
   method: "POST",
@@ -53,7 +56,7 @@ const post = (path: string, body: unknown, key: string): Request => new Request(
 
 test("apply snapshots an owned source and a member can stream that file", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(
     post(`/api/v1/postings/${POSTING}/apply`, { documentIds: [], sourceIds: [SOURCE] }, "44444444-4444-4444-8444-444444444446"),
     env(),
@@ -61,13 +64,13 @@ test("apply snapshots an owned source and a member can stream that file", async 
       if (sql.includes("job_postings") && sql.includes("closed_at IS NULL") && !sql.includes("INSERT")) {
         return { rows: [{ company: "Acme", title: "Backend", description: "Build", requirements: [], deadline: null }], rowCount: 1 };
       }
-      if (sql.includes("INSERT INTO application_files")) return { rows: [{ id: APP }], rowCount: 1 };
-      if (sql.startsWith("SELECT id FROM sources")) return { rows: [{ id: SOURCE }], rowCount: 1 };
-      if (sql.includes("applications") && sql.includes("source_posting_id") && !sql.includes("INSERT")) return empty;
+      if (sql.includes("INSERT INTO application_files")) {return { rows: [{ id: APP }], rowCount: 1 };}
+      if (sql.startsWith("SELECT id FROM sources")) {return { rows: [{ id: SOURCE }], rowCount: 1 };}
+      if (sql.includes("applications") && sql.includes("source_posting_id") && !sql.includes("INSERT")) {return empty;}
       if (sql.includes("FROM job_postings")) {
         return { rows: [{ company: "Acme", title: "Backend", description: "Build", requirements: [], deadline: null }], rowCount: 1 };
       }
-      if (sql.includes("INSERT INTO ai_jobs")) return { rows: [{ id: "00000000-0000-4000-8000-000000000099", queue: "q:ingest" }], rowCount: 1 };
+      if (sql.includes("INSERT INTO ai_jobs")) {return { rows: [{ id: "00000000-0000-4000-8000-000000000099", queue: "q:ingest" }], rowCount: 1 };}
       return empty;
     })),
   );
@@ -81,14 +84,14 @@ test("apply snapshots an owned source and a member can stream that file", async 
   assert.equal(copied.params.includes(PDF), false);
 
   resetLimits();
-  const streamSeen: Call[] = [];
+  const streamSeen: Array<Call> = [];
   const stream = await handle(
     new Request(`https://core.example/api/v1/postings/${POSTING}/applicants/${APP}/files/${FILE}`, {
       headers: { authorization: "Bearer secret-token" },
     }),
     env(),
     deps(authed(streamSeen, true, async (sql) => {
-      if (sql.includes("company_members")) return { rows: [{ id: POSTING }], rowCount: 1 };
+      if (sql.includes("company_members")) {return { rows: [{ id: POSTING }], rowCount: 1 };}
       if (sql.includes("application_files")) {
         return { rows: [{ file_name: "resume.pdf", mime_type: "application/pdf", size: 4, content: PDF }], rowCount: 1 };
       }
@@ -113,14 +116,14 @@ test("apply snapshots an owned source and a member can stream that file", async 
 
 test("applicant list and detail add profile fields and document pages", async () => {
   resetLimits();
-  const listSeen: Call[] = [];
+  const listSeen: Array<Call> = [];
   const listed = await handle(
     new Request(`https://core.example/api/v1/postings/${POSTING}/applicants`, {
       headers: { authorization: "Bearer secret-token" },
     }),
     env(),
     deps(authed(listSeen, true, async (sql) => {
-      if (sql.includes("company_members")) return { rows: [{ id: POSTING }], rowCount: 1 };
+      if (sql.includes("company_members")) {return { rows: [{ id: POSTING }], rowCount: 1 };}
       if (sql.includes("FROM applications")) {
         return {
           rows: [{
@@ -135,24 +138,24 @@ test("applicant list and detail add profile fields and document pages", async ()
     })),
   );
   assert.equal(listed.status, 200);
-  const listBody = await listed.json() as { data: { isNew: boolean; applicant: { jobCategory: string; tenureYears: number; avatarUrl: string | null }; documents: { title: string; pages: number }[] }[] };
-  assert.equal(listBody.data[0].applicant.jobCategory, "dev");
-  assert.equal(listBody.data[0].applicant.tenureYears, 4);
-  assert.equal(listBody.data[0].applicant.avatarUrl, "/api/v1/uploads/images/avatars%2Fbea.png");
-  assert.equal(listBody.data[0].isNew, true);
+  const listBody = await readJson(listed);
+  assert.equal(at(listBody, "data", 0, "applicant", "jobCategory"), "dev");
+  assert.equal(at(listBody, "data", 0, "applicant", "tenureYears"), 4);
+  assert.equal(at(listBody, "data", 0, "applicant", "avatarUrl"), "/api/v1/uploads/images/avatars%2Fbea.png");
+  assert.equal(at(listBody, "data", 0, "isNew"), true);
   assert.match(listSeen.find((call) => call.sql.includes("FROM applications a"))!.sql, /company_seen_at'\) IS NULL AS is_new/);
-  assert.deepEqual(listBody.data[0].documents, [{ title: "resume.pdf", pages: 2 }]);
+  assert.deepEqual(at(listBody, "data", 0, "documents"), [{ title: "resume.pdf", pages: 2 }]);
 
   resetLimits();
-  const detailSeen: Call[] = [];
+  const detailSeen: Array<Call> = [];
   const detail = await handle(
     new Request(`https://core.example/api/v1/postings/${POSTING}/applicants/${APP}`, {
       headers: { authorization: "Bearer secret-token" },
     }),
     env(),
     deps(authed(detailSeen, true, async (sql) => {
-      if (sql.includes("company_members")) return { rows: [{ id: POSTING }], rowCount: 1 };
-      if (sql.includes("application_snapshots")) return { rows: [], rowCount: 0 };
+      if (sql.includes("company_members")) {return { rows: [{ id: POSTING }], rowCount: 1 };}
+      if (sql.includes("application_snapshots")) {return { rows: [], rowCount: 0 };}
       if (sql.includes("FROM applications")) {
         return { rows: [{ id: APP, user_id: USER, revision: 1, job_id: "abababab-abab-4bab-8bab-abababababab", company: "Acme", title: "Backend", stage: "APPLIED", notes: "secret", applied_at: NOW, created_at: NOW, updated_at: NOW }], rowCount: 1 };
       }
@@ -169,9 +172,9 @@ test("applicant list and detail add profile fields and document pages", async ()
     })),
   );
   assert.equal(detail.status, 200);
-  const detailBody = await detail.json() as { data: { applicant: { displayName: string; email: string; headline: string; careers: unknown[]; skills: string[] }; application: Record<string, unknown> } };
-  assert.equal(Object.hasOwn(detailBody.data.application, "notes"), false);
-  assert.deepEqual(detailBody.data.applicant, {
+  const detailBody = await readJson(detail);
+  assert.equal(at(detailBody, "data", "application", "notes"), undefined);
+  assert.deepEqual(at(detailBody, "data", "applicant"), {
     displayName: "Bea",
     email: "bea@acme.com",
     headline: "Backend",
@@ -198,8 +201,8 @@ test("applicant detail keeps the submitted profile after the live one changes", 
     }),
     env(),
     deps(authed([], true, async (sql) => {
-      if (sql.includes("company_members")) return { rows: [{ id: POSTING }], rowCount: 1 };
-      if (sql.includes("application_snapshots")) return { rows: [], rowCount: 0 };
+      if (sql.includes("company_members")) {return { rows: [{ id: POSTING }], rowCount: 1 };}
+      if (sql.includes("application_snapshots")) {return { rows: [], rowCount: 0 };}
       if (sql.includes("FROM applications")) {
         return {
           rows: [{
@@ -227,15 +230,31 @@ test("applicant detail keeps the submitted profile after the live one changes", 
     })),
   );
   assert.equal(detail.status, 200);
-  const body = await detail.json() as { data: { applicant: Record<string, unknown> } };
-  assert.equal(body.data.applicant.displayName, "바뀐이름");
-  assert.equal(body.data.applicant.email, "now@new.test");
-  assert.equal(body.data.applicant.hubProfileId, USER);
-  assert.equal(body.data.applicant.headline, "제출한 한 줄");
-  assert.equal(body.data.applicant.jobCategory, "dev");
-  assert.equal(body.data.applicant.tenureYears, 4);
-  assert.deepEqual(body.data.applicant.careers, [{ company: "옛회사" }]);
-  assert.deepEqual(body.data.applicant.skills, ["Go"]);
-  assert.equal(body.data.applicant.profileSource, "SUBMITTED");
-  assert.equal(body.data.applicant.capturedAt, "2026-11-10T00:00:00Z");
+  const body = await readJson(detail);
+  assert.equal(at(body, "data", "applicant", "displayName"), "바뀐이름");
+  assert.equal(at(body, "data", "applicant", "email"), "now@new.test");
+  assert.equal(at(body, "data", "applicant", "hubProfileId"), USER);
+  assert.equal(at(body, "data", "applicant", "headline"), "제출한 한 줄");
+  assert.equal(at(body, "data", "applicant", "jobCategory"), "dev");
+  assert.equal(at(body, "data", "applicant", "tenureYears"), 4);
+  assert.deepEqual(at(body, "data", "applicant", "careers"), [{ company: "옛회사" }]);
+  assert.deepEqual(at(body, "data", "applicant", "skills"), ["Go"]);
+  assert.equal(at(body, "data", "applicant", "profileSource"), "SUBMITTED");
+  assert.equal(at(body, "data", "applicant", "capturedAt"), "2026-11-10T00:00:00Z");
 });
+
+// One typed boundary for response bodies in this test file.
+async function readJson(res: Pick<Response, "json">): Promise<Json> {
+  const body: Json = await res.json();
+  return body;
+}
+
+// Walks a JSON path; undefined when any step is missing.
+function at(value: Json | undefined, ...path: Array<string | number>): Json | undefined {
+  let cur = value;
+  for (const key of path) {
+    if (cur === null || typeof cur !== "object") {return undefined;}
+    cur = Array.isArray(cur) ? cur[Number(key)] : cur[key];
+  }
+  return cur;
+}

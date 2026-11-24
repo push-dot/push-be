@@ -19,7 +19,7 @@ function authTtlMs(env: FrontEnv): number {
   return clampTtl(env.AUTH_CACHE_TTL, 5, 5) * 1000;
 }
 function rememberAuth(hash: string, user: User, expiresAtMs: number, nowMs: number, ttlMs: number): void {
-  if (!hash || ttlMs <= 0) return;
+  if (!hash || ttlMs <= 0) {return;}
   const cached: CachedUser = {
     id: user.id,
     displayName: user.displayName,
@@ -36,8 +36,10 @@ function rememberAuth(hash: string, user: User, expiresAtMs: number, nowMs: numb
   isolate.putAuth(hash, cached, nowMs, ttlMs);
 }
 
+type Row = Awaited<ReturnType<typeof queryToleratingCompany>>[number];
+
 export function interpretAuth(
-  rows: Record<string, unknown>[],
+  rows: Array<Row>,
   moment: Date,
   limit: number,
   windowMs: number,
@@ -47,7 +49,7 @@ export function interpretAuth(
   deps: Deps,
   remember?: { hash: string; ttlMs: number },
 ): User | Response {
-  if (!rows.length) return errorResponse(401, "UNAUTHENTICATED", "invalid access token", rid);
+  if (!rows.length) {return errorResponse(401, "UNAUTHENTICATED", "invalid access token", rid);}
   const row = rows[0];
   const expires = new Date(formatJsonTimestamp(row.expires_at)).getTime();
   if (moment.getTime() > expires) {
@@ -60,12 +62,12 @@ export function interpretAuth(
     }
     return user;
   }
-  if (!Object.prototype.hasOwnProperty.call(row, "hits")) return user;
+  if (! Object.hasOwn(row, "hits")) {return user;}
   const cap = readCap(limit);
   if (!acceptGrant(cacheKey, row, cap, moment.getTime(), `user:${user.id}:${windowOf(moment)}`, deps)) {
     return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
   }
-  if (remember) rememberAuth(remember.hash, user, expires, moment.getTime(), remember.ttlMs);
+  if (remember) {rememberAuth(remember.hash, user, expires, moment.getTime(), remember.ttlMs);}
   return user;
 }
 function userFromCached(cached: CachedUser): User {
@@ -149,7 +151,7 @@ export async function tokenContext(request: Request, env: FrontEnv, deps: Deps, 
 }
 
 export async function revalidateAuth(ctx: TokenCtx, env: FrontEnv, deps: Deps, rid: string): Promise<User | Response> {
-  let rows: Record<string, unknown>[];
+  let rows: Array<Row>;
   try {
     rows = await queryToleratingCompany(deps.query, AUTH_SQL, [ctx.hash]);
   } catch {
@@ -172,31 +174,31 @@ export async function revalidateAuth(ctx: TokenCtx, env: FrontEnv, deps: Deps, r
   return user;
 }
 
-export function rememberBag(ctx: TokenCtx, env: FrontEnv): { hash: string; ttlMs: number } {
+export function rememberBag(ctx: TokenCtx, env: FrontEnv) {
   return { hash: ctx.hash, ttlMs: authTtlMs(env) };
 }
 
 export async function requireUser(request: Request, env: FrontEnv, deps: Deps, rid: string, limits: { user: number; windowMs: number }, now: () => Date): Promise<User | Response> {
   const ctx = await tokenContext(request, env, deps, rid, limits, now);
-  if (ctx instanceof Response) return ctx;
-  if (ctx.user) return ctx.user;
-  if (ctx.revalidate) return revalidateAuth(ctx, env, deps, rid);
+  if (ctx instanceof Response) {return ctx;}
+  if (ctx.user) {return ctx.user;}
+  if (ctx.revalidate) {return revalidateAuth(ctx, env, deps, rid);}
   if (ctx.dev) {
     try {
       const resolved = await resolveDevUser(env, deps);
-      if (!resolved) return errorResponse(401, "UNAUTHENTICATED", "invalid access token", rid);
+      if (!resolved) {return errorResponse(401, "UNAUTHENTICATED", "invalid access token", rid);}
       if (!await allowShared(deps, "user", resolved.id, limits.user, limits.windowMs, ctx.moment)) {
         return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
       }
       return resolved;
-    } catch (err) {
-      return codedError(err, rid);
+    } catch (error) {
+      return codedError(error, rid);
     }
   }
   // The local key is the token hash; the Neon bucket is the user id.
   // After this isolate has seen a full bucket, the rest of the minute
   // is rejected without another upsert (and without re-reading the token).
-  let rows: Record<string, unknown>[];
+  let rows: Array<Row>;
   let shared = true;
   try {
     rows = await queryToleratingCompany(deps.query, AUTH_RATE_SQL, rateParams(ctx.hash, ctx.moment, limits.user, ctx.batch, ctx.release));
@@ -223,9 +225,9 @@ async function resolveDevUser(env: FrontEnv, deps: Deps): Promise<User | null> {
 }
 
 const textOrNull = (value: unknown): string | null =>
-  value == null || value === "" ? null : String(value);
+  (value === null || value === undefined) || value === "" ? null : String(value);
 
-export function userFrom(row: Record<string, unknown>): User {
+export function userFrom(row: Row): User {
   return {
     id: String(row.id),
     displayName: String(row.display_name ?? ""),
@@ -234,8 +236,8 @@ export function userFrom(row: Record<string, unknown>): User {
     accountType: asBool(row.is_employer) ? "EMPLOYER" : "PERSONAL",
     companyId: textOrNull(row.company_id),
     companyRole: textOrNull(row.company_role),
-    email: row.email == null ? "" : String(row.email),
-    provider: row.provider == null ? "" : String(row.provider),
+    email: (row.email === null || row.email === undefined) ? "" : String(row.email),
+    provider: (row.provider === null || row.provider === undefined) ? "" : String(row.provider),
     plan: String(row.plan ?? "FREE"),
   };
 }

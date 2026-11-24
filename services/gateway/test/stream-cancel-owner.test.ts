@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
+import { handle, resetLimits } from '../src/handler.ts';
+import type { Deps, FrontEnv, Query } from '../src/handler.ts';
+
+const jsonOf = async <T>(res: Response): Promise<T> => {
+  const value: T = await res.json();
+  return value;
+};
 
 const USER_A = "aaaaaaaa-0000-4000-8000-00000000000a";
 const USER_B = "bbbbbbbb-0000-4000-8000-00000000000b";
@@ -19,7 +25,7 @@ const env = (): FrontEnv => ({
 
 type Job = { id: string; userId: string; status: string };
 
-const userRow = (id: string): Record<string, unknown> => ({
+const userRow = (id: string) => ({
   id,
   display_name: id === USER_A ? "Ada" : "Bea",
   locale: "ko",
@@ -38,18 +44,18 @@ function queryFor(caller: string, job: Job): Query {
     if (sql.startsWith("WITH auth") || (sql.includes("FROM access_tokens") && !sql.startsWith("WITH found"))) {
       return [userRow(caller)];
     }
-    if (sql.includes("rate_limits")) return [{ hits: 1 }];
-    if (!sql.startsWith("WITH found AS")) return [];
-    const [convId, userId, companyId] = params as [string, string, string | null];
-    if (convId !== CONV || companyId !== COMPANY) return [{ conversation_id: null, job_id: null, mine: null }];
+    if (sql.includes("rate_limits")) {return [{ hits: 1 }];}
+    if (!sql.startsWith("WITH found AS")) {return [];}
+    const [convId, userId, companyId] = params;
+    if (convId !== CONV || companyId !== COMPANY) {return [{ conversation_id: null, job_id: null, mine: null }];}
     const active = job.status === "PENDING" || job.status === "RUNNING";
     if (!sql.includes("UPDATE chat_jobs")) {
       return [{ conversation_id: CONV, job_id: active ? job.id : null }];
     }
-    if (!active) return [{ conversation_id: CONV, job_id: null, mine: null }];
+    if (!active) {return [{ conversation_id: CONV, job_id: null, mine: null }];}
     const restricts = sql.includes("j.user_id = $2::uuid") && sql.includes("AND user_id = $2::uuid");
     const mine = job.userId === userId;
-    if (restricts && !mine) return [{ conversation_id: CONV, job_id: null, mine: false }];
+    if (restricts && !mine) {return [{ conversation_id: CONV, job_id: null, mine: false }];}
     job.status = "CANCELLED";
     return [{ conversation_id: CONV, job_id: job.id, mine: true }];
   };
@@ -67,7 +73,7 @@ test("member B cannot cancel member A's running job; A can cancel their own", as
   const job: Job = { id: JOB, userId: USER_A, status: "RUNNING" };
   const denied = await cancel(USER_B, queryFor(USER_B, job));
   assert.equal(denied.status, 403);
-  assert.equal((await denied.json() as { error: { code: string } }).error.code, "FORBIDDEN");
+  assert.equal((await jsonOf<{ error: { code: string } }>(denied)).error.code, "FORBIDDEN");
   assert.equal(job.status, "RUNNING");
 
   resetLimits();

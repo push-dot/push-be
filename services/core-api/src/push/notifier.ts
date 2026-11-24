@@ -1,4 +1,5 @@
 import { isMissingRelation, query } from "../db.ts";
+import type { JsonObject } from "../json.ts";
 import type { Ctx } from "../types.ts";
 
 const EXPO_PUSH = "https://exp.host/--/api/v2/push/send";
@@ -8,19 +9,19 @@ export const deliverPush = async (
   userId: string,
   title: string,
   body: string,
-  data: Record<string, unknown>,
+  data: JsonObject,
 ): Promise<void> => {
   const token = ctx.env.EXPO_ACCESS_TOKEN?.trim() ?? "";
-  if (!token) return;
+  if (!token) {return;}
   let rows;
   try {
     // No push during the 30-day deletion grace period.
     rows = await query(ctx.deps.query, "SELECT d.token FROM user_devices d JOIN users u ON u.id = d.user_id WHERE d.user_id = $1 AND u.deletion_requested_at IS NULL", [userId]);
-  } catch (err) {
-    if (isMissingRelation(err)) return;
-    throw err;
+  } catch (error) {
+    if (isMissingRelation(error)) {return;}
+    throw error;
   }
-  if (!rows.rows.length) return;
+  if (!rows.rows.length) {return;}
   const messages = rows.rows.map((row) => ({ to: String(row.token), title, body, data }));
   const fetchImpl = ctx.deps.fetch ?? fetch;
   try {

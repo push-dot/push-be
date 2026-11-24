@@ -1,0 +1,94 @@
+{
+  "type": "a2ui",
+  "kind": "approval",
+  "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+  "messages": [
+    {
+      "version": "v0.9.1",
+      "createSurface": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "catalogId": "https://push.app/a2ui/catalogs/push/v1/catalog.json"
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateComponents": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "components": [
+          {
+            "id": "root",
+            "component": "Column",
+            "children": [
+              "title",
+              "detail",
+              "choice"
+            ]
+          },
+          {
+            "id": "title",
+            "component": "Text",
+            "text": "moapay.com을 읽어도 될까요?",
+            "variant": "h3"
+          },
+          {
+            "id": "detail",
+            "component": "Text",
+            "text": "moapay.com을 읽어요"
+          },
+          {
+            "id": "choice",
+            "component": "PushChoice",
+            "form": "list",
+            "questions": [
+              {
+                "id": "q",
+                "choices": [
+                  {
+                    "id": "approve",
+                    "label": "한 번 허용"
+                  },
+                  {
+                    "id": "approve_always",
+                    "label": "항상 허용",
+                    "desc": "이 Bot이 이 사이트를 읽을 때 다시 묻지 않아요"
+                  },
+                  {
+                    "id": "reject",
+                    "label": "거절"
+                  }
+                ]
+              }
+            ],
+            "answer": "pick",
+            "open": {
+              "path": "/open"
+            },
+            "picked": {
+              "path": "/picked"
+            },
+            "selected": {
+              "path": "/selected"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateDataModel": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "path": "/",
+        "value": {
+          "open": true,
+          "picked": [],
+          "selected": {
+            "q": []
+          }
+        }
+      }
+    }
+  ],
+  "seq": 1,
+  "at": "2026-11-23T00:00:00.000000Z",
+  "turn": "00000000-0000-4000-8000-00000000a001"
+}

@@ -1,5 +1,7 @@
 import { boundTransaction, lockOwner } from "../billing/credits.ts";
-import { isLockTimeout, one, query, type Query, type Transaction } from "../db.ts";
+import { isLockTimeout, one, query } from '../db.ts';
+import type { Query, Row, Transaction } from '../db.ts';
+import type { JsonObject } from '../json.ts';
 import { HttpError, asBool, data, fieldError, jsonResponse, noContent, requireUuid, uuid5Url } from "../http.ts";
 import { pageOf, pageResult, revisionUpdate, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
@@ -26,9 +28,11 @@ const UUID_IN_PATH = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 const pushBotId = (userId: string): Promise<string> => uuid5Url(`push:bot:${userId}`);
 
 /** A plan the table does not name gets the FREE limit, and is reported as FREE. */
+const isPlan = (tier: string): tier is Plan => tier in COMPANY_LIMIT;
+
 const planOf = (plan: unknown): Plan => {
   const tier = String(plan ?? "").trim().toUpperCase();
-  return tier in COMPANY_LIMIT ? tier as Plan : "FREE";
+  return isPlan(tier) ? tier : "FREE";
 };
 
 const canonUrl = (value: string): string => {
@@ -36,7 +40,7 @@ const canonUrl = (value: string): string => {
     const url = new URL(value);
     const host = url.hostname.toLowerCase();
     let path = url.pathname;
-    if (path.length > 1 && path.endsWith("/")) path = path.slice(0, -1);
+    if (path.length > 1 && path.endsWith("/")) {path = path.slice(0, -1);}
     return `${url.protocol}//${host}${path}${url.search}`;
   } catch {
     return value.trim();
@@ -45,7 +49,7 @@ const canonUrl = (value: string): string => {
 
 const postingIdFromUrl = (url: string): string | null => {
   const match = url.match(UUID_IN_PATH);
-  if (!match) return null;
+  if (!match) {return null;}
   try {
     return requireUuid(match[0], "url");
   } catch {
@@ -55,55 +59,55 @@ const postingIdFromUrl = (url: string): string | null => {
 
 const notFound = (): HttpError => new HttpError(404, "NOT_FOUND", "resource not found");
 
-const closedBody = (body: Record<string, unknown>, allowed: string[]): void => {
+const closedBody = (body: JsonObject, allowed: Array<string>): void => {
   const extra = Object.keys(body).find((key) => !allowed.includes(key));
-  if (extra !== undefined) throw fieldError(extra, "unknown field");
+  if (extra !== undefined) {throw fieldError(extra, "unknown field");}
 };
 
 const colorOf = (value: unknown): BotColor => {
   const color = BOT_COLORS.find((name) => name === value);
-  if (!color) throw fieldError("color", `must be one of ${BOT_COLORS.join(", ")}`);
+  if (!color) {throw fieldError("color", `must be one of ${BOT_COLORS.join(", ")}`);}
   return color;
 };
 
 const nameOf = (value: unknown): string => {
   const name = textOf(value, "displayName", 1, DISPLAY_NAME_MAX).trim();
-  if (!name) throw fieldError("displayName", "must not be blank");
+  if (!name) {throw fieldError("displayName", "must not be blank");}
   return name;
 };
 
-const likePattern = (q: string): string => `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+const likePattern = (q: string): string => `%${q.replaceAll(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
 
 // ILIKE folds case through the database's locale, which is most of a search's time. Under the C
 // collation it folds A to Z only, and that is all a q needs unless it holds a cased letter outside ASCII.
 const foldOf = (q: string): string =>
-  ([...q].some((ch) => ch > "\x7f" && ch.toLowerCase() !== ch.toUpperCase()) ? "" : ' COLLATE "C"');
+  (Array.from(q).some((ch) => ch > "\u007f" && ch.toLowerCase() !== ch.toUpperCase()) ? "" : ' COLLATE "C"');
 
 export const snippetOf = (text: string, q: string): string => {
-  const found = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "iu").exec(text);
-  const chars = [...text];
-  const at = found ? [...text.slice(0, found.index)].length : 0;
+  const found = new RegExp(q.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`), "iu").exec(text);
+  const chars = Array.from(text);
+  const at = found ? Array.from(text.slice(0, found.index)).length : 0;
   const start = Math.max(0, at - SNIPPET.before);
-  const end = at + (found ? [...found[0]].length : 0) + SNIPPET.after;
+  const end = at + (found ? Array.from(found[0]).length : 0) + SNIPPET.after;
   return (start > 0 ? "…" : "") + chars.slice(start, end).join("");
 };
 
 // An ordered-list marker is one or two digits; a longer number or a month-day pair ("2024. 11.", "11. 5.") is a date, not a list.
 export const plainLine = (text: string): string =>
   text
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/^\s{0,3}(#{1,6}\s+|>\s?|[-*•]\s+|\d{1,2}\.\s+(?!\d{1,2}\.(?:\s|$)))/gm, "")
-    .replace(/(\*\*|__|~~|`)/g, "")
-    .replace(/\s*\n+\s*/g, " ")
-    .replace(/\s{2,}/g, " ")
+    .replaceAll(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replaceAll(/^\s{0,3}(#{1,6}\s+|>\s?|[-*•]\s+|\d{1,2}\.\s+(?!\d{1,2}\.(?:\s|$)))/gm, "")
+    .replaceAll(/(\*\*|__|~~|`)/g, "")
+    .replaceAll(/\s*\n+\s*/g, " ")
+    .replaceAll(/\s{2,}/g, " ")
     .trim();
 
-type BotRow = Record<string, unknown>;
+type BotRow = Row;
 
-const textOrNull = (value: unknown): string | null => (value == null ? null : String(value));
+const textOrNull = (value: unknown): string | null => ((value === null || value === undefined) ? null : String(value));
 
 /** Columns bot_id, kind, display_name and color of any row to the BotRef of the contract. */
-export const botRef = (row: BotRow): Record<string, unknown> => ({
+export const botRef = (row: BotRow): JsonObject => ({
   id: String(row.bot_id),
   kind: String(row.kind),
   displayName: String(row.display_name ?? ""),
@@ -114,14 +118,14 @@ const ASK_EDIT = "이 변경을 이력서에 반영할까요?";
 const ASK_PAGE = "이 사이트를 열어도 될까요?";
 // Another card keeps its own title; only edit and page cards get a fixed question.
 const askOf = (row: BotRow): string => {
-  if (row.card_kind === "DOCUMENT_EDIT") return ASK_EDIT;
-  if (row.card_kind === "TOOL_ACTION" && row.card_tool === "read_page") return ASK_PAGE;
+  if (row.card_kind === "DOCUMENT_EDIT") {return ASK_EDIT;}
+  if (row.card_kind === "TOOL_ACTION" && row.card_tool === "read_page") {return ASK_PAGE;}
   return String(row.card_title ?? "");
 };
 
 // An open card comes before a run: the run that asked it has ended, and the next one starts with the answer.
-const activityOf = (row: BotRow): Record<string, unknown> | null => {
-  if (row.card_id != null) {
+const activityOf = (row: BotRow): JsonObject | null => {
+  if ((row.card_id !== null && row.card_id !== undefined)) {
     return {
       phase: "waiting", since: ts(row.card_at), for: String(row.card_for), cardId: String(row.card_id),
       cardTitle: askOf(row), expiresAt: ts(row.card_expires_at),
@@ -136,9 +140,9 @@ const activityOf = (row: BotRow): Record<string, unknown> | null => {
   }
 };
 
-const botDto = (row: BotRow): Record<string, unknown> => {
+const botDto = (row: BotRow): JsonObject => {
   const activity = activityOf(row);
-  const lastMessage = row.last_message_at == null ? null : {
+  const lastMessage = (row.last_message_at === null || row.last_message_at === undefined) ? null : {
     preview: plainLine(String(row.last_message_preview ?? "")), at: ts(row.last_message_at), fromBot: asBool(row.last_message_from_bot),
   };
   return {
@@ -152,7 +156,7 @@ const botDto = (row: BotRow): Record<string, unknown> => {
     lastMessage,
     unread: asBool(row.unread),
     activity,
-    outcome: row.outcome_kind == null ? null : { kind: String(row.outcome_kind), at: ts(row.outcome_at) },
+    outcome: (row.outcome_kind === null || row.outcome_kind === undefined) ? null : { kind: String(row.outcome_kind), at: ts(row.outcome_at) },
     // The app build from before the bot contract reads the fields below. They go with migration 0058.
     companyId: null,
     postingUrl: textOrNull(row.posting_url),
@@ -160,16 +164,16 @@ const botDto = (row: BotRow): Record<string, unknown> => {
     mascotKey: textOrNull(row.mascot_key),
     updatedAt: ts(row.updated_at),
     lastMessagePreview: lastMessage?.preview ?? "",
-    status: activity == null ? "DONE" : activity.phase === "waiting" ? "NEEDS_APPROVAL" : "RUNNING",
+    status: (activity === null || activity === undefined) ? "DONE" : activity.phase === "waiting" ? "NEEDS_APPROVAL" : "RUNNING",
   };
 };
 
-const botDetailDto = (row: BotRow): Record<string, unknown> => ({
+const botDetailDto = (row: BotRow): JsonObject => ({
   ...botDto(row),
-  posting: row.posting_title == null ? null : {
+  posting: (row.posting_title === null || row.posting_title === undefined) ? null : {
     id: String(row.posting_id), title: String(row.posting_title), deadline: textOrNull(row.posting_deadline), closed: asBool(row.posting_closed),
   },
-  fit: row.fit_score == null ? null : { score: Number(row.fit_score) },
+  fit: (row.fit_score === null || row.fit_score === undefined) ? null : { score: Number(row.fit_score) },
 });
 
 const BOT_COLS = "b.id, b.kind, b.company_id, b.company_name, b.color, b.posting_id, b.posting_url, b.display_name, b.avatar_key, b.mascot_key, b.notifications_muted, b.revision, b.created_at, b.updated_at";
@@ -201,7 +205,7 @@ export const resolveBot = async (ctx: Ctx, raw: string): Promise<BotRow> => {
     await ensurePushBot(ctx);
     row = await select();
   }
-  if (!row) throw notFound();
+  if (!row) {throw notFound();}
   return row;
 };
 
@@ -214,16 +218,16 @@ const BOT_POSTING_SELECT = `SELECT s.*, p.title AS posting_title, p.deadline::te
   FROM bot_state_v s LEFT JOIN job_postings p ON p.id = s.posting_id WHERE s.user_id = $1`;
 const BOT_ORDER = " ORDER BY (s.kind = 'push') DESC, s.last_activity_at DESC, s.bot_id DESC";
 
-const readBot = async (ctx: Ctx, id: string): Promise<Record<string, unknown>> => {
+const readBot = async (ctx: Ctx, id: string): Promise<JsonObject> => {
   const row = await one(ctx.deps.query, BOT_SELECT + " AND s.bot_id = $2", [ctx.user.id, id]);
-  if (!row) throw notFound();
+  if (!row) {throw notFound();}
   return botDto(row);
 };
 
 const POSTING_SELECT = "SELECT p.id, p.company, p.title, p.deadline::text AS deadline, p.career_min, p.career_max, p.location FROM job_postings p WHERE p.status <> 'DRAFT'";
 
 /** A posting a company bot can be made from: not a draft, and its company is not blank. `company` comes back trimmed. */
-const botPosting = async (q: Query, where: string, params: unknown[]): Promise<BotRow | null> => {
+const botPosting = async (q: Query, where: string, params: Array<unknown>): Promise<BotRow | null> => {
   const row = await one(q, `${POSTING_SELECT} AND ${where}`, params);
   const company = String(row?.company ?? "").trim();
   return row && company ? { ...row, company } : null;
@@ -239,7 +243,7 @@ const companyBotId = async (q: Query, userId: string, company: string): Promise<
 const listBots = async (ctx: Ctx): Promise<Response> => {
   const q = ctx.deps.query;
   const postingId = ctx.url.searchParams.get("postingId");
-  if (postingId != null) {
+  if ((postingId !== null && postingId !== undefined)) {
     const posting = await botPosting(q, "p.id = $1", [requireUuid(postingId, "postingId")]);
     const id = posting && await companyBotId(q, ctx.user.id, String(posting.company));
     const found = id ? (await query(q, BOT_SELECT + " AND s.bot_id = $2", [ctx.user.id, id])).rows : [];
@@ -263,23 +267,23 @@ const createBot = async (ctx: Ctx): Promise<Response> => {
   const body = await readObject(ctx.request);
   closedBody(body, ["postingId", "displayName", "color"]);
   const postingId = requireUuid(String(body.postingId ?? ""), "postingId");
-  const displayName = body.displayName == null ? null : nameOf(body.displayName);
-  const color = body.color == null ? "teal" : colorOf(body.color);
+  const displayName = (body.displayName === null || body.displayName === undefined) ? null : nameOf(body.displayName);
+  const color = (body.color === null || body.color === undefined) ? "teal" : colorOf(body.color);
   await requireAgentConsent(ctx);
   const plan = planOf(ctx.user.plan);
   const limit = COMPANY_LIMIT[plan];
   try {
     const made = await inTransactionOf(ctx)(async (q) => {
       const posting = await botPosting(q, "p.id = $1", [postingId]);
-      if (!posting) throw notFound();
+      if (!posting) {throw notFound();}
       const company = String(posting.company);
-      if (limit != null) {
+      if ((limit !== null && limit !== undefined)) {
         await boundTransaction(q, "3s");
         await lockOwner(q, "PERSONAL", ctx.user.id);
       }
       const existing = await companyBotId(q, ctx.user.id, company);
-      if (existing) return { id: existing, created: false };
-      if (limit != null) {
+      if (existing) {return { id: existing, created: false };}
+      if ((limit !== null && limit !== undefined)) {
         const row = await one(q, "SELECT count(*)::int AS n FROM bots WHERE user_id = $1 AND kind = 'company' AND deleted_at IS NULL", [ctx.user.id]);
         if (Number(row?.n ?? 0) >= limit) {
           throw new HttpError(403, "BOT_LIMIT", "company bot limit reached for your plan", { limit, plan });
@@ -290,26 +294,26 @@ const createBot = async (ctx: Ctx): Promise<Response> => {
          VALUES ($1,$2,'company',$3,$4,$5,$6,$7,$7)
          ON CONFLICT (user_id, company_key) WHERE kind = 'company' AND deleted_at IS NULL DO NOTHING
          RETURNING id`,
-        [crypto.randomUUID(), ctx.user.id, company, postingId, displayName ?? [...company].slice(0, DISPLAY_NAME_MAX).join(""), color, ctx.now.toISOString()]);
-      if (inserted) return { id: String(inserted.id), created: true };
+        [crypto.randomUUID(), ctx.user.id, company, postingId, displayName ?? Array.from(company).slice(0, DISPLAY_NAME_MAX).join(""), color, ctx.now.toISOString()]);
+      if (inserted) {return { id: String(inserted.id), created: true };}
       // ULTRA takes no lock, so a parallel create for the same company can win the unique index.
       const winner = await companyBotId(q, ctx.user.id, company);
-      if (!winner) throw new HttpError(409, "CONFLICT", "the bot for this company changed, retry");
+      if (!winner) {throw new HttpError(409, "CONFLICT", "the bot for this company changed, retry");}
       return { id: winner, created: false };
     });
     return data(made.created ? 201 : 200, await readBot(ctx, made.id), ctx.rid);
-  } catch (err) {
-    if (isLockTimeout(err)) {
+  } catch (error) {
+    if (isLockTimeout(error)) {
       throw new HttpError(429, "RATE_LIMITED", "too many requests", { retryAfterSec: 1 });
     }
-    throw err;
+    throw error;
   }
 };
 
 const getBot = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const bot = await resolveBot(ctx, idRaw);
   const row = await one(ctx.deps.query, BOT_POSTING_SELECT + " AND s.bot_id = $2", [ctx.user.id, String(bot.id)]);
-  if (!row) throw notFound();
+  if (!row) {throw notFound();}
   return data(200, { ...botDetailDto(row), materialCount: await materialCountOf(ctx, String(bot.id)) }, ctx.rid);
 };
 
@@ -332,7 +336,7 @@ const messageSearch = (fold: string): string => `WITH hits AS MATERIALIZED (
 
 const searchBots = async (ctx: Ctx): Promise<Response> => {
   const q = (ctx.url.searchParams.get("q") ?? "").trim();
-  if (!q || [...q].length > SEARCH_Q_MAX) throw fieldError("q", `q must be 1-${SEARCH_Q_MAX} characters`);
+  if (!q || Array.from(q).length > SEARCH_Q_MAX) {throw fieldError("q", `q must be 1-${SEARCH_Q_MAX} characters`);}
   const page = pageOf(ctx.url);
   const limit = ctx.url.searchParams.get("limit") ? Math.min(page.limit, SEARCH_LIMIT.max) : SEARCH_LIMIT.default;
   const pattern = likePattern(q);
@@ -345,9 +349,9 @@ const searchBots = async (ctx: Ctx): Promise<Response> => {
   ]);
   const bots = named.rows.map((row) => ({
     ...botDto(row),
-    line: row.posting_title == null ? String(row.display_name ?? "") : `${row.company_name} · ${row.posting_title}`,
+    line: (row.posting_title === null || row.posting_title === undefined) ? String(row.display_name ?? "") : `${row.company_name} · ${row.posting_title}`,
   }));
-  const hits = pageResult(said.rows.filter((row) => row.id != null), limit, (row) => ({ createdAt: row.created_at, id: String(row.id) }));
+  const hits = pageResult(said.rows.filter((row) => (row.id !== null && row.id !== undefined)), limit, (row) => ({ createdAt: row.created_at, id: String(row.id) }));
   const messages = hits.items.map((row) => ({
     bot: botRef(row), messageId: String(row.id), at: ts(row.created_at), role: String(row.role), snippet: snippetOf(String(row.text ?? ""), q),
   }));
@@ -368,19 +372,19 @@ const patchBot = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const current = await resolveBot(ctx, idRaw);
   const id = String(current.id);
   if (String(current.kind) === "push") {
-    const fixed = PUSH_BOT_FIXED.find((field) => body[field] != null);
-    if (fixed) throw fieldError(fixed, "cannot be changed on the Push Bot");
+    const fixed = PUSH_BOT_FIXED.find((field) => (body[field] !== null && body[field] !== undefined));
+    if (fixed) {throw fieldError(fixed, "cannot be changed on the Push Bot");}
   }
   if (Number(current.revision) !== body.expectedRevision) {
     throw new HttpError(409, "REVISION_CONFLICT", "resource was modified", { currentRevision: Number(current.revision) });
   }
-  const displayName = body.displayName == null ? String(current.display_name ?? "") : nameOf(body.displayName);
+  const displayName = (body.displayName === null || body.displayName === undefined) ? String(current.display_name ?? "") : nameOf(body.displayName);
   let notificationsMuted = asBool(current.notifications_muted);
-  if (body.notificationsMuted != null) {
-    if (typeof body.notificationsMuted !== "boolean") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
+  if ((body.notificationsMuted !== null && body.notificationsMuted !== undefined)) {
+    if (typeof body.notificationsMuted !== "boolean") {throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");}
     notificationsMuted = body.notificationsMuted;
   }
-  const color = body.color == null ? String(current.color) : colorOf(body.color);
+  const color = (body.color === null || body.color === undefined) ? String(current.color) : colorOf(body.color);
   await revisionUpdate(ctx.deps.query, "bots",
     `UPDATE bots SET revision = revision + 1, display_name = $3, notifications_muted = $4, color = $5, updated_at = $6
      WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL AND revision = $7
@@ -400,7 +404,7 @@ const deleteBot = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const gone = await one(ctx.deps.query,
     "DELETE FROM bots WHERE id = $1 AND user_id = $2 AND kind = 'company' RETURNING id",
     [String(bot.id), ctx.user.id]);
-  if (!gone) throw notFound();
+  if (!gone) {throw notFound();}
   return noContent(ctx.rid);
 };
 
@@ -414,14 +418,14 @@ const linkPreview = async (ctx: Ctx): Promise<Response> => {
   const body = await readObject(ctx.request);
   rejectFields(body, ["status"]);
   const url = textOf(body.url, "url", 1, 2000);
-  if (!httpsUrl(url)) throw fieldError("url", "must be an http(s) URL without credentials");
+  if (!httpsUrl(url)) {throw fieldError("url", "must be an http(s) URL without credentials");}
   const byId = postingIdFromUrl(url);
   const posting = (byId && await botPosting(ctx.deps.query, "p.id = $1", [byId]))
     ?? await botPosting(ctx.deps.query,
       `p.source_url IS NOT NULL AND (p.source_url = $1 OR p.source_url = $2 OR rtrim(p.source_url, '/') = rtrim($1, '/'))
        ORDER BY p.created_at DESC LIMIT 1`,
       [url, canonUrl(url)]);
-  if (!posting) return data(200, { status: "not_a_posting" }, ctx.rid);
+  if (!posting) {return data(200, { status: "not_a_posting" }, ctx.rid);}
   return data(200, {
     status: "found",
     postingId: String(posting.id),
@@ -429,7 +433,7 @@ const linkPreview = async (ctx: Ctx): Promise<Response> => {
     title: String(posting.title ?? ""),
     deadline: textOrNull(posting.deadline),
     careerMin: Number(posting.career_min ?? 0),
-    careerMax: posting.career_max == null ? null : Number(posting.career_max),
+    careerMax: (posting.career_max === null || posting.career_max === undefined) ? null : Number(posting.career_max),
     location: String(posting.location ?? "").trim() || null,
     host: new URL(url).hostname,
   }, ctx.rid);
@@ -447,17 +451,17 @@ const markBotRead = async (ctx: Ctx, idRaw: string): Promise<Response> => {
 
 export const dispatchBots = async (ctx: Ctx, path: string): Promise<Response | null> => {
   const method = ctx.request.method;
-  if (method === "GET" && path === "/api/v1/bots") return listBots(ctx);
-  if (method === "POST" && path === "/api/v1/bots") return createBot(ctx);
-  if (method === "POST" && path === "/api/v1/bots/link-preview") return linkPreview(ctx);
-  if (method === "GET" && path === "/api/v1/bots/search") return searchBots(ctx);
+  if (method === "GET" && path === "/api/v1/bots") {return listBots(ctx);}
+  if (method === "POST" && path === "/api/v1/bots") {return createBot(ctx);}
+  if (method === "POST" && path === "/api/v1/bots/link-preview") {return linkPreview(ctx);}
+  if (method === "GET" && path === "/api/v1/bots/search") {return searchBots(ctx);}
   const oneBot = path.match(/^\/api\/v1\/bots\/([^/]+)$/);
-  if (method === "GET" && oneBot) return getBot(ctx, oneBot[1]);
-  if (method === "PATCH" && oneBot) return patchBot(ctx, oneBot[1]);
-  if (method === "DELETE" && oneBot) return deleteBot(ctx, oneBot[1]);
+  if (method === "GET" && oneBot) {return getBot(ctx, oneBot[1]);}
+  if (method === "PATCH" && oneBot) {return patchBot(ctx, oneBot[1]);}
+  if (method === "DELETE" && oneBot) {return deleteBot(ctx, oneBot[1]);}
   const read = path.match(/^\/api\/v1\/bots\/([^/]+)\/read$/);
-  if (method === "POST" && read) return markBotRead(ctx, read[1]);
+  if (method === "POST" && read) {return markBotRead(ctx, read[1]);}
   const transcript = path.match(/^\/api\/v1\/bots\/([^/]+)\/transcript$/);
-  if (method === "DELETE" && transcript) return clearBotChat(ctx, transcript[1]);
+  if (method === "DELETE" && transcript) {return clearBotChat(ctx, transcript[1]);}
   return null;
 };

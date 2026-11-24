@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { sha256Hex } from "../src/http.ts";
 import { hashPassword } from "../src/mail/password.ts";
 import { resetLimits } from "../src/ratelimit.ts";
+import { readJson } from "../test-support/recorder.ts";
+import type { Row } from "../test-support/recorder.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const OTHER = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -17,7 +20,7 @@ const VALIDATE_URL = "https://api.odcloud.kr/api/nts-businessman/v1/validate?ser
 const STATUS_URL = "https://api.odcloud.kr/api/nts-businessman/v1/status?serviceKey=" + encodeURIComponent("nts-key");
 const PHRASE = "개업 직후라면 1–2일 뒤 다시 시도해 주세요";
 
-type Call = { sql: string; params: unknown[] };
+type Call = { sql: string; params: Array<unknown> };
 type Err = { error: { code: string; message: string; details: { reason?: string } | null } };
 type Company = {
   id: string;
@@ -41,7 +44,7 @@ const env = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
   ...extra,
 });
 
-const employer = (extra: Record<string, unknown> = {}) => ({
+const employer = (extra: Row = {}) => ({
   id: USER,
   display_name: "Ada",
   locale: "ko",
@@ -57,16 +60,16 @@ const employer = (extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 
-const gate = (seen: Call[], user: Record<string, unknown>, extra?: Deps["query"]): Deps["query"] =>
+const gate = (seen: Array<Call>, user: Row, extra?: Deps["query"]): Deps["query"] =>
   async (sql, params = []) => {
     seen.push({ sql, params });
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {
       return { rows: [{ id: "22222222-2222-4222-8222-222222222222" }], rowCount: 1 };
     }
-    if (sql.includes("idempotency_keys")) return { rows: [], rowCount: 1 };
-    if (sql.includes("FROM users WHERE id")) return { rows: [{ ...user }], rowCount: 1 };
-    if (extra) return extra(sql, params);
+    if (sql.includes("idempotency_keys")) {return { rows: [], rowCount: 1 };}
+    if (sql.includes("FROM users WHERE id")) {return { rows: [{ ...user }], rowCount: 1 };}
+    if (extra) {return extra(sql, params);}
     return { rows: [], rowCount: 0 };
   };
 
@@ -106,7 +109,7 @@ const patch = (path: string, body: unknown): Request => new Request("https://cor
 const empty = { rows: [], rowCount: 0 };
 
 const ntsFetch = (valid: string, code: string, mode: "ok" | "http" | "text" = "ok") => {
-  const hits: Hit[] = [];
+  const hits: Array<Hit> = [];
   const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     hits.push({
@@ -115,8 +118,8 @@ const ntsFetch = (valid: string, code: string, mode: "ok" | "http" | "text" = "o
       body: typeof init?.body === "string" ? init.body : "",
       contentType: new Headers(init?.headers).get("content-type"),
     });
-    if (mode === "http") return Response.json({ status_code: "ERROR" }, { status: 500 });
-    if (mode === "text") return new Response("nope", { status: 200, headers: { "content-type": "text/plain" } });
+    if (mode === "http") {return Response.json({ status_code: "ERROR" }, { status: 500 });}
+    if (mode === "text") {return new Response("nope", { status: 200, headers: { "content-type": "text/plain" } });}
     if (url.includes("/validate")) {
       return Response.json({
         status_code: "OK",
@@ -150,12 +153,12 @@ const ntsFetch = (valid: string, code: string, mode: "ok" | "http" | "text" = "o
       }],
     });
   };
-  return { hits, fetchImpl: fetchImpl as typeof fetch };
+  return { hits, fetchImpl };
 };
 
 const assertBusiness = async (res: Response, reason: string) => {
   assert.equal(res.status, 422);
-  const body = await res.json() as Err;
+  const body = await readJson<Err>(res);
   assert.equal(body.error.code, "BUSINESS_NOT_VERIFIED");
   assert.equal(body.error.details?.reason, reason);
   assert.equal(body.error.message.includes(PHRASE), true);
@@ -173,9 +176,7 @@ const seat = (plan: string | null, role: string, members: number, invites: numbe
 });
 
 const undefinedColumn = (column: string): Error => {
-  const err = new Error(`column "${column}" does not exist`) as Error & { code: string };
-  err.code = "42703";
-  return err;
+  return Object.assign(new Error(`column "${column}" does not exist`), { code: "42703" });
 };
 
 const PROFILE = {
@@ -197,7 +198,7 @@ const profileRow = () => ({
 
 test("verified NTS response creates a company the caller admins", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const { hits, fetchImpl } = ntsFetch("01", "01");
   let company: Call | undefined;
   let member: Call | undefined;
@@ -210,12 +211,12 @@ test("verified NTS response creates a company the caller admins", async () => {
       member = { sql, params };
       return { rows: [], rowCount: 1 };
     }
-    if (sql.includes("FROM company_members")) return empty;
+    if (sql.includes("FROM company_members")) {return empty;}
     return empty;
   });
   const res = await handle(post("/api/v1/companies/verify", VERIFY, "11111111-1111-4111-8111-111111111111"), env(), deps(query, fetchImpl));
   assert.equal(res.status, 201);
-  const body = await res.json() as { data: Company };
+  const body = await readJson<{ data: Company }>(res);
   assert.deepEqual(Object.keys(body.data), ["id", "bNo", "name", "plan", "verifiedAt", "role", "seats", "legalName"]);
   assert.deepEqual(Object.keys(body.data.seats), ["used", "limit"]);
   assert.equal(body.data.bNo, BNO);
@@ -251,18 +252,18 @@ test("verify body stays readable after the idempotency hash", async () => {
   resetLimits();
   const { fetchImpl } = ntsFetch("01", "01");
   const query = gate([], employer(), async (sql) => {
-    if (sql.startsWith("INSERT INTO companies")) return { rows: [], rowCount: 1 };
-    if (sql.startsWith("INSERT INTO company_members")) return { rows: [], rowCount: 1 };
-    if (sql.includes("FROM company_members")) return empty;
+    if (sql.startsWith("INSERT INTO companies")) {return { rows: [], rowCount: 1 };}
+    if (sql.startsWith("INSERT INTO company_members")) {return { rows: [], rowCount: 1 };}
+    if (sql.includes("FROM company_members")) {return empty;}
     return empty;
   });
   const gc = (globalThis as { gc?: () => void }).gc;
   const wrapped: Deps["query"] = async (sql, params) => {
     if (gc && sql.includes("idempotency_keys") && sql.includes("INSERT")) {
       gc();
-      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => { setImmediate(resolve); });
       gc();
-      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => { setImmediate(resolve); });
     }
     return query(sql, params);
   };
@@ -283,11 +284,11 @@ test("NTS mismatch, suspended, closed, and unknown status are 422", async () => 
   ] as const;
   for (const [valid, code, reason] of cases) {
     resetLimits();
-    const seen: Call[] = [];
+    const seen: Array<Call> = [];
     const { fetchImpl } = ntsFetch(valid, code);
     const query = gate(seen, employer(), async (sql) => {
-      if (sql.startsWith("INSERT INTO companies")) return { rows: [], rowCount: 1 };
-      if (sql.includes("FROM company_members")) return empty;
+      if (sql.startsWith("INSERT INTO companies")) {return { rows: [], rowCount: 1 };}
+      if (sql.includes("FROM company_members")) {return empty;}
       return empty;
     });
     const res = await handle(post("/api/v1/companies/verify", VERIFY, "11111111-1111-4111-8111-111111111112"), env(), deps(query, fetchImpl));
@@ -298,36 +299,36 @@ test("NTS mismatch, suspended, closed, and unknown status are 422", async () => 
 
 test("a duplicate business number is 409 COMPANY_EXISTS", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const { hits, fetchImpl } = ntsFetch("01", "01");
   const query = gate(seen, employer(), async (sql) => {
     if (sql.startsWith("INSERT INTO companies")) {
       throw Object.assign(new Error('duplicate key value violates unique constraint "companies_b_no_idx"'), { code: "23505" });
     }
-    if (sql.includes("FROM company_members")) return empty;
+    if (sql.includes("FROM company_members")) {return empty;}
     return empty;
   });
   const res = await handle(post("/api/v1/companies/verify", VERIFY, "11111111-1111-4111-8111-111111111113"), env(), deps(query, fetchImpl));
   assert.equal(res.status, 409);
-  assert.equal((await res.json() as Err).error.code, "COMPANY_EXISTS");
+  assert.equal((await readJson<Err>(res)).error.code, "COMPANY_EXISTS");
   assert.equal(hits.length, 2);
   assert.equal(seen.some((call) => call.sql.startsWith("INSERT INTO company_members")), false);
 });
 
 test("verify fills an unverified admin shell instead of creating another company", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const { hits, fetchImpl } = ntsFetch("01", "01");
   const query = gate(seen, employer(), async (sql) => {
     if (sql.includes("FROM company_members")) {
       return { rows: [{ company_id: USER, role: "ADMIN", verified_at: null }], rowCount: 1 };
     }
-    if (sql.startsWith("UPDATE companies")) return { rows: [{ id: USER }], rowCount: 1 };
+    if (sql.startsWith("UPDATE companies")) {return { rows: [{ id: USER }], rowCount: 1 };}
     return empty;
   });
   const res = await handle(post("/api/v1/companies/verify", VERIFY, "11111111-1111-4111-8111-11111111111b"), env(), deps(query, fetchImpl));
   assert.equal(res.status, 201);
-  const body = await res.json() as { data: Company };
+  const body = await readJson<{ data: Company }>(res);
   assert.equal(body.data.id, USER);
   assert.equal(body.data.bNo, BNO);
   assert.equal(body.data.role, "ADMIN");
@@ -342,7 +343,7 @@ test("verify fills an unverified admin shell instead of creating another company
 
 test("a caller who already belongs to a company gets 409 before NTS", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   let called = false;
   const fetchImpl = (async () => {
     called = true;
@@ -356,14 +357,14 @@ test("a caller who already belongs to a company gets 409 before NTS", async () =
   });
   const res = await handle(post("/api/v1/companies/verify", VERIFY, "11111111-1111-4111-8111-111111111114"), env(), deps(query, fetchImpl));
   assert.equal(res.status, 409);
-  assert.equal((await res.json() as Err).error.code, "CONFLICT");
+  assert.equal((await readJson<Err>(res)).error.code, "CONFLICT");
   assert.equal(called, false);
   assert.equal(seen.some((call) => call.sql.startsWith("INSERT INTO companies")), false);
 });
 
 test("a personal account cannot verify a business", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   let called = false;
   const fetchImpl = (async () => {
     called = true;
@@ -375,13 +376,13 @@ test("a personal account cannot verify a business", async () => {
     deps(gate(seen, employer({ is_employer: false })), fetchImpl),
   );
   assert.equal(res.status, 403);
-  assert.equal((await res.json() as Err).error.code, "FORBIDDEN");
+  assert.equal((await readJson<Err>(res)).error.code, "FORBIDDEN");
   assert.equal(called, false);
 });
 
 test("missing NTS key is 503 and does not call NTS", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   let called = false;
   const fetchImpl = (async () => {
     called = true;
@@ -394,29 +395,29 @@ test("missing NTS key is 503 and does not call NTS", async () => {
     deps(query, fetchImpl),
   );
   assert.equal(res.status, 503);
-  assert.equal((await res.json() as Err).error.code, "NOT_CONFIGURED");
+  assert.equal((await readJson<Err>(res)).error.code, "NOT_CONFIGURED");
   assert.equal(called, false);
 });
 
 test("NTS http failure and non-JSON are 502", async () => {
   for (const mode of ["http", "text"] as const) {
     resetLimits();
-    const seen: Call[] = [];
+    const seen: Array<Call> = [];
     const { fetchImpl } = ntsFetch("01", "01", mode);
     const query = gate(seen, employer(), async (sql) => {
-      if (sql.includes("FROM company_members")) return empty;
+      if (sql.includes("FROM company_members")) {return empty;}
       return empty;
     });
     const res = await handle(post("/api/v1/companies/verify", VERIFY, "11111111-1111-4111-8111-111111111117"), env(), deps(query, fetchImpl));
     assert.equal(res.status, 502);
-    assert.equal((await res.json() as Err).error.code, "PROVIDER_ERROR");
+    assert.equal((await readJson<Err>(res)).error.code, "PROVIDER_ERROR");
     assert.equal(seen.some((call) => call.sql.startsWith("INSERT INTO companies")), false);
   }
 });
 
 test("GET /companies/me returns the membership and empty bNo", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = gate(seen, employer(), async (sql) => {
     if (sql.includes("AS member_count")) {
       return {
@@ -437,7 +438,7 @@ test("GET /companies/me returns the membership and empty bNo", async () => {
   });
   const res = await handle(get("/api/v1/companies/me"), env(), deps(query));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: Company };
+  const body = await readJson<{ data: Company }>(res);
   assert.deepEqual(Object.keys(body.data), ["id", "bNo", "name", "plan", "verifiedAt", "role", "seats"]);
   assert.equal(body.data.id, COMPANY);
   assert.equal(body.data.bNo, "");
@@ -450,11 +451,11 @@ test("GET /companies/me returns the membership and empty bNo", async () => {
 
 test("GET /companies/me without a membership is 404", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = gate(seen, employer(), async () => empty);
   const res = await handle(get("/api/v1/companies/me"), env(), deps(query));
   assert.equal(res.status, 404);
-  assert.equal((await res.json() as Err).error.code, "NOT_FOUND");
+  assert.equal((await readJson<Err>(res)).error.code, "NOT_FOUND");
   assert.equal(seen.some((call) => call.sql.includes("AS member_count")), true);
 });
 
@@ -470,12 +471,12 @@ test("GET /companies/me/members returns data for any member", async () => {
         rowCount: 2,
       };
     }
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "MEMBER", 1, 0)], rowCount: 1 };
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "MEMBER", 1, 0)], rowCount: 1 };}
     return empty;
   });
   const res = await handle(get("/api/v1/companies/me/members"), env(), deps(query));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { userId: string; email: string; role: string; joinedAt: string }[] };
+  const body = await readJson<{ data: Array<{ userId: string; email: string; role: string; joinedAt: string }> }>(res);
   assert.deepEqual(Object.keys(body), ["data"]);
   assert.deepEqual(body.data, [
     { userId: USER, email: "ada@push.app", displayName: "Ada", role: "ADMIN", joinedAt: "2026-10-21T00:00:00Z" },
@@ -487,30 +488,30 @@ test("GET /companies/me/members returns data for any member", async () => {
 test("BASIC and null plans cannot invite", async () => {
   for (const plan of [null, "BASIC"] as const) {
     resetLimits();
-    const seen: Call[] = [];
+    const seen: Array<Call> = [];
     const query = gate(seen, employer(), async (sql) => {
-      if (sql.includes("AS member_count")) return { rows: [seat(plan, "ADMIN", 0, 0)], rowCount: 1 };
+      if (sql.includes("AS member_count")) {return { rows: [seat(plan, "ADMIN", 0, 0)], rowCount: 1 };}
       return empty;
     });
     const res = await handle(post("/api/v1/companies/me/invites", { email: "m@push.app" }, "11111111-1111-4111-8111-111111111118"), env(), deps(query));
     assert.equal(res.status, 403);
-    assert.equal((await res.json() as Err).error.code, "SEAT_LIMIT");
+    assert.equal((await readJson<Err>(res)).error.code, "SEAT_LIMIT");
     assert.equal(seen.some((call) => call.sql.startsWith("INSERT INTO company_invites")), false);
   }
 });
 
 test("PRO invite stores a hash and mails the raw token", async () => {
   resetLimits();
-  const seen: Call[] = [];
-  const sent: Mail[] = [];
+  const seen: Array<Call> = [];
+  const sent: Array<Mail> = [];
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   const query = gate(seen, employer(), async (sql, params = []) => {
-    if (sql.startsWith("INSERT INTO company_invites")) return { rows: [], rowCount: 1 };
+    if (sql.startsWith("INSERT INTO company_invites")) {return { rows: [], rowCount: 1 };}
     if (sql.includes("lower(") && sql.includes("email")) {
       assert.equal(params[1], "m@push.app");
       return empty;
     }
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 1, 0)], rowCount: 1 };
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 1, 0)], rowCount: 1 };}
     return empty;
   });
   const res = await handle(
@@ -538,42 +539,42 @@ test("PRO invite stores a hash and mails the raw token", async () => {
 
 test("an invite insert that loses the seat check is SEAT_LIMIT", async () => {
   resetLimits();
-  const seen: Call[] = [];
-  const sent: Mail[] = [];
+  const seen: Array<Call> = [];
+  const sent: Array<Mail> = [];
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   const query = gate(seen, employer(), async (sql) => {
-    if (sql.startsWith("INSERT INTO company_invites")) return { rows: [], rowCount: 0 };
-    if (sql.includes("lower(") && sql.includes("email")) return empty;
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 0)], rowCount: 1 };
+    if (sql.startsWith("INSERT INTO company_invites")) {return { rows: [], rowCount: 0 };}
+    if (sql.includes("lower(") && sql.includes("email")) {return empty;}
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 0, 0)], rowCount: 1 };}
     return empty;
   });
   const res = await handle(post("/api/v1/companies/me/invites", { email: "m@push.app" }, "11111111-1111-4111-8111-11111111111c"), env(), deps(query, undefined, mailer));
   assert.equal(res.status, 403);
-  assert.equal((await res.json() as Err).error.code, "SEAT_LIMIT");
+  assert.equal((await readJson<Err>(res)).error.code, "SEAT_LIMIT");
   assert.equal(sent.length, 0);
 });
 
 test("PRO at one member plus one open invite is SEAT_LIMIT", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = gate(seen, employer(), async (sql) => {
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 1, 1)], rowCount: 1 };
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 1, 1)], rowCount: 1 };}
     return empty;
   });
   const res = await handle(post("/api/v1/companies/me/invites", { email: "m@push.app" }, "11111111-1111-4111-8111-11111111111a"), env(), deps(query));
   assert.equal(res.status, 403);
-  assert.equal((await res.json() as Err).error.code, "SEAT_LIMIT");
+  assert.equal((await readJson<Err>(res)).error.code, "SEAT_LIMIT");
   assert.equal(seen.some((call) => call.sql.startsWith("INSERT INTO company_invites")), false);
 });
 
 test("ULTRA allows four seats and blocks the fifth open seat", async () => {
   resetLimits();
-  const allowedSeen: Call[] = [];
-  const sent: Mail[] = [];
+  const allowedSeen: Array<Call> = [];
+  const sent: Array<Mail> = [];
   const allowed = gate(allowedSeen, employer(), async (sql) => {
-    if (sql.startsWith("INSERT INTO company_invites")) return { rows: [], rowCount: 1 };
-    if (sql.includes("lower(") && sql.includes("email")) return empty;
-    if (sql.includes("AS member_count")) return { rows: [seat("ULTRA", "ADMIN", 2, 0)], rowCount: 1 };
+    if (sql.startsWith("INSERT INTO company_invites")) {return { rows: [], rowCount: 1 };}
+    if (sql.includes("lower(") && sql.includes("email")) {return empty;}
+    if (sql.includes("AS member_count")) {return { rows: [seat("ULTRA", "ADMIN", 2, 0)], rowCount: 1 };}
     return empty;
   });
   const ok = await handle(
@@ -585,43 +586,43 @@ test("ULTRA allows four seats and blocks the fifth open seat", async () => {
   assert.equal(sent.length, 1);
 
   resetLimits();
-  const blockedSeen: Call[] = [];
+  const blockedSeen: Array<Call> = [];
   const blocked = gate(blockedSeen, employer(), async (sql) => {
-    if (sql.includes("AS member_count")) return { rows: [seat("ULTRA", "ADMIN", 4, 1)], rowCount: 1 };
+    if (sql.includes("AS member_count")) {return { rows: [seat("ULTRA", "ADMIN", 4, 1)], rowCount: 1 };}
     return empty;
   });
   const res = await handle(post("/api/v1/companies/me/invites", { email: "n@push.app" }, "11111111-1111-4111-8111-11111111111c"), env(), deps(blocked));
   assert.equal(res.status, 403);
-  assert.equal((await res.json() as Err).error.code, "SEAT_LIMIT");
+  assert.equal((await readJson<Err>(res)).error.code, "SEAT_LIMIT");
   assert.equal(blockedSeen.some((call) => call.sql.startsWith("INSERT INTO company_invites")), false);
 });
 
 test("a non-admin cannot invite", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = gate(seen, employer(), async (sql) => {
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "MEMBER", 0, 0)], rowCount: 1 };
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "MEMBER", 0, 0)], rowCount: 1 };}
     return empty;
   });
   const res = await handle(post("/api/v1/companies/me/invites", { email: "m@push.app" }, "11111111-1111-4111-8111-11111111111d"), env(), deps(query));
   assert.equal(res.status, 403);
-  assert.equal((await res.json() as Err).error.code, "FORBIDDEN");
+  assert.equal((await readJson<Err>(res)).error.code, "FORBIDDEN");
   assert.equal(seen.some((call) => call.sql.startsWith("INSERT INTO company_invites")), false);
 });
 
 test("a failed invite mail deletes the invite", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const mailer = { send: async () => { throw new Error("smtp down"); } };
   const query = gate(seen, employer(), async (sql) => {
-    if (sql.startsWith("INSERT INTO company_invites") || sql.startsWith("DELETE FROM company_invites")) return { rows: [], rowCount: 1 };
-    if (sql.includes("lower(") && sql.includes("email")) return empty;
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 0)], rowCount: 1 };
+    if (sql.startsWith("INSERT INTO company_invites") || sql.startsWith("DELETE FROM company_invites")) {return { rows: [], rowCount: 1 };}
+    if (sql.includes("lower(") && sql.includes("email")) {return empty;}
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 0, 0)], rowCount: 1 };}
     return empty;
   });
   const res = await handle(post("/api/v1/companies/me/invites", { email: "m@push.app" }, "11111111-1111-4111-8111-11111111111e"), env(), deps(query, undefined, mailer));
   assert.equal(res.status, 502);
-  assert.equal((await res.json() as Err).error.code, "PROVIDER_ERROR");
+  assert.equal((await readJson<Err>(res)).error.code, "PROVIDER_ERROR");
   const insert = seen.find((call) => call.sql.startsWith("INSERT INTO company_invites"));
   const removed = seen.find((call) => call.sql.startsWith("DELETE FROM company_invites"));
   assert.ok(insert);
@@ -631,32 +632,32 @@ test("a failed invite mail deletes the invite", async () => {
 
 test("inviting an existing member is 409", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = gate(seen, employer(), async (sql) => {
-    if (sql.includes("lower(") && sql.includes("email")) return { rows: [{ user_id: OTHER }], rowCount: 1 };
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 0)], rowCount: 1 };
+    if (sql.includes("lower(") && sql.includes("email")) {return { rows: [{ user_id: OTHER }], rowCount: 1 };}
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 0, 0)], rowCount: 1 };}
     return empty;
   });
   const res = await handle(post("/api/v1/companies/me/invites", { email: "m@push.app" }, "11111111-1111-4111-8111-11111111111f"), env(), deps(query));
   assert.equal(res.status, 409);
-  assert.equal((await res.json() as Err).error.code, "CONFLICT");
+  assert.equal((await readJson<Err>(res)).error.code, "CONFLICT");
   assert.equal(seen.some((call) => call.sql.startsWith("INSERT INTO company_invites")), false);
 });
 
 test("accepting an unknown or expired token is 404", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const missing = gate(seen, employer(), async (sql) => {
-    if (sql.includes("FROM company_invites")) return empty;
+    if (sql.includes("FROM company_invites")) {return empty;}
     return empty;
   });
   const unknown = await handle(post("/api/v1/companies/invites/missing-token/accept", {}, "33333333-3333-4333-8333-333333333331"), env(), deps(missing));
   assert.equal(unknown.status, 404);
-  assert.equal((await unknown.json() as Err).error.code, "NOT_FOUND");
+  assert.equal((await readJson<Err>(unknown)).error.code, "NOT_FOUND");
   assert.equal(seen.some((call) => call.sql.includes("FROM company_invites")), true);
 
   resetLimits();
-  const staleSeen: Call[] = [];
+  const staleSeen: Array<Call> = [];
   const stale = gate(staleSeen, employer(), async (sql) => {
     if (sql.includes("FROM company_invites")) {
       return { rows: [{ id: "inv", company_id: COMPANY, email: "ada@push.app", expires_at: "2020-01-01T00:00:00.000Z", accepted_at: null }], rowCount: 1 };
@@ -665,14 +666,14 @@ test("accepting an unknown or expired token is 404", async () => {
   });
   const expired = await handle(post("/api/v1/companies/invites/old-token/accept", {}, "33333333-3333-4333-8333-333333333332"), env(), deps(stale));
   assert.equal(expired.status, 404);
-  assert.equal((await expired.json() as Err).error.code, "NOT_FOUND");
+  assert.equal((await readJson<Err>(expired)).error.code, "NOT_FOUND");
   assert.equal(staleSeen.some((call) => call.sql.includes("FROM company_invites")), true);
   assert.equal(staleSeen.some((call) => call.sql.startsWith("INSERT INTO company_members")), false);
 });
 
 test("accept is 409 when the company is pending deletion", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = gate(seen, employer(), async (sql) => {
     if (sql.includes("FROM company_invites")) {
       return {
@@ -688,13 +689,13 @@ test("accept is 409 when the company is pending deletion", async () => {
   });
   const res = await handle(post("/api/v1/companies/invites/dying-token/accept", {}, "33333333-3333-4333-8333-33333333333a"), env(), deps(query));
   assert.equal(res.status, 409);
-  assert.equal((await res.json() as Err).error.code, "CONFLICT");
+  assert.equal((await readJson<Err>(res)).error.code, "CONFLICT");
   assert.equal(seen.some((call) => call.sql.startsWith("INSERT INTO company_members")), false);
 });
 
 test("accept is 409 when the caller is already in a company", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const token = "invite-token";
   const hash = await sha256Hex(token);
   const query = gate(seen, employer(), async (sql, params = []) => {
@@ -702,24 +703,24 @@ test("accept is 409 when the caller is already in a company", async () => {
       assert.equal(params[0], hash);
       return { rows: [{ id: "inv", company_id: COMPANY, email: "ADA@push.app", expires_at: "2099-01-01T00:00:00.000Z", accepted_at: null }], rowCount: 1 };
     }
-    if (sql.includes("FROM company_members")) return { rows: [{ company_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" }], rowCount: 1 };
+    if (sql.includes("FROM company_members")) {return { rows: [{ company_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" }], rowCount: 1 };}
     return empty;
   });
   const res = await handle(post(`/api/v1/companies/invites/${token}/accept`, {}, "33333333-3333-4333-8333-333333333333"), env(), deps(query));
   assert.equal(res.status, 409);
-  assert.equal((await res.json() as Err).error.code, "CONFLICT");
+  assert.equal((await readJson<Err>(res)).error.code, "CONFLICT");
   assert.equal(seen.some((call) => call.sql.startsWith("INSERT INTO company_members")), false);
 });
 
 test("accept joins as MEMBER when the email matches", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = gate(seen, employer(), async (sql) => {
     if (sql.includes("FROM company_invites") && sql.includes("token_hash")) {
       return { rows: [{ id: "inv", company_id: COMPANY, email: "ada@push.app", expires_at: "2099-01-01T00:00:00.000Z", accepted_at: null }], rowCount: 1 };
     }
-    if (sql.includes("SET accepted_at")) return { rows: [{ company_id: COMPANY }], rowCount: 1 };
-    if (sql.includes("FROM company_members")) return empty;
+    if (sql.includes("SET accepted_at")) {return { rows: [{ company_id: COMPANY }], rowCount: 1 };}
+    if (sql.includes("FROM company_members")) {return empty;}
     return empty;
   });
   const res = await handle(post("/api/v1/companies/invites/fresh-token/accept", {}, "33333333-3333-4333-8333-333333333334"), env(), deps(query));
@@ -751,7 +752,7 @@ test("a malformed invite token is 404, not 500", async () => {
 
 test("an already accepted invite is 409", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = gate(seen, employer(), async (sql) => {
     if (sql.includes("FROM company_invites")) {
       return { rows: [{ id: "inv", company_id: COMPANY, email: "ada@push.app", expires_at: "2020-01-01T00:00:00.000Z", accepted_at: NOW.toISOString() }], rowCount: 1 };
@@ -760,13 +761,13 @@ test("an already accepted invite is 409", async () => {
   });
   const res = await handle(post("/api/v1/companies/invites/used-token/accept", {}, "33333333-3333-4333-8333-333333333336"), env(), deps(query));
   assert.equal(res.status, 409);
-  assert.equal((await res.json() as Err).error.code, "CONFLICT");
+  assert.equal((await readJson<Err>(res)).error.code, "CONFLICT");
   assert.equal(seen.some((call) => call.sql.startsWith("INSERT INTO company_members")), false);
 });
 
 test("accept rejects an invite sent to a different email", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = gate(seen, employer(), async (sql) => {
     if (sql.includes("FROM company_invites")) {
       return { rows: [{ id: "inv", company_id: COMPANY, email: "other@push.app", expires_at: "2099-01-01T00:00:00.000Z", accepted_at: null }], rowCount: 1 };
@@ -775,30 +776,30 @@ test("accept rejects an invite sent to a different email", async () => {
   });
   const res = await handle(post("/api/v1/companies/invites/other-token/accept", {}, "33333333-3333-4333-8333-333333333337"), env(), deps(query));
   assert.equal(res.status, 403);
-  assert.equal((await res.json() as Err).error.code, "FORBIDDEN");
+  assert.equal((await readJson<Err>(res)).error.code, "FORBIDDEN");
   assert.equal(seen.some((call) => call.sql.startsWith("INSERT INTO company_members")), false);
 });
 
 test("a personal account cannot accept an invite", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(
     post("/api/v1/companies/invites/tok/accept", {}, "33333333-3333-4333-8333-333333333335"),
     env(),
     deps(gate(seen, employer({ is_employer: false }))),
   );
   assert.equal(res.status, 403);
-  assert.equal((await res.json() as Err).error.code, "FORBIDDEN");
+  assert.equal((await readJson<Err>(res)).error.code, "FORBIDDEN");
   assert.equal(seen.some((call) => call.sql.includes("company_invites")), false);
 });
 
 test("transfer promotes the member and demotes the previous admin", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = gate(seen, employer(), async (sql) => {
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 1, 0)], rowCount: 1 };
-    if (sql.includes("FROM company_members") && sql.includes("user_id = $2")) return { rows: [{ user_id: OTHER, role: "MEMBER" }], rowCount: 1 };
-    if (sql.startsWith("UPDATE company_members")) return { rows: [], rowCount: 2 };
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 1, 0)], rowCount: 1 };}
+    if (sql.includes("FROM company_members") && sql.includes("user_id = $2")) {return { rows: [{ user_id: OTHER, role: "MEMBER" }], rowCount: 1 };}
+    if (sql.startsWith("UPDATE company_members")) {return { rows: [], rowCount: 2 };}
     return empty;
   });
   const res = await handle(patch(`/api/v1/companies/me/members/${OTHER}`, { role: "ADMIN" }), env(), deps(query));
@@ -812,40 +813,40 @@ test("transfer promotes the member and demotes the previous admin", async () => 
 
 test("transfer rejects a non-admin role", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = gate(seen, employer(), async (sql) => {
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 1, 0)], rowCount: 1 };
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 1, 0)], rowCount: 1 };}
     return empty;
   });
   const res = await handle(patch(`/api/v1/companies/me/members/${OTHER}`, { role: "MEMBER" }), env(), deps(query));
   assert.equal(res.status, 400);
-  assert.equal((await res.json() as Err).error.code, "VALIDATION_ERROR");
+  assert.equal((await readJson<Err>(res)).error.code, "VALIDATION_ERROR");
   assert.equal(seen.some((call) => call.sql.includes("SET role")), false);
 });
 
 test("removing the last admin is 409 and removing a member is 204", async () => {
   resetLimits();
-  const blockedSeen: Call[] = [];
+  const blockedSeen: Array<Call> = [];
   const blocked = gate(blockedSeen, employer(), async (sql) => {
-    if (sql.includes("AS admins")) return { rows: [{ admins: 1 }], rowCount: 1 };
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 1, 0)], rowCount: 1 };
-    if (sql.includes("user_id = $2")) return { rows: [{ role: "ADMIN" }], rowCount: 1 };
+    if (sql.includes("AS admins")) {return { rows: [{ admins: 1 }], rowCount: 1 };}
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 1, 0)], rowCount: 1 };}
+    if (sql.includes("user_id = $2")) {return { rows: [{ role: "ADMIN" }], rowCount: 1 };}
     return empty;
   });
   const denied = await handle(del(`/api/v1/companies/me/members/${USER}`), env(), deps(blocked));
   assert.equal(denied.status, 409);
-  assert.equal((await denied.json() as Err).error.code, "CONFLICT");
+  assert.equal((await readJson<Err>(denied)).error.code, "CONFLICT");
   assert.equal(blockedSeen.some((call) => call.sql.startsWith("DELETE FROM company_members")), false);
 
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = gate(seen, employer(), async (sql, params = []) => {
     if (sql.startsWith("DELETE FROM company_members")) {
       assert.deepEqual(params, [COMPANY, OTHER]);
       return { rows: [], rowCount: 1 };
     }
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 1, 0)], rowCount: 1 };
-    if (sql.includes("user_id = $2")) return { rows: [{ role: "MEMBER" }], rowCount: 1 };
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 1, 0)], rowCount: 1 };}
+    if (sql.includes("user_id = $2")) {return { rows: [{ role: "MEMBER" }], rowCount: 1 };}
     return empty;
   });
   const res = await handle(del(`/api/v1/companies/me/members/${OTHER}`), env(), deps(query));
@@ -855,8 +856,8 @@ test("removing the last admin is 409 and removing a member is 204", async () => 
 
 test("DELETE /me for an admin with other members does not mark deletion", async () => {
   resetLimits();
-  const seen: Call[] = [];
-  const stripe: string[] = [];
+  const seen: Array<Call> = [];
+  const stripe: Array<string> = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     stripe.push(`${init?.method ?? "GET"} ${String(input)}`);
     return Response.json({ data: [] });
@@ -869,20 +870,20 @@ test("DELETE /me for an admin with other members does not mark deletion", async 
   });
   const res = await handle(del("/api/v1/me"), env(), deps(query, fetchImpl));
   assert.equal(res.status, 409);
-  assert.equal((await res.json() as Err).error.code, "ADMIN_TRANSFER_REQUIRED");
+  assert.equal((await readJson<Err>(res)).error.code, "ADMIN_TRANSFER_REQUIRED");
   assert.equal(seen.some((call) => call.sql.includes("deletion_requested_at")), false);
   assert.deepEqual(stripe, []);
 });
 
 test("sole admin delete cancels the company Stripe customer and marks the company", async () => {
   resetLimits();
-  const seen: Call[] = [];
-  const stripe: string[] = [];
+  const seen: Array<Call> = [];
+  const stripe: Array<string> = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = init?.method ?? "GET";
     stripe.push(`${method} ${url}`);
-    if (method === "GET") return Response.json({ data: [{ id: url.includes("cus_co") ? "sub_co" : "sub_user", status: "active" }] });
+    if (method === "GET") {return Response.json({ data: [{ id: url.includes("cus_co") ? "sub_co" : "sub_user", status: "active" }] });}
     return Response.json({ id: "sub", status: "canceled" });
   }) as typeof fetch;
   const query = gate(seen, employer({ stripe_customer_id: "cus_user" }), async (sql) => {
@@ -910,11 +911,11 @@ test("sole admin delete cancels the company Stripe customer and marks the compan
 
 test("company Stripe failure undoes the user deletion mark", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url.includes("customer=cus_co")) return Response.json({ error: { message: "no" } }, { status: 500 });
-    if ((init?.method ?? "GET") === "GET") return Response.json({ data: [{ id: "sub_user" }] });
+    if (url.includes("customer=cus_co")) {return Response.json({ error: { message: "no" } }, { status: 500 });}
+    if ((init?.method ?? "GET") === "GET") {return Response.json({ data: [{ id: "sub_user" }] });}
     return Response.json({ id: "sub_user", status: "canceled" });
   }) as typeof fetch;
   const query = gate(seen, employer({ stripe_customer_id: "cus_user" }), async (sql) => {
@@ -925,7 +926,7 @@ test("company Stripe failure undoes the user deletion mark", async () => {
   });
   const res = await handle(del("/api/v1/me"), env(), deps(query, fetchImpl));
   assert.equal(res.status, 502);
-  assert.equal((await res.json() as Err).error.code, "PROVIDER_ERROR");
+  assert.equal((await readJson<Err>(res)).error.code, "PROVIDER_ERROR");
   assert.ok(seen.some((call) => call.sql.includes("SET deletion_requested_at = NULL WHERE id = $1")));
   assert.equal(seen.some((call) => call.sql.includes("UPDATE companies SET deletion_requested_at")), false);
   assert.equal(seen.some((call) => call.sql.includes("UPDATE refresh_tokens SET revoked_at")), false);
@@ -934,11 +935,11 @@ test("company Stripe failure undoes the user deletion mark", async () => {
 test("email login clears the company deletion mark", async () => {
   resetLimits();
   const passwordHash = await hashPassword("secret123");
-  const sqls: string[] = [];
+  const sqls: Array<string> = [];
   const query: Deps["query"] = async (sql) => {
     sqls.push(sql);
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("deletion_requested_at")) return { rows: [], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("deletion_requested_at")) {return { rows: [], rowCount: 1 };}
     if (sql.includes("FROM users") && sql.includes("lower(email)")) {
       return {
         rows: [{
@@ -951,8 +952,8 @@ test("email login clears the company deletion mark", async () => {
         rowCount: 1,
       };
     }
-    if (sql.includes("INSERT INTO refresh_tokens")) return { rows: [], rowCount: 1 };
-    if (sql.includes("FROM users WHERE id")) return { rows: [employer()], rowCount: 1 };
+    if (sql.includes("INSERT INTO refresh_tokens")) {return { rows: [], rowCount: 1 };}
+    if (sql.includes("FROM users WHERE id")) {return { rows: [employer()], rowCount: 1 };}
     return empty;
   };
   const res = await handle(
@@ -970,10 +971,10 @@ test("email login clears the company deletion mark", async () => {
 
 test("admin PATCH sets company profile fields and GET returns logoUrl", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = gate(seen, employer(), async (sql) => {
-    if (sql.startsWith("UPDATE companies")) return { rows: [], rowCount: 1 };
-    if (sql.includes("AS member_count")) return { rows: [profileRow()], rowCount: 1 };
+    if (sql.startsWith("UPDATE companies")) {return { rows: [], rowCount: 1 };}
+    if (sql.includes("AS member_count")) {return { rows: [profileRow()], rowCount: 1 };}
     return empty;
   });
   const res = await handle(patch("/api/v1/companies/me", PROFILE), env(), deps(query));
@@ -998,7 +999,7 @@ test("admin PATCH sets company profile fields and GET returns logoUrl", async ()
   const update = seen.find((call) => call.sql.startsWith("UPDATE companies"));
   assert.ok(update);
   assert.equal(update.params[0], COMPANY);
-  for (const value of Object.values(PROFILE)) assert.equal(update.params.includes(value), true);
+  for (const value of Object.values(PROFILE)) {assert.equal(update.params.includes(value), true);}
   assert.match(update.sql, /logo_key/);
   assert.match(update.sql, /representative_name/);
   assert.equal(update.sql.includes("b_no"), false);
@@ -1009,33 +1010,33 @@ test("admin PATCH sets company profile fields and GET returns logoUrl", async ()
   assert.deepEqual(await got.json(), { data: expected });
 
   resetLimits();
-  const memberSeen: Call[] = [];
+  const memberSeen: Array<Call> = [];
   const member = gate(memberSeen, employer(), async (sql) => {
-    if (sql.startsWith("UPDATE companies")) return { rows: [], rowCount: 1 };
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "MEMBER", 1, 0)], rowCount: 1 };
+    if (sql.startsWith("UPDATE companies")) {return { rows: [], rowCount: 1 };}
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "MEMBER", 1, 0)], rowCount: 1 };}
     return empty;
   });
   const denied = await handle(patch("/api/v1/companies/me", PROFILE), env(), deps(member));
   assert.equal(denied.status, 403);
-  assert.equal((await denied.json() as Err).error.code, "FORBIDDEN");
+  assert.equal((await readJson<Err>(denied)).error.code, "FORBIDDEN");
   assert.equal(memberSeen.some((call) => call.sql.startsWith("UPDATE companies")), false);
 
   resetLimits();
-  const badSeen: Call[] = [];
+  const badSeen: Array<Call> = [];
   const badQuery = gate(badSeen, employer(), async (sql) => {
-    if (sql.startsWith("UPDATE companies")) return { rows: [], rowCount: 1 };
-    if (sql.includes("AS member_count")) return { rows: [profileRow()], rowCount: 1 };
+    if (sql.startsWith("UPDATE companies")) {return { rows: [], rowCount: 1 };}
+    if (sql.includes("AS member_count")) {return { rows: [profileRow()], rowCount: 1 };}
     return empty;
   });
   const bad = await handle(patch("/api/v1/companies/me", { bNo: BNO, name: "다른회사" }), env(), deps(badQuery));
   assert.equal(bad.status, 400);
-  assert.equal((await bad.json() as Err).error.code, "VALIDATION_ERROR");
+  assert.equal((await readJson<Err>(bad)).error.code, "VALIDATION_ERROR");
   assert.equal(badSeen.some((call) => call.sql.startsWith("UPDATE companies")), false);
 });
 
 test("GET /companies/me omits profile keys when the profile columns are missing", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   let profileAttempts = 0;
   const query = gate(seen, employer(), async (sql) => {
     if (sql.includes("logo_key") || sql.includes("representative_name")) {
@@ -1062,7 +1063,7 @@ test("GET /companies/me omits profile keys when the profile columns are missing"
   const res = await handle(get("/api/v1/companies/me"), env(), deps(query));
   assert.equal(profileAttempts, 1);
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: Company };
+  const body = await readJson<{ data: Company }>(res);
   assert.deepEqual(Object.keys(body.data), ["id", "bNo", "name", "plan", "verifiedAt", "role", "seats"]);
   assert.equal(body.data.id, COMPANY);
   assert.equal(body.data.bNo, "");
@@ -1076,15 +1077,15 @@ test("GET /companies/me omits profile keys when the profile columns are missing"
 
 test("GET /companies/me/invites returns pending invites to a member; send, resend and cancel stay admin-only", async () => {
   resetLimits();
-  const memberSeen: Call[] = [];
+  const memberSeen: Array<Call> = [];
   const pendingId = "11111111-1111-4111-8111-1111111111a1";
   const memberRows = [
     { id: "i1", email: "a@push.app", expires_at: "2026-10-22T00:00:00.000Z" },
     { id: "i2", email: "b@push.app", expires_at: "2026-10-28T00:00:00.000Z" },
   ];
   const member = gate(memberSeen, employer(), async (sql) => {
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "MEMBER", 1, 2)], rowCount: 1 };
-    if (sql.includes("FROM company_invites") && !sql.includes("AS member_count")) return { rows: memberRows, rowCount: 2 };
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "MEMBER", 1, 2)], rowCount: 1 };}
+    if (sql.includes("FROM company_invites") && !sql.includes("AS member_count")) {return { rows: memberRows, rowCount: 2 };}
     return empty;
   });
   const listed = await handle(get("/api/v1/companies/me/invites"), env(), deps(member));
@@ -1102,24 +1103,24 @@ test("GET /companies/me/invites returns pending invites to a member; send, resen
   resetLimits();
   const posted = await handle(post("/api/v1/companies/me/invites", { email: "c@push.app" }, "11111111-1111-4111-8111-1111111111a1"), env(), deps(member));
   assert.equal(posted.status, 403);
-  assert.equal((await posted.json() as Err).error.code, "FORBIDDEN");
+  assert.equal((await readJson<Err>(posted)).error.code, "FORBIDDEN");
   const removed = await handle(del(`/api/v1/companies/me/invites/${pendingId}`), env(), deps(member));
   assert.equal(removed.status, 403);
-  assert.equal((await removed.json() as Err).error.code, "FORBIDDEN");
+  assert.equal((await readJson<Err>(removed)).error.code, "FORBIDDEN");
   const resent = await handle(post(`/api/v1/companies/me/invites/${pendingId}/resend`, {}, "11111111-1111-4111-8111-1111111111a2"), env(), deps(member));
   assert.equal(resent.status, 403);
-  assert.equal((await resent.json() as Err).error.code, "FORBIDDEN");
+  assert.equal((await readJson<Err>(resent)).error.code, "FORBIDDEN");
   assert.equal(memberSeen.some((call) => call.sql.startsWith("INSERT INTO company_invites") || call.sql.startsWith("DELETE FROM company_invites") || call.sql.startsWith("UPDATE company_invites")), false);
 
   resetLimits();
   const missing = await handle(get("/api/v1/companies/me/invites"), env(), deps(gate([], employer(), async () => empty)));
   assert.equal(missing.status, 404);
-  assert.equal((await missing.json() as Err).error.code, "NOT_FOUND");
+  assert.equal((await readJson<Err>(missing)).error.code, "NOT_FOUND");
 
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = gate(seen, employer(), async (sql) => {
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };}
     if (sql.includes("FROM company_invites")) {
       return {
         rows: [
@@ -1151,8 +1152,8 @@ test("GET /companies/me/invites returns pending invites to a member; send, resen
 
 test("POST invite resends a pending invite and records the inviter on insert", async () => {
   resetLimits();
-  const seen: Call[] = [];
-  const sent: Mail[] = [];
+  const seen: Array<Call> = [];
+  const sent: Array<Mail> = [];
   const pendingId = "iiiiiiii-iiii-4iii-8iii-iiiiiiiiiiii";
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   const query = gate(seen, employer(), async (sql) => {
@@ -1160,10 +1161,10 @@ test("POST invite resends a pending invite and records the inviter on insert", a
       assert.equal(sent.length, 1);
       return { rows: [], rowCount: 1 };
     }
-    if (sql.startsWith("INSERT INTO company_invites")) return { rows: [], rowCount: 1 };
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 1, 1)], rowCount: 1 };
-    if (sql.includes("FROM company_invites")) return { rows: [{ id: pendingId, email: "m@push.app" }], rowCount: 1 };
-    if (sql.includes("lower(") && sql.includes("email")) return empty;
+    if (sql.startsWith("INSERT INTO company_invites")) {return { rows: [], rowCount: 1 };}
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 1, 1)], rowCount: 1 };}
+    if (sql.includes("FROM company_invites")) {return { rows: [{ id: pendingId, email: "m@push.app" }], rowCount: 1 };}
+    if (sql.includes("lower(") && sql.includes("email")) {return empty;}
     return empty;
   });
   const res = await handle(
@@ -1188,13 +1189,13 @@ test("POST invite resends a pending invite and records the inviter on insert", a
   assert.equal(update.params.includes(USER), true);
 
   resetLimits();
-  const failSeen: Call[] = [];
+  const failSeen: Array<Call> = [];
   const failMail = { send: async () => { throw new Error("smtp down"); } };
   const failQuery = gate(failSeen, employer(), async (sql) => {
-    if (sql.startsWith("UPDATE company_invites") || sql.startsWith("DELETE FROM company_invites")) return { rows: [], rowCount: 1 };
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 1, 1)], rowCount: 1 };
-    if (sql.includes("FROM company_invites")) return { rows: [{ id: pendingId }], rowCount: 1 };
-    if (sql.includes("lower(") && sql.includes("email")) return empty;
+    if (sql.startsWith("UPDATE company_invites") || sql.startsWith("DELETE FROM company_invites")) {return { rows: [], rowCount: 1 };}
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 1, 1)], rowCount: 1 };}
+    if (sql.includes("FROM company_invites")) {return { rows: [{ id: pendingId }], rowCount: 1 };}
+    if (sql.includes("lower(") && sql.includes("email")) {return empty;}
     return empty;
   });
   const failed = await handle(
@@ -1203,17 +1204,17 @@ test("POST invite resends a pending invite and records the inviter on insert", a
     deps(failQuery, undefined, failMail),
   );
   assert.equal(failed.status, 502);
-  assert.equal((await failed.json() as Err).error.code, "PROVIDER_ERROR");
+  assert.equal((await readJson<Err>(failed)).error.code, "PROVIDER_ERROR");
   assert.equal(failSeen.some((call) => call.sql.startsWith("UPDATE company_invites") || call.sql.startsWith("DELETE FROM company_invites")), false);
 
   resetLimits();
-  const insertSeen: Call[] = [];
-  const insertSent: Mail[] = [];
+  const insertSeen: Array<Call> = [];
+  const insertSent: Array<Mail> = [];
   const insertQuery = gate(insertSeen, employer(), async (sql) => {
-    if (sql.startsWith("INSERT INTO company_invites")) return { rows: [], rowCount: 1 };
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 0)], rowCount: 1 };
-    if (sql.includes("FROM company_invites")) return empty;
-    if (sql.includes("lower(") && sql.includes("email")) return empty;
+    if (sql.startsWith("INSERT INTO company_invites")) {return { rows: [], rowCount: 1 };}
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 0, 0)], rowCount: 1 };}
+    if (sql.includes("FROM company_invites")) {return empty;}
+    if (sql.includes("lower(") && sql.includes("email")) {return empty;}
     return empty;
   });
   const created = await handle(
@@ -1234,17 +1235,17 @@ test("POST invite resends a pending invite and records the inviter on insert", a
   assert.equal(insert.params.includes(await sha256Hex(raw)), true);
 
   resetLimits();
-  const legacySeen: Call[] = [];
-  const legacySent: Mail[] = [];
+  const legacySeen: Array<Call> = [];
+  const legacySent: Array<Mail> = [];
   const legacy = gate(legacySeen, employer(), async (sql) => {
     if (sql.startsWith("INSERT INTO company_invites") && sql.includes("inviter_user_id")) {
       assert.equal(legacySent.length, 0);
       throw undefinedColumn("inviter_user_id");
     }
-    if (sql.startsWith("INSERT INTO company_invites")) return { rows: [], rowCount: 1 };
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 0)], rowCount: 1 };
-    if (sql.includes("FROM company_invites")) return empty;
-    if (sql.includes("lower(") && sql.includes("email")) return empty;
+    if (sql.startsWith("INSERT INTO company_invites")) {return { rows: [], rowCount: 1 };}
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 0, 0)], rowCount: 1 };}
+    if (sql.includes("FROM company_invites")) {return empty;}
+    if (sql.includes("lower(") && sql.includes("email")) {return empty;}
     return empty;
   });
   const legacyRes = await handle(
@@ -1274,16 +1275,16 @@ test("GET /companies/invites/{token} previews the invite without accepting it", 
     company_name: "푸시",
   };
   const previewQuery = (
-    seen: Call[],
-    row: Record<string, unknown> | null,
-    inviter: Record<string, unknown> | null,
+    seen: Array<Call>,
+    row: Row | null,
+    inviter: Row | null,
     expectedHash = hash,
   ): Deps["query"] => gate(seen, employer(), async (sql, params = []) => {
     if (sql.includes("token_hash")) {
       assert.equal(params[0], expectedHash);
       return row ? { rows: [row], rowCount: 1 } : empty;
     }
-    if (sql.includes("m.user_id = $2")) return inviter ? { rows: [inviter], rowCount: 1 } : empty;
+    if (sql.includes("m.user_id = $2")) {return inviter ? { rows: [inviter], rowCount: 1 } : empty;}
     if (sql.includes("m.role = 'ADMIN'") && sql.includes("display_name")) {
       return { rows: [{ display_name: "Ada", role: "ADMIN" }], rowCount: 1 };
     }
@@ -1291,7 +1292,7 @@ test("GET /companies/invites/{token} previews the invite without accepting it", 
   });
 
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(bare(`/api/v1/companies/invites/${token}`), env(), deps(previewQuery(seen, {
     ...inviteRow,
     inviter_user_id: OTHER,
@@ -1310,7 +1311,7 @@ test("GET /companies/invites/{token} previews the invite without accepting it", 
   assert.equal(seen.some((call) => call.sql.startsWith("UPDATE")), false);
 
   resetLimits();
-  const nullSeen: Call[] = [];
+  const nullSeen: Array<Call> = [];
   const nullRes = await handle(bare(`/api/v1/companies/invites/${token}`), env(), deps(previewQuery(nullSeen, {
     ...inviteRow,
     inviter_user_id: null,
@@ -1337,7 +1338,7 @@ test("GET /companies/invites/{token} previews the invite without accepting it", 
     deps(previewQuery([], null, null, await sha256Hex("missing-token"))),
   );
   assert.equal(unknown.status, 404);
-  assert.equal((await unknown.json() as Err).error.code, "NOT_FOUND");
+  assert.equal((await readJson<Err>(unknown)).error.code, "NOT_FOUND");
 });
 
 test("an expired invite says who sent it and when it ended", async () => {
@@ -1353,28 +1354,28 @@ test("an expired invite says who sent it and when it ended", async () => {
     inviter_user_id: OTHER,
   };
   type Expired = { error: { code: string; details: { reason: string; companyName: string; inviterName: string; expiresAt: string | null } } };
-  const query = (inviter: Record<string, unknown> | null, admin: Record<string, unknown> | null): Deps["query"] =>
+  const query = (inviter: Row | null, admin: Row | null): Deps["query"] =>
     gate([], employer(), async (sql) => {
       if (sql.includes("token_hash")) {
         assert.equal(sql.includes("inviter_user_id"), true);
         return { rows: [row], rowCount: 1 };
       }
-      if (sql.includes("m.user_id = $2")) return inviter ? { rows: [inviter], rowCount: 1 } : empty;
-      if (sql.includes("m.role = 'ADMIN'") && sql.includes("display_name")) return admin ? { rows: [admin], rowCount: 1 } : empty;
+      if (sql.includes("m.user_id = $2")) {return inviter ? { rows: [inviter], rowCount: 1 } : empty;}
+      if (sql.includes("m.role = 'ADMIN'") && sql.includes("display_name")) {return admin ? { rows: [admin], rowCount: 1 } : empty;}
       return empty;
     });
 
   resetLimits();
   const preview = await handle(bare(`/api/v1/companies/invites/${token}`), env(), deps(query({ display_name: "민수", role: "MEMBER" }, null)));
   assert.equal(preview.status, 404);
-  assert.deepEqual((await preview.json() as Expired).error.details, {
+  assert.deepEqual((await readJson<Expired>(preview)).error.details, {
     reason: "EXPIRED", companyName: "푸시", inviterName: "민수", expiresAt: "2020-01-01T00:00:00Z",
   });
 
   resetLimits();
   const gone = await handle(bare(`/api/v1/companies/invites/${token}`), env(), deps(query(null, null)));
   assert.equal(gone.status, 404);
-  assert.equal((await gone.json() as Expired).error.details.inviterName, "");
+  assert.equal((await readJson<Expired>(gone)).error.details.inviterName, "");
 
   resetLimits();
   const accept = await handle(
@@ -1383,7 +1384,7 @@ test("an expired invite says who sent it and when it ended", async () => {
     deps(query({ display_name: "민수", role: "ADMIN" }, null)),
   );
   assert.equal(accept.status, 404);
-  const acceptBody = await accept.json() as Expired;
+  const acceptBody = await readJson<Expired>(accept);
   assert.equal(acceptBody.error.code, "NOT_FOUND");
   assert.deepEqual(acceptBody.error.details, {
     reason: "EXPIRED", companyName: "푸시", inviterName: "민수", expiresAt: "2020-01-01T00:00:00Z",
@@ -1392,22 +1393,22 @@ test("an expired invite says who sent it and when it ended", async () => {
 
 test("RESEND_API_KEY uses the invite token as the idempotency key", async () => {
   resetLimits();
-  const seen: Call[] = [];
-  const calls: { input: RequestInfo | URL; init?: RequestInit }[] = [];
+  const seen: Array<Call> = [];
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     calls.push({ input, init });
     return new Response("{}", { status: 200 });
   }) as typeof fetch;
   const query = gate(seen, employer(), async (sql) => {
-    if (sql.startsWith("INSERT INTO company_invites")) return { rows: [], rowCount: 1 };
-    if (sql.includes("lower(") && sql.includes("email")) return empty;
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 0)], rowCount: 1 };
+    if (sql.startsWith("INSERT INTO company_invites")) {return { rows: [], rowCount: 1 };}
+    if (sql.includes("lower(") && sql.includes("email")) {return empty;}
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 0, 0)], rowCount: 1 };}
     return empty;
   });
   const original = globalThis.fetch;
   globalThis.fetch = (async () => {
     throw new Error("live fetch");
-  }) as typeof fetch;
+  });
   try {
     const res = await handle(
       post("/api/v1/companies/me/invites", { email: "m@push.app" }, "11111111-1111-4111-8111-111111111121"),
@@ -1417,7 +1418,7 @@ test("RESEND_API_KEY uses the invite token as the idempotency key", async () => 
     assert.equal(res.status, 201);
     assert.equal(calls.length, 1);
     const request = calls[0].input instanceof Request ? calls[0].input : new Request(calls[0].input, calls[0].init);
-    const body = await request.json() as { from: string; to: string; text: string };
+    const body = await readJson<{ from: string; to: string; text: string }>(request);
     assert.equal(request.url, "https://api.resend.com/emails");
     assert.equal(request.headers.get("authorization"), "Bearer re_invite_secret");
     assert.equal(body.from, "Push <no-reply@push.app>");
@@ -1431,15 +1432,15 @@ test("RESEND_API_KEY uses the invite token as the idempotency key", async () => 
 
 test("legalName is returned, patched trimmed, cleared by empty text and bounded", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = gate(seen, employer(), async (sql) => {
-    if (sql.startsWith("UPDATE companies")) return { rows: [], rowCount: 1 };
-    if (sql.includes("AS member_count")) return { rows: [{ ...profileRow(), legal_name: "주식회사 푸시" }], rowCount: 1 };
+    if (sql.startsWith("UPDATE companies")) {return { rows: [], rowCount: 1 };}
+    if (sql.includes("AS member_count")) {return { rows: [{ ...profileRow(), legal_name: "주식회사 푸시" }], rowCount: 1 };}
     return empty;
   });
   const res = await handle(patch("/api/v1/companies/me", { legalName: "  주식회사 푸시  " }), env(), deps(query));
   assert.equal(res.status, 200);
-  assert.equal((await res.json() as { data: { legalName: string } }).data.legalName, "주식회사 푸시");
+  assert.equal((await readJson<{ data: { legalName: string } }>(res)).data.legalName, "주식회사 푸시");
   const update = seen.find((call) => call.sql.startsWith("UPDATE companies"));
   assert.ok(update);
   assert.match(update.sql, /legal_name = \$2/);
@@ -1448,7 +1449,7 @@ test("legalName is returned, patched trimmed, cleared by empty text and bounded"
 
   for (const [key, value] of [["empty", "   "], ["null", null]] as const) {
     resetLimits();
-    const clearSeen: Call[] = [];
+    const clearSeen: Array<Call> = [];
     const clear = gate(clearSeen, employer(), async (sql) => sql.includes("AS member_count") ? { rows: [profileRow()], rowCount: 1 } : { rows: [], rowCount: 1 });
     const cleared = await handle(patch("/api/v1/companies/me", { legalName: value }), env(), deps(clear));
     assert.equal(cleared.status, 200, key);
@@ -1457,17 +1458,17 @@ test("legalName is returned, patched trimmed, cleared by empty text and bounded"
 
   for (const bad of ["가".repeat(121), 7]) {
     resetLimits();
-    const badSeen: Call[] = [];
+    const badSeen: Array<Call> = [];
     const rejected = await handle(patch("/api/v1/companies/me", { legalName: bad }), env(), deps(gate(badSeen, employer(), async (sql) => sql.includes("AS member_count") ? { rows: [profileRow()], rowCount: 1 } : empty)));
     assert.equal(rejected.status, 400);
     assert.equal(badSeen.some((call) => call.sql.startsWith("UPDATE companies")), false);
   }
 
   resetLimits();
-  const oldSeen: Call[] = [];
+  const oldSeen: Array<Call> = [];
   const old = gate(oldSeen, employer(), async (sql) => {
-    if (sql.startsWith("UPDATE companies") && sql.includes("legal_name")) throw undefinedColumn("legal_name");
-    if (sql.includes("AS member_count")) return { rows: [profileRow()], rowCount: 1 };
+    if (sql.startsWith("UPDATE companies") && sql.includes("legal_name")) {throw undefinedColumn("legal_name");}
+    if (sql.includes("AS member_count")) {return { rows: [profileRow()], rowCount: 1 };}
     return { rows: [], rowCount: 1 };
   });
   const fallback = await handle(patch("/api/v1/companies/me", { legalName: "푸시", industry: "SW" }), env(), deps(old));
@@ -1480,21 +1481,21 @@ test("legalName is returned, patched trimmed, cleared by empty text and bounded"
 
 test("verify stores an optional trimmed legalName and returns it", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const { fetchImpl } = ntsFetch("01", "01");
   const query = gate(seen, employer(), async (sql) => sql.startsWith("INSERT INTO") ? { rows: [], rowCount: 1 } : empty);
   const res = await handle(post("/api/v1/companies/verify", { ...VERIFY, legalName: " 주식회사 푸시 " }, "11111111-1111-4111-8111-111111111f01"), env(), deps(query, fetchImpl));
   assert.equal(res.status, 201);
-  assert.equal((await res.json() as { data: { legalName: string } }).data.legalName, "주식회사 푸시");
+  assert.equal((await readJson<{ data: { legalName: string } }>(res)).data.legalName, "주식회사 푸시");
   const insert = seen.find((call) => call.sql.startsWith("INSERT INTO companies"));
   assert.ok(insert);
   assert.match(insert.sql, /legal_name/);
   assert.equal(insert.params.includes("주식회사 푸시"), true);
 
   resetLimits();
-  const oldSeen: Call[] = [];
+  const oldSeen: Array<Call> = [];
   const old = gate(oldSeen, employer(), async (sql) => {
-    if (sql.startsWith("INSERT INTO companies") && sql.includes("legal_name")) throw undefinedColumn("legal_name");
+    if (sql.startsWith("INSERT INTO companies") && sql.includes("legal_name")) {throw undefinedColumn("legal_name");}
     return sql.startsWith("INSERT INTO") ? { rows: [], rowCount: 1 } : empty;
   });
   const fallback = await handle(post("/api/v1/companies/verify", { ...VERIFY, legalName: "푸시" }, "11111111-1111-4111-8111-111111111f02"), env(), deps(old, ntsFetch("01", "01").fetchImpl));
@@ -1513,14 +1514,14 @@ const LIVE_SENT_DAYS_AGO = "2026-10-25T00:00:00.000Z";
 
 test("POST /companies/me/invites/{id}/resend claims the seat and cooldown in one UPDATE, then mails the new link", async () => {
   resetLimits();
-  const seen: Call[] = [];
-  const sent: Mail[] = [];
+  const seen: Array<Call> = [];
+  const sent: Array<Mail> = [];
   const query = gate(seen, employer(), async (sql) => {
     if (sql.startsWith("UPDATE company_invites")) {
       assert.equal(sent.length, 0);
       return { rows: [], rowCount: 1 };
     }
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };}
     if (sql.startsWith("SELECT id, email, token_hash, expires_at FROM company_invites")) {
       return { rows: [{ id: INVITE_ID, email: "m@push.app", token_hash: "old", expires_at: "2020-01-01T00:00:00.000Z" }], rowCount: 1 };
     }
@@ -1546,11 +1547,11 @@ test("POST /companies/me/invites/{id}/resend claims the seat and cooldown in one
   assert.deepEqual(update.params, [INVITE_ID, COMPANY, await sha256Hex(token), WEEK, cutoff, NOW.toISOString(), 2, USER]);
 
   resetLimits();
-  const failSeen: Call[] = [];
+  const failSeen: Array<Call> = [];
   const failQuery = gate(failSeen, employer(), async (sql) => {
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };
-    if (sql.startsWith("UPDATE company_invites")) return { rows: [], rowCount: 1 };
-    if (sql.includes("FROM company_invites")) return { rows: [{ id: INVITE_ID, email: "m@push.app", token_hash: "old", expires_at: SENT_LONG_AGO }], rowCount: 1 };
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };}
+    if (sql.startsWith("UPDATE company_invites")) {return { rows: [], rowCount: 1 };}
+    if (sql.includes("FROM company_invites")) {return { rows: [{ id: INVITE_ID, email: "m@push.app", token_hash: "old", expires_at: SENT_LONG_AGO }], rowCount: 1 };}
     return empty;
   });
   const failed = await handle(
@@ -1564,53 +1565,53 @@ test("POST /companies/me/invites/{id}/resend claims the seat and cooldown in one
   assert.deepEqual(updates[1].params, [INVITE_ID, "old", SENT_LONG_AGO]);
 
   resetLimits();
-  const fullSeen: Call[] = [];
+  const fullSeen: Array<Call> = [];
   const full = gate(fullSeen, employer(), async (sql) => {
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 1, 1)], rowCount: 1 };
-    if (sql.startsWith("UPDATE company_invites")) return { rows: [], rowCount: 0 };
-    if (sql.includes("FROM company_invites")) return { rows: [{ id: INVITE_ID, email: "m@push.app", token_hash: "old", expires_at: "2020-01-01T00:00:00.000Z" }], rowCount: 1 };
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 1, 1)], rowCount: 1 };}
+    if (sql.startsWith("UPDATE company_invites")) {return { rows: [], rowCount: 0 };}
+    if (sql.includes("FROM company_invites")) {return { rows: [{ id: INVITE_ID, email: "m@push.app", token_hash: "old", expires_at: "2020-01-01T00:00:00.000Z" }], rowCount: 1 };}
     return empty;
   });
-  const sentFull: Mail[] = [];
+  const sentFull: Array<Mail> = [];
   const limited = await handle(post(`/api/v1/companies/me/invites/${INVITE_ID}/resend`, {}, "11111111-1111-4111-8111-111111111f13"), env(), deps(full, undefined, { send: async (mail) => { sentFull.push(mail); } }));
   assert.equal(limited.status, 403);
-  assert.equal((await limited.json() as Err).error.code, "SEAT_LIMIT");
+  assert.equal((await readJson<Err>(limited)).error.code, "SEAT_LIMIT");
   assert.equal(sentFull.length, 0);
   assert.equal(fullSeen.filter((call) => call.sql.startsWith("UPDATE company_invites")).length, 1);
 
   resetLimits();
-  const raceSeen: Call[] = [];
+  const raceSeen: Array<Call> = [];
   const race = gate(raceSeen, employer(), async (sql) => {
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };
-    if (sql.startsWith("UPDATE company_invites")) return { rows: [], rowCount: 0 };
-    if (sql.includes("FROM company_invites")) return { rows: [{ id: INVITE_ID, email: "m@push.app", token_hash: "old", expires_at: LIVE_SENT_DAYS_AGO }], rowCount: 1 };
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };}
+    if (sql.startsWith("UPDATE company_invites")) {return { rows: [], rowCount: 0 };}
+    if (sql.includes("FROM company_invites")) {return { rows: [{ id: INVITE_ID, email: "m@push.app", token_hash: "old", expires_at: LIVE_SENT_DAYS_AGO }], rowCount: 1 };}
     return empty;
   });
   const raced = await handle(post(`/api/v1/companies/me/invites/${INVITE_ID}/resend`, {}, "11111111-1111-4111-8111-111111111f17"), env(), deps(race, undefined, { send: async () => {} }));
   assert.equal(raced.status, 429);
-  assert.deepEqual((await raced.json() as Err).error.details, { retryAfterSec: 60 });
+  assert.deepEqual((await readJson<Err>(raced)).error.details, { retryAfterSec: 60 });
 
   resetLimits();
-  const coolSeen: Call[] = [];
+  const coolSeen: Array<Call> = [];
   const justSent = new Date(NOW.getTime() + 7 * 24 * 60 * 60 * 1000 - 20 * 1000).toISOString();
   const cool = gate(coolSeen, employer(), async (sql) => {
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };
-    if (sql.includes("FROM company_invites")) return { rows: [{ id: INVITE_ID, email: "m@push.app", token_hash: "old", expires_at: justSent }], rowCount: 1 };
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };}
+    if (sql.includes("FROM company_invites")) {return { rows: [{ id: INVITE_ID, email: "m@push.app", token_hash: "old", expires_at: justSent }], rowCount: 1 };}
     return empty;
   });
   const hot = await handle(post(`/api/v1/companies/me/invites/${INVITE_ID}/resend`, {}, "11111111-1111-4111-8111-111111111f18"), env(), deps(cool, undefined, { send: async () => { throw new Error("must not mail"); } }));
   assert.equal(hot.status, 429);
   assert.equal(hot.headers.get("retry-after"), "40");
-  assert.deepEqual((await hot.json() as Err).error.details, { retryAfterSec: 40 });
+  assert.deepEqual((await readJson<Err>(hot)).error.details, { retryAfterSec: 40 });
   assert.equal(coolSeen.some((call) => call.sql.startsWith("UPDATE company_invites")), false);
 
   resetLimits();
-  const oldSeen: Call[] = [];
+  const oldSeen: Array<Call> = [];
   const old = gate(oldSeen, employer(), async (sql) => {
-    if (sql.startsWith("UPDATE company_invites") && sql.includes("inviter_user_id")) throw undefinedColumn("inviter_user_id");
-    if (sql.startsWith("UPDATE company_invites")) return { rows: [], rowCount: 1 };
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };
-    if (sql.includes("FROM company_invites")) return { rows: [{ id: INVITE_ID, email: "m@push.app", token_hash: "old", expires_at: SENT_LONG_AGO }], rowCount: 1 };
+    if (sql.startsWith("UPDATE company_invites") && sql.includes("inviter_user_id")) {throw undefinedColumn("inviter_user_id");}
+    if (sql.startsWith("UPDATE company_invites")) {return { rows: [], rowCount: 1 };}
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };}
+    if (sql.includes("FROM company_invites")) {return { rows: [{ id: INVITE_ID, email: "m@push.app", token_hash: "old", expires_at: SENT_LONG_AGO }], rowCount: 1 };}
     return empty;
   });
   const legacy = await handle(post(`/api/v1/companies/me/invites/${INVITE_ID}/resend`, {}, "11111111-1111-4111-8111-111111111f19"), env(), deps(old, undefined, { send: async () => {} }));
@@ -1622,7 +1623,7 @@ test("POST /companies/me/invites/{id}/resend claims the seat and cooldown in one
   const gone = gate([], employer(), async (sql) => sql.includes("AS member_count") ? { rows: [seat("PRO", "ADMIN", 0, 0)], rowCount: 1 } : empty);
   const missing = await handle(post(`/api/v1/companies/me/invites/${INVITE_ID}/resend`, {}, "11111111-1111-4111-8111-111111111f14"), env(), deps(gone, undefined, { send: async () => {} }));
   assert.equal(missing.status, 404);
-  assert.equal((await missing.json() as Err).error.code, "NOT_FOUND");
+  assert.equal((await readJson<Err>(missing)).error.code, "NOT_FOUND");
 
   resetLimits();
   const bad = await handle(post("/api/v1/companies/me/invites/not-a-uuid/resend", {}, "11111111-1111-4111-8111-111111111f15"), env(), deps(gone, undefined, { send: async () => {} }));
@@ -1636,10 +1637,10 @@ test("POST /companies/me/invites/{id}/resend claims the seat and cooldown in one
 
 test("DELETE /companies/me/invites/{id} removes an unaccepted invite of my company", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = gate(seen, employer(), async (sql) => {
-    if (sql.includes("AS member_count")) return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };
-    if (sql.startsWith("DELETE FROM company_invites")) return { rows: [], rowCount: 1 };
+    if (sql.includes("AS member_count")) {return { rows: [seat("PRO", "ADMIN", 0, 1)], rowCount: 1 };}
+    if (sql.startsWith("DELETE FROM company_invites")) {return { rows: [], rowCount: 1 };}
     return empty;
   });
   const res = await handle(del(`/api/v1/companies/me/invites/${INVITE_ID}`), env(), deps(query));
@@ -1654,7 +1655,7 @@ test("DELETE /companies/me/invites/{id} removes an unaccepted invite of my compa
   const none = gate([], employer(), async (sql) => sql.includes("AS member_count") ? { rows: [seat("PRO", "ADMIN", 0, 0)], rowCount: 1 } : empty);
   const missing = await handle(del(`/api/v1/companies/me/invites/${INVITE_ID}`), env(), deps(none));
   assert.equal(missing.status, 404);
-  assert.equal((await missing.json() as Err).error.code, "NOT_FOUND");
+  assert.equal((await readJson<Err>(missing)).error.code, "NOT_FOUND");
 
   resetLimits();
   const memberQuery = gate([], employer(), async (sql) => sql.includes("AS member_count") ? { rows: [seat("PRO", "MEMBER", 1, 0)], rowCount: 1 } : empty);
@@ -1675,18 +1676,18 @@ test("invite preview and accept errors carry details.reason", async () => {
     inviter_user_id: null,
     company_name: "푸시",
   };
-  const run = async (kind: "preview" | "accept", row: Record<string, unknown> | null, extra: { email?: string; member?: boolean; claim?: boolean } = {}) => {
+  const run = async (kind: "preview" | "accept", row: Row | null, extra: { email?: string; member?: boolean; claim?: boolean } = {}) => {
     resetLimits();
     const query = gate([], employer({ email: extra.email ?? "ada@push.app" }), async (sql) => {
-      if (sql.includes("token_hash")) return row ? { rows: [row], rowCount: 1 } : empty;
-      if (sql.includes("FROM company_members") && sql.includes("user_id = $1")) return extra.member ? { rows: [{ company_id: COMPANY }], rowCount: 1 } : empty;
-      if (sql.includes("INSERT INTO company_members")) return extra.claim === false ? empty : { rows: [{ company_id: COMPANY }], rowCount: 1 };
+      if (sql.includes("token_hash")) {return row ? { rows: [row], rowCount: 1 } : empty;}
+      if (sql.includes("FROM company_members") && sql.includes("user_id = $1")) {return extra.member ? { rows: [{ company_id: COMPANY }], rowCount: 1 } : empty;}
+      if (sql.includes("INSERT INTO company_members")) {return extra.claim === false ? empty : { rows: [{ company_id: COMPANY }], rowCount: 1 };}
       return empty;
     });
     const res = kind === "preview"
       ? await handle(bare(`/api/v1/companies/invites/${token}`), env(), deps(query))
       : await handle(post(`/api/v1/companies/invites/${token}/accept`, {}, "11111111-1111-4111-8111-111111111f21"), env(), deps(query));
-    const body = await res.json() as { error?: { details: Record<string, string> | null } };
+    const body = await readJson<{ error?: { details: Record<string, string> | null } }>(res);
     return { status: res.status, details: body.error?.details };
   };
   const expired = { ...base, expires_at: "2020-01-01T00:00:00.000Z" };

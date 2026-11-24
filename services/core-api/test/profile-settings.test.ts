@@ -1,22 +1,27 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import type { QueryResult } from "../src/db.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
+import type { JsonObject } from "../src/json.ts";
 import { resetLimits } from "../src/ratelimit.ts";
+
+const jsonOf = <T>(res: Response): Promise<T> => res.json();
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const OTHER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const NOW = "2026-10-21T00:00:00.000Z";
 
-type Call = { sql: string; params: unknown[] };
+type Call = { sql: string; params: Array<unknown> };
 
 const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
 const deps = (query: Deps["query"]): Deps => ({ query, now: () => new Date(NOW) });
-const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
+const empty: QueryResult = { rows: [], rowCount: 0 };
 
-const authed = (seen: Call[], extra: Deps["query"]): Deps["query"] => async (sql, params = []) => {
+const authed = (seen: Array<Call>, extra: Deps["query"]): Deps["query"] => async (sql, params = []) => {
   seen.push({ sql, params });
-  if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
   if (sql.includes("access_tokens")) {
     return {
       rows: [{
@@ -27,8 +32,8 @@ const authed = (seen: Call[], extra: Deps["query"]): Deps["query"] => async (sql
       rowCount: 1,
     };
   }
-  if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "1" }], rowCount: 1 };
-  if (sql.includes("idempotency_keys")) return empty;
+  if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {return { rows: [{ id: "1" }], rowCount: 1 };}
+  if (sql.includes("idempotency_keys")) {return empty;}
   if (sql.includes("is_employer") && sql.includes("FROM users") && !sql.includes("access_tokens")) {
     return { rows: [{ is_employer: false }], rowCount: 1 };
   }
@@ -57,7 +62,7 @@ test("auth me adds email, provider, and plan", async () => {
   resetLimits();
   const res = await handle(get("/api/v1/auth/me"), env(), deps(authed([], async () => empty)));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { email: string; provider: string; plan: string } };
+  const body = await jsonOf<{ data: { email: string; provider: string; plan: string } }>(res);
   assert.equal(body.data.email, "ada@push.app");
   assert.equal(body.data.provider, "email");
   assert.equal(body.data.plan, "PRO");
@@ -65,14 +70,14 @@ test("auth me adds email, provider, and plan", async () => {
 
 test("settings omit retired effort and retention fields", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(get("/api/v1/me/settings"), env(), deps(authed(seen, async (sql) => {
-    if (sql.includes("INSERT INTO user_settings")) return empty;
-    if (sql.includes("user_settings")) return { rows: [settingsRow()], rowCount: 1 };
+    if (sql.includes("INSERT INTO user_settings")) {return empty;}
+    if (sql.includes("user_settings")) {return { rows: [settingsRow()], rowCount: 1 };}
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: Record<string, unknown> };
+  const body = await jsonOf<{ data: JsonObject }>(res);
   assert.equal("defaultEffort" in body.data, false);
   assert.equal("confirmBeforeEdit" in body.data, false);
   assert.equal("chatRetentionDays" in body.data, false);
@@ -82,15 +87,15 @@ test("settings omit retired effort and retention fields", async () => {
   assert.doesNotMatch(select?.sql ?? "", /default_effort|confirm_before_edit|chat_retention_days/);
 
   resetLimits();
-  const patchedSeen: Call[] = [];
+  const patchedSeen: Array<Call> = [];
   const patched = await handle(patch("/api/v1/me/settings", {
     defaultEffort: "HIGH",
     confirmBeforeEdit: false,
     chatRetentionDays: 7,
     aiAccessMode: "BYPASS",
   }), env(), deps(authed(patchedSeen, async (sql) => {
-    if (sql.includes("INSERT INTO user_settings")) return empty;
-    if (sql.includes("user_settings") || sql.includes("FROM users")) return { rows: [settingsRow()], rowCount: 1 };
+    if (sql.includes("INSERT INTO user_settings")) {return empty;}
+    if (sql.includes("user_settings") || sql.includes("FROM users")) {return { rows: [settingsRow()], rowCount: 1 };}
     return empty;
   })));
   assert.equal(patched.status, 200);
@@ -102,10 +107,10 @@ test("settings omit retired effort and retention fields", async () => {
 
 test("profile returns followingCount and postCount from the follow and post tables", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(get("/api/v1/me/profile"), env(), deps(authed(seen, async (sql) => {
-    if (sql.includes("INSERT INTO profiles")) return empty;
-    if (sql.includes("SELECT email FROM users")) return { rows: [{ email: "ada@push.app" }], rowCount: 1 };
+    if (sql.includes("INSERT INTO profiles")) {return empty;}
+    if (sql.includes("SELECT email FROM users")) {return { rows: [{ email: "ada@push.app" }], rowCount: 1 };}
     if (sql.includes("FROM profiles")) {
       return {
         rows: [{
@@ -118,7 +123,7 @@ test("profile returns followingCount and postCount from the follow and post tabl
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { followerCount: number; followingCount: number; postCount: number } };
+  const body = await jsonOf<{ data: { followerCount: number; followingCount: number; postCount: number } }>(res);
   assert.equal(body.data.followerCount, 2);
   assert.equal(body.data.followingCount, 4);
   assert.equal(body.data.postCount, 7);
@@ -130,8 +135,8 @@ test("profile returns followingCount and postCount from the follow and post tabl
 test("profile contact follows the visibility setting", async () => {
   resetLimits();
   const self = await handle(get("/api/v1/me/profile"), env(), deps(authed([], async (sql) => {
-    if (sql.includes("INSERT INTO profiles")) return empty;
-    if (sql.includes("SELECT email FROM users")) return { rows: [{ email: "ada@push.app" }], rowCount: 1 };
+    if (sql.includes("INSERT INTO profiles")) {return empty;}
+    if (sql.includes("SELECT email FROM users")) {return { rows: [{ email: "ada@push.app" }], rowCount: 1 };}
     if (sql.includes("FROM profiles")) {
       return {
         rows: [{
@@ -144,11 +149,11 @@ test("profile contact follows the visibility setting", async () => {
     return empty;
   })));
   assert.equal(self.status, 200);
-  assert.equal((await self.json() as { data: { contact: string | null } }).data.contact, "010");
+  assert.equal((await jsonOf<{ data: { contact: string | null } }>(self)).data.contact, "010");
 
   resetLimits();
   const hidden = await handle(get(`/api/v1/profiles/${OTHER}`), env(), deps(authed([], async (sql) => {
-    if (sql.includes("SELECT email FROM users")) return { rows: [{ email: "ada@push.app" }], rowCount: 1 };
+    if (sql.includes("SELECT email FROM users")) {return { rows: [{ email: "ada@push.app" }], rowCount: 1 };}
     if (sql.includes("FROM profiles")) {
       return {
         rows: [{
@@ -161,11 +166,11 @@ test("profile contact follows the visibility setting", async () => {
     return empty;
   })));
   assert.equal(hidden.status, 200);
-  assert.equal((await hidden.json() as { data: { contact: string | null } }).data.contact, null);
+  assert.equal((await jsonOf<{ data: { contact: string | null } }>(hidden)).data.contact, null);
 
   resetLimits();
   const open = await handle(get(`/api/v1/profiles/${OTHER}`), env(), deps(authed([], async (sql) => {
-    if (sql.includes("SELECT email FROM users")) return { rows: [{ email: "" }], rowCount: 1 };
+    if (sql.includes("SELECT email FROM users")) {return { rows: [{ email: "" }], rowCount: 1 };}
     if (sql.includes("FROM profiles")) {
       return {
         rows: [{
@@ -177,11 +182,11 @@ test("profile contact follows the visibility setting", async () => {
     }
     return empty;
   })));
-  assert.equal((await open.json() as { data: { contact: string | null } }).data.contact, "010");
+  assert.equal((await jsonOf<{ data: { contact: string | null } }>(open)).data.contact, "010");
 
   resetLimits();
   const followed = await handle(get(`/api/v1/profiles/${OTHER}`), env(), deps(authed([], async (sql) => {
-    if (sql.includes("SELECT email FROM users")) return empty;
+    if (sql.includes("SELECT email FROM users")) {return empty;}
     if (sql.includes("FROM profiles")) {
       return {
         rows: [{
@@ -193,11 +198,11 @@ test("profile contact follows the visibility setting", async () => {
     }
     return empty;
   })));
-  assert.equal((await followed.json() as { data: { contact: string | null } }).data.contact, "010");
+  assert.equal((await jsonOf<{ data: { contact: string | null } }>(followed)).data.contact, "010");
 
   resetLimits();
   const accepted = await handle(get(`/api/v1/profiles/${OTHER}`), env(), deps(authed([], async (sql) => {
-    if (sql.includes("SELECT email FROM users")) return empty;
+    if (sql.includes("SELECT email FROM users")) {return empty;}
     if (sql.includes("FROM profiles")) {
       return {
         rows: [{
@@ -209,7 +214,7 @@ test("profile contact follows the visibility setting", async () => {
     }
     return empty;
   })));
-  assert.equal((await accepted.json() as { data: { contact: string | null } }).data.contact, "010");
+  assert.equal((await jsonOf<{ data: { contact: string | null } }>(accepted)).data.contact, "010");
   const acceptedSql = "";
   assert.equal(acceptedSql, "");
 });

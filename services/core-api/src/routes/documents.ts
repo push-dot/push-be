@@ -1,11 +1,11 @@
 import { strictBody, strictObject } from "../body.ts";
+import type { DbValue, QueryResult } from "../db.ts";
 import { isMissingRelation, one, query } from "../db.ts";
 import { searchFields } from "../hangul.ts";
-import {
-  blocksOf, codePointSlice, computeQuality, hunkEdits, qualityOf, replaced, validateDocumentContent,
-  type Block,
-} from "../document-content.ts";
+import { blocksOf, codePointSlice, computeQuality, hunkEdits, qualityOf, replaced, validateDocumentContent } from '../document-content.ts';
+import type { Block, Quality } from '../document-content.ts';
 import { HttpError, data, fieldError, hashJson, pageBody, parseUuid, randomToken, requireUuid, sha256Hex } from "../http.ts";
+import type { JsonObject } from "../json.ts";
 import { enqueueIngest } from "../jobs/ingest.ts";
 import { listPage, pageOf, pageResult, ts } from "../page.ts";
 import { httpsUrl, unprocessable } from "./recruiting-shared.ts";
@@ -16,11 +16,17 @@ const VERSION_COLS = "id, user_id, document_id, application_id, number, content,
 const PROPOSAL_COLS = "id, user_id, document_id, source_version_id, source_revision, selection, replacement, evidence_refs, claim_status, applied_at, created_at";
 const EXPORT_COLS = "id, user_id, document_id, version_id, format, template, language, content, blocks, content_hash, status, renderer_version, result, created_at, updated_at";
 const KINDS = new Set(["RESUME", "PORTFOLIO", "COVER_LETTER", "CAREER_STATEMENT", "HUB_PROFILE"]);
-const TEMPLATE_ALIASES: Record<string, string> = { CLASSIC: "SIMPLE", COMPACT: "ATS" };
+const TEMPLATE_ALIASES = new Map([["CLASSIC", "SIMPLE"], ["COMPACT", "ATS"]]);
 const TEMPLATES = new Set(["SIMPLE", "MODERN", "CREATIVE", "ATS", "CLASSIC", "COMPACT"]);
 const TEMPLATE_MESSAGE = "must be SIMPLE, MODERN, CREATIVE, ATS, CLASSIC or COMPACT";
 
-type Row = Record<string, unknown>;
+type Row = QueryResult["rows"][number];
+type Values = Awaited<ReturnType<typeof strictBody>>["values"];
+/** What a jsonb column or a JSON text holds once read. */
+type Stored = string | number | boolean | object | null;
+
+const nil = (value: unknown): value is null | undefined => value === null || value === undefined;
+const isRow = (value: unknown): value is Row => typeof value === "object" && value !== null && !Array.isArray(value);
 
 const notFound = (): HttpError => new HttpError(404, "NOT_FOUND", "resource not found");
 const conflict = (current: unknown): HttpError => new HttpError(409, "REVISION_CONFLICT", "resource was modified", { currentRevision: Number(current) });
@@ -28,9 +34,9 @@ const transition = (message: string): HttpError => new HttpError(409, "INVALID_T
 const approvalRequired = (message: string): HttpError => new HttpError(409, "APPROVAL_REQUIRED", message);
 const approvalStale = (message: string): HttpError => new HttpError(409, "APPROVAL_STALE", message);
 const len = (value: string): number => Array.from(value).length;
-const str = (value: unknown): string | null => (value == null ? null : String(value));
+const str = (value: unknown): string | null => (nil(value) ? null : String(value));
 
-const documentDto = (row: Row): Row => ({
+const documentDto = (row: Row) => ({
   id: String(row.id),
   revision: Number(row.revision),
   applicationId: str(row.application_id),
@@ -46,13 +52,19 @@ const documentDto = (row: Row): Row => ({
 });
 
 /** Archived list rows only. purgeAt is updated_at plus the 30-day retention window. */
-const archivedDocumentDto = (row: Row): Row => ({
+const archivedDocumentDto = (row: Row) => ({
   ...documentDto(row),
   archivedAt: ts(row.updated_at),
   purgeAt: ts(row.purge_at),
 });
 
-const versionDto = (row: Row): Row => ({
+/** A version as saveVersion builds it: content, blocks and quality are typed values, not yet a stored row. */
+interface FreshVersion {
+  id: string; document_id: string; application_id: DbValue; number: number;
+  content: unknown; blocks: Array<Block>; change_note: string; quality: Quality; created_at: string | null;
+}
+
+const versionDto = (row: Row | FreshVersion) => ({
   id: String(row.id),
   documentId: String(row.document_id),
   applicationId: str(row.application_id),
@@ -64,22 +76,23 @@ const versionDto = (row: Row): Row => ({
   createdAt: ts(row.created_at),
 });
 
-const exportResultOf = (value: unknown): Row | null => {
-  if (!value || typeof value !== "object") return null;
-  const r = value as Row;
-  const v = (r.validation && typeof r.validation === "object" ? r.validation : {}) as Row;
+const exportResultOf = (value: unknown): JsonObject | null => {
+  if (!isRow(value)) {return null;}
+  const r = value;
+  const v: Row = isRow(r.validation) ? r.validation : {};
   const pageCount = r.pageCount ?? r.page_count;
   const errorCode = r.errorCode ?? r.error_code;
-  return {
+  const result: JsonObject = {
     sha256: String(r.sha256),
     byteLength: Number(r.byteLength ?? r.byte_length),
-    ...(pageCount == null ? {} : { pageCount: Number(pageCount) }),
-    validation: { koreanText: Boolean(v.koreanText ?? v.korean_text), links: Boolean(v.links), atsText: Boolean(v.atsText ?? v.ats_text) },
-    ...(errorCode == null ? {} : { errorCode: String(errorCode) }),
   };
+  if (!nil(pageCount)) {result.pageCount = Number(pageCount);}
+  result.validation = { koreanText: Boolean(v.koreanText ?? v.korean_text), links: Boolean(v.links), atsText: Boolean(v.atsText ?? v.ats_text) };
+  if (!nil(errorCode)) {result.errorCode = String(errorCode);}
+  return result;
 };
 
-const exportDto = (row: Row): Row => ({
+const exportDto = (row: Row) => ({
   id: String(row.id),
   documentId: String(row.document_id),
   versionId: String(row.version_id),
@@ -99,13 +112,13 @@ const exportDto = (row: Row): Row => ({
 
 const loadDocument = async (ctx: Ctx, id: string): Promise<Row> => {
   const row = await one(ctx.deps.query, `SELECT ${DOC_COLS} FROM documents WHERE id = $1 AND user_id = $2`, [id, ctx.user.id]);
-  if (!row) throw notFound();
+  if (!row) {throw notFound();}
   return row;
 };
 
 /** Archived documents take no new work: writes, shares, exports, AI jobs, submission drafts, chat context. */
 export const rejectArchived = (row: Row | null | undefined): void => {
-  if (row?.status === "ARCHIVED") throw transition("document is archived");
+  if (row?.status === "ARCHIVED") {throw transition("document is archived");}
 };
 
 /** `_get_mutable`: archived documents take no writes. */
@@ -118,18 +131,18 @@ const loadMutable = async (ctx: Ctx, id: string): Promise<Row> => {
 const loadVersion = async (ctx: Ctx, docId: string, versionId: string): Promise<Row> => {
   const row = await one(ctx.deps.query, `SELECT ${VERSION_COLS} FROM document_versions WHERE id = $1 AND user_id = $2 AND document_id = $3`,
     [versionId, ctx.user.id, docId]);
-  if (!row) throw notFound();
+  if (!row) {throw notFound();}
   return row;
 };
 
 const failedUpdate = async (ctx: Ctx, table: string, id: string): Promise<never> => {
   const current = await one(ctx.deps.query, `SELECT revision FROM ${table} WHERE id = $1 AND user_id = $2`, [id, ctx.user.id]);
-  if (!current) throw notFound();
+  if (!current) {throw notFound();}
   throw conflict(current.revision);
 };
 
 /** `_verify_blocks`: sets each block's claim status; returns evidence ids in first-seen order. */
-const verifyBlocks = async (ctx: Ctx, blocks: Block[]): Promise<string[]> => {
+const verifyBlocks = async (ctx: Ctx, blocks: Array<Block>): Promise<Array<string>> => {
   const wanted = [...new Set(blocks.flatMap((b) => b.evidenceRefs.map((ref) => ref.evidenceId)))];
   const rows = wanted.length
     ? (await query(ctx.deps.query,
@@ -146,12 +159,12 @@ const verifyBlocks = async (ctx: Ctx, blocks: Block[]): Promise<string[]> => {
     let status = "SUPPORTED";
     for (const ref of b.evidenceRefs) {
       const e = evidence.get(ref.evidenceId);
-      if (!e) throw fieldError("blocks", "evidence " + ref.evidenceId + " not found");
+      if (!e) {throw fieldError("blocks", "evidence " + ref.evidenceId + " not found");}
       seen.add(ref.evidenceId);
-      if (e.archived) throw fieldError("blocks", "evidence " + ref.evidenceId + " is archived");
+      if (e.archived) {throw fieldError("blocks", "evidence " + ref.evidenceId + " is archived");}
       const span = codePointSlice(String(e.source_text), ref.start, ref.end);
-      if (span === null) throw fieldError("blocks", "evidenceRef range out of bounds for " + ref.evidenceId);
-      if (!span || !b.text.includes(span)) status = "NEEDS_REVIEW";
+      if (span === null) {throw fieldError("blocks", "evidenceRef range out of bounds for " + ref.evidenceId);}
+      if (!span || !b.text.includes(span)) {status = "NEEDS_REVIEW";}
     }
     b.claimStatus = status;
   }
@@ -163,9 +176,9 @@ const verifyBlocks = async (ctx: Ctx, blocks: Block[]): Promise<string[]> => {
  * document to it in one statement, guarded by the document revision.
  */
 const saveVersion = async (
-  ctx: Ctx, doc: Row, expected: number, content: unknown, blocks: Block[], note: string,
+  ctx: Ctx, doc: Row, expected: number, content: unknown, blocks: Array<Block>, note: string,
   extra?: { proposalId: string },
-): Promise<{ document: Row; version: Row }> => {
+): Promise<{ document: ReturnType<typeof documentDto>; version: ReturnType<typeof versionDto> }> => {
   validateDocumentContent(content, blocks);
   await verifyBlocks(ctx, blocks);
   const quality = computeQuality(blocks);
@@ -183,7 +196,7 @@ const saveVersion = async (
      SELECT number FROM ins`,
     [docId, ctx.user.id, versionId, now, expected, doc.application_id ?? null, JSON.stringify(content), JSON.stringify(blocks),
       note, JSON.stringify(quality), extra?.proposalId ?? null]);
-  if (!saved) await failedUpdate(ctx, "documents", docId);
+  if (!saved) {await failedUpdate(ctx, "documents", docId);}
   await enqueueIngest(ctx, { documentId: docId });
   const document = {
     ...doc, revision: expected + 1, latest_version_id: versionId, finalized_version_id: null,
@@ -196,13 +209,13 @@ const saveVersion = async (
   return { document: documentDto(document), version: versionDto(version) };
 };
 
-const blockInputs = (value: unknown): Block[] => {
-  if (value === undefined) return [];
-  if (!Array.isArray(value)) throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
+const blockInputs = (value: unknown): Array<Block> => {
+  if (value === undefined) {return [];}
+  if (!Array.isArray(value)) {throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");}
   return value.map((raw) => {
     const b = strictObject(raw, { id: { kind: "str", required: true }, text: { kind: "str", required: true }, evidenceRefs: { kind: "any" } }).values;
     const refs = b.evidenceRefs === undefined ? [] : b.evidenceRefs;
-    if (!Array.isArray(refs)) throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
+    if (!Array.isArray(refs)) {throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");}
     return {
       id: String(b.id),
       text: String(b.text),
@@ -215,15 +228,15 @@ const blockInputs = (value: unknown): Block[] => {
   });
 };
 
-const listFilters = (ctx: Ctx): { applicationId: string | null; kind: string | null } => {
+const listFilters = (ctx: Ctx) => {
   const appRaw = ctx.url.searchParams.get("applicationId");
   let applicationId: string | null = null;
   if (appRaw) {
     applicationId = parseUuid(appRaw);
-    if (!applicationId) throw fieldError("applicationId", "must be a UUID");
+    if (!applicationId) {throw fieldError("applicationId", "must be a UUID");}
   }
   const kind = ctx.url.searchParams.get("kind") || null;
-  if (kind !== null && !KINDS.has(kind)) throw fieldError("kind", "unsupported kind");
+  if (kind !== null && !KINDS.has(kind)) {throw fieldError("kind", "unsupported kind");}
   return { applicationId, kind };
 };
 
@@ -232,9 +245,9 @@ const listArchivedDocuments = async (ctx: Ctx): Promise<Response> => {
   const page = pageOf(ctx.url);
   const { applicationId, kind } = listFilters(ctx);
   const where = ["user_id = $1", "status = 'ARCHIVED'", "updated_at > now() - interval '30 days'"];
-  const params: unknown[] = [ctx.user.id];
+  const params: Array<unknown> = [ctx.user.id];
   for (const [value, column] of [[applicationId, "application_id"], [kind, "kind"]] as const) {
-    if (value === null) continue;
+    if (value === null) {continue;}
     params.push(value);
     where.push(`${column} = $${params.length}`);
   }
@@ -252,14 +265,14 @@ const listArchivedDocuments = async (ctx: Ctx): Promise<Response> => {
 
 export const listDocuments = async (ctx: Ctx): Promise<Response> => {
   const archived = ctx.url.searchParams.get("archived");
-  if (archived !== null && archived !== "0" && archived !== "1") throw fieldError("archived", "must be 0 or 1");
-  if (archived === "1") return listArchivedDocuments(ctx);
+  if (archived !== null && archived !== "0" && archived !== "1") {throw fieldError("archived", "must be 0 or 1");}
+  if (archived === "1") {return listArchivedDocuments(ctx);}
   const page = pageOf(ctx.url);
   const { applicationId, kind } = listFilters(ctx);
   const where = ["user_id = $1", "status <> 'ARCHIVED'"];
-  const params: unknown[] = [ctx.user.id];
+  const params: Array<unknown> = [ctx.user.id];
   for (const [value, column] of [[applicationId, "application_id"], [kind, "kind"]] as const) {
-    if (value === null) continue;
+    if (value === null) {continue;}
     params.push(value);
     where.push(`${column} = $${params.length}`);
   }
@@ -275,17 +288,17 @@ export const createDocument = async (ctx: Ctx): Promise<Response> => {
     language: { kind: "str", required: true },
   });
   const applicationId = values.applicationId ?? null;
-  if (applicationId !== null && !await one(ctx.deps.query, "SELECT id FROM applications WHERE id = $1 AND user_id = $2", [applicationId, ctx.user.id])) throw notFound();
+  if (applicationId !== null && !await one(ctx.deps.query, "SELECT id FROM applications WHERE id = $1 AND user_id = $2", [applicationId, ctx.user.id])) {throw notFound();}
   const title = String(values.title);
   const kind = String(values.kind);
   const template = String(values.template ?? "");
-  if (len(title) < 1 || len(title) > 300) throw fieldError("title", "title must be 1-300 characters");
-  if (!KINDS.has(kind)) throw fieldError("kind", "must be RESUME, PORTFOLIO, COVER_LETTER, CAREER_STATEMENT or HUB_PROFILE");
-  if (!TEMPLATES.has(template)) throw fieldError("template", TEMPLATE_MESSAGE);
+  if (len(title) < 1 || len(title) > 300) {throw fieldError("title", "title must be 1-300 characters");}
+  if (!KINDS.has(kind)) {throw fieldError("kind", "must be RESUME, PORTFOLIO, COVER_LETTER, CAREER_STATEMENT or HUB_PROFILE");}
+  if (!TEMPLATES.has(template)) {throw fieldError("template", TEMPLATE_MESSAGE);}
   const now = ts(ctx.now);
-  const row: Row = {
+  const row = {
     id: crypto.randomUUID(), revision: 1, application_id: applicationId, title, kind,
-    template: TEMPLATE_ALIASES[template] ?? template, language: String(values.language), status: "DRAFT",
+    template: TEMPLATE_ALIASES.get(template) ?? template, language: String(values.language), status: "DRAFT",
     latest_version_id: null, finalized_version_id: null, created_at: now, updated_at: now,
   };
   await query(ctx.deps.query,
@@ -307,27 +320,27 @@ export const patchDocument = async (ctx: Ctx, idRaw: string): Promise<Response> 
   });
   const expected = Number(values.expectedRevision);
   const doc = await loadMutable(ctx, id);
-  if (Number(doc.revision) !== expected) throw conflict(doc.revision);
-  if (values.title != null) {
-    if (len(String(values.title)) < 1 || len(String(values.title)) > 300) throw fieldError("title", "title must be 1-300 characters");
+  if (Number(doc.revision) !== expected) {throw conflict(doc.revision);}
+  if (!nil(values.title)) {
+    if (len(String(values.title)) < 1 || len(String(values.title)) > 300) {throw fieldError("title", "title must be 1-300 characters");}
     doc.title = values.title;
   }
-  if (values.template != null) {
+  if (!nil(values.template)) {
     const template = String(values.template);
-    if (!TEMPLATES.has(template)) throw fieldError("template", TEMPLATE_MESSAGE);
-    const stored = TEMPLATE_ALIASES[template] ?? template;
+    if (!TEMPLATES.has(template)) {throw fieldError("template", TEMPLATE_MESSAGE);}
+    const stored = TEMPLATE_ALIASES.get(template) ?? template;
     if (stored !== doc.template) {
       doc.template = stored;
       doc.finalized_version_id = null;
-      if (doc.status === "FINALIZED") doc.status = "DRAFT";
+      if (doc.status === "FINALIZED") {doc.status = "DRAFT";}
     }
   }
-  if (values.language != null) doc.language = values.language;
+  if (!nil(values.language)) {doc.language = values.language;}
   const now = ts(ctx.now);
   const updated = await one(ctx.deps.query,
     "UPDATE documents SET revision = revision + 1, title = $3, template = $4, language = $5, status = $6, latest_version_id = $7, finalized_version_id = $8, updated_at = $9 WHERE id = $1 AND user_id = $2 AND revision = $10 RETURNING id",
     [id, ctx.user.id, doc.title, doc.template, doc.language, doc.status, doc.latest_version_id ?? null, doc.finalized_version_id ?? null, now, expected]);
-  if (!updated) await failedUpdate(ctx, "documents", id);
+  if (!updated) {await failedUpdate(ctx, "documents", id);}
   return data(200, documentDto({ ...doc, revision: expected + 1, updated_at: now }), ctx.rid);
 };
 
@@ -356,7 +369,7 @@ export const createVersion = async (ctx: Ctx, idRaw: string): Promise<Response> 
   const blocks = blockInputs(values.blocks);
   const expected = Number(values.expectedRevision);
   const doc = await loadMutable(ctx, id);
-  if (Number(doc.revision) !== expected) throw conflict(doc.revision);
+  if (Number(doc.revision) !== expected) {throw conflict(doc.revision);}
   return data(201, await saveVersion(ctx, doc, expected, values.content, blocks, String(values.changeNote ?? "")), ctx.rid);
 };
 
@@ -366,34 +379,35 @@ export const applyRevision = async (ctx: Ctx, idRaw: string, proposalRaw: string
   const { values } = await strictBody(ctx.request, { expectedRevision: { kind: "int", required: true } });
   const expected = Number(values.expectedRevision);
   const doc = await loadMutable(ctx, id);
-  if (Number(doc.revision) !== expected) throw conflict(doc.revision);
+  if (Number(doc.revision) !== expected) {throw conflict(doc.revision);}
   const proposal = await one(ctx.deps.query, `SELECT ${PROPOSAL_COLS} FROM revision_proposals WHERE id = $1 AND user_id = $2 AND document_id = $3`,
     [proposalId, ctx.user.id, id]);
-  if (!proposal) throw notFound();
-  if (proposal.applied_at != null) throw transition("proposal already applied");
-  if (doc.latest_version_id == null || String(doc.latest_version_id) !== String(proposal.source_version_id) || Number(proposal.source_revision) !== Number(doc.revision)) {
+  if (!proposal) {throw notFound();}
+  if (!nil(proposal.applied_at)) {throw transition("proposal already applied");}
+  if (nil(doc.latest_version_id) || String(doc.latest_version_id) !== String(proposal.source_version_id) || Number(proposal.source_revision) !== Number(doc.revision)) {
     throw approvalStale("document changed since the proposal was created");
   }
   const src = await loadVersion(ctx, id, String(proposal.source_version_id));
-  const selection = (proposal.selection ?? {}) as Row;
+  const selection: Row = isRow(proposal.selection) ? proposal.selection : {};
   const edit = replaced(src.content, blocksOf(src.blocks), [[String(selection.text ?? ""), String(proposal.replacement)]]);
-  if (!edit.applied) throw approvalStale("selection text no longer present in the version");
+  if (!edit.applied) {throw approvalStale("selection text no longer present in the version");}
   return data(200, await saveVersion(ctx, doc, expected, edit.content, edit.blocks, "applied proposal " + proposalId, { proposalId }), ctx.rid);
 };
 
 /** Chat edits (the harness `edit_document` tool): `DocumentService.apply_hunks`. */
 export const applyEdits = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const id = requireUuid(idRaw, "id");
-  let body: Row;
-  try { body = JSON.parse(await ctx.request.text()) as Row; } catch { throw new HttpError(400, "VALIDATION_ERROR", "invalid request body"); }
-  if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
+  let parsed: unknown;
+  try { parsed = JSON.parse(await ctx.request.text()); } catch { throw new HttpError(400, "VALIDATION_ERROR", "invalid request body"); }
+  if (!isRow(parsed)) {throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");}
+  const body = parsed;
   const edits = hunkEdits(Array.isArray(body.hunks) ? body.hunks : []);
   const doc = await loadMutable(ctx, id);
   const expectedVersion = body.revisionId ? String(body.revisionId) : "";
-  if (doc.latest_version_id == null || (expectedVersion && expectedVersion !== String(doc.latest_version_id))) throw conflict(doc.revision);
+  if (nil(doc.latest_version_id) || (expectedVersion && expectedVersion !== String(doc.latest_version_id))) {throw conflict(doc.revision);}
   const src = await loadVersion(ctx, id, String(doc.latest_version_id));
   const edit = replaced(src.content, blocksOf(src.blocks), edits);
-  if (!edit.applied) throw conflict(doc.revision);
+  if (!edit.applied) {throw conflict(doc.revision);}
   return data(200, await saveVersion(ctx, doc, Number(doc.revision), edit.content, edit.blocks, "applied chat edit"), ctx.rid);
 };
 
@@ -418,12 +432,12 @@ export const finalizeDocument = async (ctx: Ctx, idRaw: string): Promise<Respons
   const versionId = String(values.versionId);
   const approvalId = String(values.approvalId);
   const doc = await loadMutable(ctx, id);
-  if (Number(doc.revision) !== expected) throw conflict(doc.revision);
+  if (Number(doc.revision) !== expected) {throw conflict(doc.revision);}
   const version = await loadVersion(ctx, id, versionId);
   const blocks = blocksOf(version.blocks);
   const evidenceIds = await verifyBlocks(ctx, blocks);
-  for (const b of blocks) if (b.claimStatus !== "SUPPORTED") throw new HttpError(409, "UNSUPPORTED_CLAIM", "block " + b.id + " is " + b.claimStatus);
-  const appId = doc.application_id == null ? null : String(doc.application_id);
+  for (const b of blocks) {if (b.claimStatus !== "SUPPORTED") {throw new HttpError(409, "UNSUPPORTED_CLAIM", "block " + b.id + " is " + b.claimStatus);}}
+  const appId = nil(doc.application_id) ? null : String(doc.application_id);
   const uses = evidenceIds.length
     ? (await query(ctx.deps.query,
       "SELECT DISTINCT ON (target_id) target_id, status FROM approvals WHERE user_id = $1 AND kind = 'EVIDENCE_USE' AND application_id IS NOT DISTINCT FROM $2::uuid AND target_id IN (SELECT jsonb_array_elements_text($3::jsonb)::uuid) AND status IN ('APPROVED','PENDING') AND (expires_at IS NULL OR expires_at > $4) ORDER BY target_id, created_at DESC",
@@ -431,18 +445,18 @@ export const finalizeDocument = async (ctx: Ctx, idRaw: string): Promise<Respons
     : [];
   const latestUse = new Map(uses.map((row) => [String(row.target_id), String(row.status)]));
   const unapproved = evidenceIds.find((eid) => latestUse.get(eid) !== "APPROVED");
-  if (unapproved) throw approvalRequired("EVIDENCE_USE approval required for evidence " + unapproved);
+  if (unapproved) {throw approvalRequired("EVIDENCE_USE approval required for evidence " + unapproved);}
   const approval = await one(ctx.deps.query,
     "SELECT revision, kind, application_id, target_id, payload_hash, status, expires_at FROM approvals WHERE id = $1 AND user_id = $2",
     [approvalId, ctx.user.id]);
-  if (!approval) throw approvalRequired("approval not found");
+  if (!approval) {throw approvalRequired("approval not found");}
   if (approval.kind !== "DOCUMENT_FINALIZE" || str(approval.application_id) !== appId || String(approval.target_id) !== versionId) {
     throw approvalRequired("approval does not cover this target");
   }
-  if (approval.expires_at != null && ctx.now.getTime() > Date.parse(String(ts(approval.expires_at)))) throw approvalRequired("approval expired");
-  if (approval.status !== "APPROVED") throw approvalRequired("approval is not approved");
+  if (!nil(approval.expires_at) && ctx.now.getTime() > Date.parse(String(ts(approval.expires_at)))) {throw approvalRequired("approval expired");}
+  if (approval.status !== "APPROVED") {throw approvalRequired("approval is not approved");}
   const hash = await hashJson({ kind: "DOCUMENT_FINALIZE", versionId, content: version.content, blocks });
-  if (approval.payload_hash !== hash) throw approvalStale("approved content has changed");
+  if (approval.payload_hash !== hash) {throw approvalStale("approved content has changed");}
   const now = ts(ctx.now);
   const done = await one(ctx.deps.query,
     `WITH ap AS (UPDATE approvals SET revision = revision + 1, status = 'CONSUMED', consumed_at = $3, updated_at = $3
@@ -457,7 +471,7 @@ export const finalizeDocument = async (ctx: Ctx, idRaw: string): Promise<Respons
       JSON.stringify({ documentId: id, versionId })]);
   if (!done) {
     const latest = await loadDocument(ctx, id);
-    if (Number(latest.revision) !== expected) throw conflict(latest.revision);
+    if (Number(latest.revision) !== expected) {throw conflict(latest.revision);}
     await failedUpdate(ctx, "approvals", approvalId);
   }
   return data(200, documentDto({ ...doc, revision: expected + 1, status: "FINALIZED", finalized_version_id: versionId, updated_at: now }), ctx.rid);
@@ -468,9 +482,9 @@ export const archiveDocument = async (ctx: Ctx, idRaw: string): Promise<Response
   const { values } = await strictBody(ctx.request, { expectedRevision: { kind: "int", required: true } });
   const expected = Number(values.expectedRevision);
   const doc = await loadDocument(ctx, id);
-  if (Number(doc.revision) !== expected) throw conflict(doc.revision);
-  if (doc.status === "ARCHIVED") return data(200, documentDto(doc), ctx.rid);
-  if (!(await archiveDoc(ctx, id, expected))) await failedUpdate(ctx, "documents", id);
+  if (Number(doc.revision) !== expected) {throw conflict(doc.revision);}
+  if (doc.status === "ARCHIVED") {return data(200, documentDto(doc), ctx.rid);}
+  if (!(await archiveDoc(ctx, id, expected))) {await failedUpdate(ctx, "documents", id);}
   return data(200, documentDto({ ...doc, revision: expected + 1, status: "ARCHIVED", updated_at: ts(ctx.now) }), ctx.rid);
 };
 
@@ -482,7 +496,7 @@ export const archiveDoc = async (ctx: Ctx, id: string, revision: number | null):
   (await one(ctx.deps.query,
     `UPDATE documents SET revision = revision + 1, status = 'ARCHIVED', updated_at = $3
      WHERE id = $1 AND user_id = $2 AND status <> 'ARCHIVED' AND ($4::bigint IS NULL OR revision = $4) RETURNING id`,
-    [id, ctx.user.id, ts(ctx.now), revision])) != null;
+    [id, ctx.user.id, ts(ctx.now), revision])) !== null;
 
 /**
  * Brings back the caller's archived document: finalized when it has a finalized version, else a draft. Archiving
@@ -495,7 +509,7 @@ export const unarchiveDoc = async (ctx: Ctx, id: string, revision: number | null
      WHERE id = $1 AND user_id = $2 AND status = 'ARCHIVED' AND ($4::bigint IS NULL OR revision = $4)
      RETURNING status`,
     [id, ctx.user.id, ts(ctx.now), revision]);
-  if (!row) return null;
+  if (!row) {return null;}
   await enqueueIngest(ctx, { documentId: id });
   return String(row.status);
 };
@@ -505,8 +519,8 @@ export const restoreDocument = async (ctx: Ctx, idRaw: string): Promise<Response
   const { values } = await strictBody(ctx.request, { expectedRevision: { kind: "int", required: true } });
   const expected = Number(values.expectedRevision);
   const doc = await loadDocument(ctx, id);
-  if (Number(doc.revision) !== expected) throw conflict(doc.revision);
-  if (doc.status !== "ARCHIVED") return data(200, documentDto(doc), ctx.rid);
+  if (Number(doc.revision) !== expected) {throw conflict(doc.revision);}
+  if (doc.status !== "ARCHIVED") {return data(200, documentDto(doc), ctx.rid);}
   const status = (await unarchiveDoc(ctx, id, expected)) ?? await failedUpdate(ctx, "documents", id);
   return data(200, documentDto({ ...doc, revision: expected + 1, status, updated_at: ts(ctx.now) }), ctx.rid);
 };
@@ -519,19 +533,19 @@ export const createExport = async (ctx: Ctx, idRaw: string): Promise<Response> =
     rendererVersion: { kind: "str", required: true },
   });
   const format = String(values.format);
-  if (format !== "PDF" && format !== "DOCX") throw fieldError("format", "must be PDF or DOCX");
-  if (!values.rendererVersion) throw fieldError("rendererVersion", "required");
+  if (format !== "PDF" && format !== "DOCX") {throw fieldError("format", "must be PDF or DOCX");}
+  if (!values.rendererVersion) {throw fieldError("rendererVersion", "required");}
   const doc = await loadMutable(ctx, id);
   const version = await loadVersion(ctx, id, String(values.versionId));
   const hubLatest = String(doc.kind) === "HUB_PROFILE"
-    && doc.latest_version_id != null
+    && !nil(doc.latest_version_id)
     && String(doc.latest_version_id) === String(version.id);
-  if (!hubLatest && (doc.finalized_version_id == null || String(doc.finalized_version_id) !== String(version.id))) {
+  if (!hubLatest && (nil(doc.finalized_version_id) || String(doc.finalized_version_id) !== String(version.id))) {
     throw new HttpError(422, "DOCUMENT_NOT_FINALIZED", "only the finalized version can be exported");
   }
   const now = ts(ctx.now);
   const blocks = blocksOf(version.blocks);
-  const row: Row = {
+  const row = {
     id: crypto.randomUUID(), document_id: id, version_id: version.id, format, template: doc.template, language: doc.language ?? "",
     content: version.content, blocks, content_hash: await hashJson(version.content), status: "READY_TO_RENDER",
     renderer_version: values.rendererVersion, result: null, created_at: now, updated_at: now,
@@ -565,12 +579,12 @@ export const recordExportResult = async (ctx: Ctx, idRaw: string, exportRaw: str
     koreanText: { kind: "bool" }, links: { kind: "bool" }, atsText: { kind: "bool" },
   }).values;
   const status = String(values.status);
-  if (status !== "SUCCEEDED" && status !== "FAILED") throw fieldError("status", "must be SUCCEEDED or FAILED");
-  if (!values.sha256 || Number(values.byteLength) < 0) throw fieldError("sha256", "sha256 and non-negative byteLength are required");
+  if (status !== "SUCCEEDED" && status !== "FAILED") {throw fieldError("status", "must be SUCCEEDED or FAILED");}
+  if (!values.sha256 || Number(values.byteLength) < 0) {throw fieldError("sha256", "sha256 and non-negative byteLength are required");}
   const row = await one(ctx.deps.query, `SELECT ${EXPORT_COLS} FROM document_exports WHERE id = $1 AND user_id = $2 AND document_id = $3`,
     [exportId, ctx.user.id, id]);
-  if (!row) throw notFound();
-  if (row.status !== "READY_TO_RENDER") throw transition("export result already recorded");
+  if (!row) {throw notFound();}
+  if (row.status !== "READY_TO_RENDER") {throw transition("export result already recorded");}
   const result = exportResultOf({
     sha256: values.sha256, byteLength: values.byteLength, pageCount: values.pageCount ?? null,
     validation: { koreanText: validation.koreanText === true, links: validation.links === true, atsText: validation.atsText === true },
@@ -580,7 +594,7 @@ export const recordExportResult = async (ctx: Ctx, idRaw: string, exportRaw: str
   const recorded = await one(ctx.deps.query,
     "UPDATE document_exports SET status = $2, result = $3::jsonb, updated_at = $4 WHERE id = $1 AND user_id = $5 AND status = 'READY_TO_RENDER' RETURNING id",
     [exportId, status, JSON.stringify(result), now, ctx.user.id]);
-  if (!recorded) throw transition("export result already recorded");
+  if (!recorded) {throw transition("export result already recorded");}
   return data(200, exportDto({ ...row, status, result, updated_at: now }), ctx.rid);
 };
 
@@ -596,16 +610,16 @@ type SectionName = "intro" | "careers" | "skills" | "links" | "headline" | "skip
 
 const nodeText = (node: DocNode): string => {
   const own = typeof node.text === "string" ? node.text : "";
-  const nested = Array.isArray(node.content) ? node.content.map((child) => nodeText(child as DocNode)).join("") : "";
+  const nested = Array.isArray(node.content) ? node.content.map((child: unknown) => (typeof child === "object" && child !== null ? nodeText(child) : "")).join("") : "";
   return own + nested;
 };
 
-const sectionLines = (content: unknown): { heading: boolean; text: string }[] => {
-  const lines: { heading: boolean; text: string }[] = [];
+const sectionLines = (content: unknown): Array<{ heading: boolean; text: string }> => {
+  const lines: Array<{ heading: boolean; text: string }> = [];
   const visit = (node: unknown): void => {
-    if (!node || typeof node !== "object") return;
+    if (!node || typeof node !== "object") {return;}
     if (Array.isArray(node)) {
-      for (const child of node) visit(child);
+      for (const child of node) {visit(child);}
       return;
     }
     const typed = node as DocNode;
@@ -614,7 +628,7 @@ const sectionLines = (content: unknown): { heading: boolean; text: string }[] =>
       lines.push({ heading: type === "heading", text: nodeText(typed).trim() });
       return;
     }
-    if (Array.isArray(typed.content)) for (const child of typed.content) visit(child);
+    if (Array.isArray(typed.content)) {for (const child of typed.content) {visit(child);}}
   };
   visit(content);
   return lines;
@@ -622,11 +636,11 @@ const sectionLines = (content: unknown): { heading: boolean; text: string }[] =>
 
 const sectionName = (label: string): SectionName => {
   const key = label.trim().replace(/[:：]\s*$/, "").toLowerCase();
-  if (key === "소개" || key === "intro") return "intro";
-  if (key === "경력" || key === "careers" || key === "career") return "careers";
-  if (key === "기술" || key === "기술 스택" || key === "skills" || key === "skill") return "skills";
-  if (key === "링크" || key === "links" || key === "link") return "links";
-  if (key === "한 줄" || key === "헤드라인" || key === "headline") return "headline";
+  if (key === "소개" || key === "intro") {return "intro";}
+  if (key === "경력" || key === "careers" || key === "career") {return "careers";}
+  if (key === "기술" || key === "기술 스택" || key === "skills" || key === "skill") {return "skills";}
+  if (key === "링크" || key === "links" || key === "link") {return "links";}
+  if (key === "한 줄" || key === "헤드라인" || key === "headline") {return "headline";}
   // shortcut: projects and education have no profile column, drop them until a migration adds one.
   return "skip";
 };
@@ -643,31 +657,37 @@ const careerOf = (line: string): { company: string; role: string; startedOn: str
     };
   }
   const name = clip(line.trim(), 200);
-  if (!name) return null;
+  if (!name) {return null;}
   return { company: name, role: name, startedOn: null, endedOn: null, description: "" };
 };
 
 const linkKind = (url: string): string => {
-  let host = "";
+  let host: string;
   try { host = new URL(url).hostname.toLowerCase(); } catch { return "other"; }
-  if (host === "github.com" || host.endsWith(".github.com")) return "github";
-  if (/(^|\.)((velog\.io)|(tistory\.com)|(medium\.com)|(blogspot\.com)|(brunch\.co\.kr))$/.test(host)) return "blog";
-  if (/(^|\.)((notion\.site)|(notion\.so)|(behance\.net)|(dribbble\.com))$/.test(host)) return "portfolio";
+  if (host === "github.com" || host.endsWith(".github.com")) {return "github";}
+  if (/(^|\.)((velog\.io)|(tistory\.com)|(medium\.com)|(blogspot\.com)|(brunch\.co\.kr))$/.test(host)) {return "blog";}
+  if (/(^|\.)((notion\.site)|(notion\.so)|(behance\.net)|(dribbble\.com))$/.test(host)) {return "portfolio";}
   return "other";
 };
 
 const linkOf = (line: string): { id: string; kind: string; url: string; title: string } | null => {
   const parts = line.split("|").map((part) => part.trim()).filter(Boolean);
-  const url = clip(parts.length >= 2 ? parts[parts.length - 1] : parts[0] ?? "", 2000);
-  if (!httpsUrl(url)) return null;
+  const url = clip((parts.length >= 2 ? parts.at(-1) : parts[0]) ?? "", 2000);
+  if (!httpsUrl(url)) {return null;}
   const title = parts.length >= 2 ? parts.slice(0, -1).join(" | ") : "";
   return { id: crypto.randomUUID(), kind: linkKind(url), url, title: clip(title, 300) };
 };
 
-const sectionsFrom = (content: unknown, blocks: unknown): { headline: string; intro: string; careers: unknown[]; skills: string[]; links: { id: string; kind: string; url: string; title: string }[]; replaceLinks: boolean; replaceCareers: boolean; replaceSkills: boolean; replaceIntro: boolean } => {
+type ProfileLink = { id: string; kind: string; url: string; title: string };
+type ProfileSections = {
+  headline: string; intro: string; careers: Array<unknown>; skills: Array<string>; links: Array<ProfileLink>;
+  replaceLinks: boolean; replaceCareers: boolean; replaceSkills: boolean; replaceIntro: boolean;
+};
+
+const sectionsFrom = (content: unknown, blocks: unknown): ProfileSections => {
   const lines = sectionLines(content);
   const sawHeading = lines.some((line) => line.heading);
-  const buckets: Record<Exclude<SectionName, "skip">, string[]> = { intro: [], careers: [], skills: [], links: [], headline: [] };
+  const buckets: Record<Exclude<SectionName, "skip">, Array<string>> = { intro: [], careers: [], skills: [], links: [], headline: [] };
   let current: SectionName = "skip";
   let headed = false;
   for (const line of lines) {
@@ -677,18 +697,18 @@ const sectionsFrom = (content: unknown, blocks: unknown): { headline: string; in
       continue;
     }
     const text = line.text.replace(/^•\s*/, "").trim();
-    if (!text) continue;
-    if (!headed) buckets.intro.push(text);
-    else if (current !== "skip") buckets[current].push(text);
+    if (!text) {continue;}
+    if (!headed) {buckets.intro.push(text);}
+    else if (current !== "skip") {buckets[current].push(text);}
   }
   const introLines = sawHeading ? buckets.intro : blocksOf(blocks).map((block) => block.text).filter(Boolean);
   const skills = buckets.skills.flatMap((line) => line.split(/[,·、]/)).map((item) => clip(item.trim(), 40)).filter(Boolean).slice(0, 50);
   return {
     headline: buckets.headline.join("\n"),
     intro: introLines.join("\n"),
-    careers: buckets.careers.map(careerOf).filter((career) => career != null).slice(0, 30),
+    careers: buckets.careers.map(careerOf).filter((career) => career !== null).slice(0, 30),
     skills,
-    links: buckets.links.map(linkOf).filter((link) => link != null),
+    links: buckets.links.map(linkOf).filter((link) => link !== null),
     replaceLinks: lines.some((line) => line.heading && sectionName(line.text) === "links"),
     replaceCareers: lines.some((line) => line.heading && sectionName(line.text) === "careers"),
     replaceSkills: lines.some((line) => line.heading && sectionName(line.text) === "skills"),
@@ -719,29 +739,29 @@ SELECT link.id::uuid, replaced.user_id, link.kind, link.url, link.title, 'READ',
 FROM replaced
 JOIN jsonb_to_recordset($11::jsonb) AS link(id text, kind text, url text, title text) ON $10::boolean`;
 
-const profileSkills = async (ctx: Ctx): Promise<string[]> => {
+const profileSkills = async (ctx: Ctx): Promise<Array<string>> => {
   const current = await one(ctx.deps.query, "SELECT skills FROM profiles WHERE user_id = $1", [ctx.user.id]);
   return Array.isArray(current?.skills) ? current.skills.map(String) : [];
 };
 
 const PROFILE_SECTIONS = ["headline", "intro", "careers", "skills", "links"];
 
-const sectionsOf = (value: unknown): string[] => {
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) throw unprocessable("sections", "unsupported section");
-  const out: string[] = [];
+const sectionsOf = (value: unknown): Array<string> => {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {throw unprocessable("sections", "unsupported section");}
+  const out: Array<string> = [];
   for (const item of value) {
-    if (!PROFILE_SECTIONS.includes(item)) throw unprocessable("sections", "unsupported section");
-    if (!out.includes(item)) out.push(item);
+    if (typeof item !== "string" || !PROFILE_SECTIONS.includes(item)) {throw unprocessable("sections", "unsupported section");}
+    if (!out.includes(item)) {out.push(item);}
   }
   return out;
 };
 
-const copyOntoBaseProfile = async (ctx: Ctx, doc: Row, id: string, sections: string[] | null): Promise<{ documentId: string; profileUserId: string; applied: string[] }> => {
+const copyOntoBaseProfile = async (ctx: Ctx, doc: Row, id: string, sections: Array<string> | null): Promise<{ documentId: string; profileUserId: string; applied: Array<string> }> => {
   const nowIso = ctx.now.toISOString();
-  const empty = { headline: "", intro: "", careers: [] as unknown[], skills: [] as string[], links: [] as { id: string; kind: string; url: string; title: string }[], replaceLinks: false, replaceCareers: false, replaceSkills: false, replaceIntro: false };
-  const version = doc.latest_version_id == null ? null : await loadVersion(ctx, id, String(doc.latest_version_id));
-  const parsed = version == null ? empty : sectionsFrom(version.content, version.blocks);
-  const allow = (key: string): boolean => sections == null || sections.includes(key);
+  const empty: ProfileSections = { headline: "", intro: "", careers: [], skills: [], links: [], replaceLinks: false, replaceCareers: false, replaceSkills: false, replaceIntro: false };
+  const version = nil(doc.latest_version_id) ? null : await loadVersion(ctx, id, String(doc.latest_version_id));
+  const parsed = version === null ? empty : sectionsFrom(version.content, version.blocks);
+  const allow = (key: string): boolean => sections === null || sections.includes(key);
   const replaceLinks = parsed.replaceLinks && allow("links");
   const replaceCareers = parsed.replaceCareers && allow("careers");
   const replaceSkills = parsed.replaceSkills && allow("skills");
@@ -754,7 +774,7 @@ const copyOntoBaseProfile = async (ctx: Ctx, doc: Row, id: string, sections: str
           : key === "skills" ? replaceSkills
             : replaceLinks
   ));
-  if (!applied.length) return { documentId: id, profileUserId: ctx.user.id, applied };
+  if (!applied.length) {return { documentId: id, profileUserId: ctx.user.id, applied };}
   const headline = clip(parsed.headline || String(doc.title), 120);
   const intro = clip(parsed.intro, 2000);
   const currentSkills = replaceSkills ? parsed.skills : await profileSkills(ctx);
@@ -770,34 +790,36 @@ const copyOntoBaseProfile = async (ctx: Ctx, doc: Row, id: string, sections: str
 const TEXT_SOURCE = new Set(["text/plain", "text/markdown"]);
 
 const sourceText = (value: unknown): string => {
-  if (value instanceof Uint8Array) return Buffer.from(value).toString("utf8");
-  if (typeof value !== "string" || value === "") return "";
+  if (value instanceof Uint8Array) {return Buffer.from(value).toString("utf8");}
+  if (typeof value !== "string" || value === "") {return "";}
   return Buffer.from(value, "base64").toString("utf8");
 };
 
-const mdToDoc = (md: string): { content: { type: "doc"; content: unknown[] }; blocks: Block[] } => {
-  const nodes: unknown[] = [];
-  const blocks: Block[] = [];
-  const add = (kind: string, extra: Record<string, unknown>, text: string): void => {
+type ProfileDoc = { content: { type: "doc"; content: Array<unknown> }; blocks: Array<Block> };
+
+const mdToDoc = (md: string): ProfileDoc => {
+  const nodes: Array<unknown> = [];
+  const blocks: Array<Block> = [];
+  const add = (kind: string, extra: { level?: number }, text: string): void => {
     const bid = "block-" + (blocks.length + 1);
     nodes.push({ type: kind, attrs: { blockId: bid, ...extra }, content: [{ type: "text", text }] });
     blocks.push({ id: bid, text, evidenceRefs: [], claimStatus: "UNSUPPORTED" });
   };
   for (const raw of md.split("\n")) {
     const line = raw.replace(/\s+$/, "");
-    if (!line) continue;
+    if (!line) {continue;}
     const heading = /^(#{1,4})\s+(.*)/.exec(line);
     const item = /^\s*[-*]\s+(.*)/.exec(line);
-    if (heading) add("heading", { level: heading[1].length }, heading[2]);
-    else if (item) add("paragraph", {}, "• " + item[1]);
-    else add("paragraph", {}, line);
+    if (heading) {add("heading", { level: heading[1].length }, heading[2]);}
+    else if (item) {add("paragraph", {}, "• " + item[1]);}
+    else {add("paragraph", {}, line);}
   }
-  if (!nodes.length) add("paragraph", {}, "");
+  if (!nodes.length) {add("paragraph", {}, "");}
   return { content: { type: "doc", content: nodes }, blocks };
 };
 
 const insertProfileDocument = async (
-  ctx: Ctx, title: string, version: { id: string; content: unknown; blocks: Block[] } | null,
+  ctx: Ctx, title: string, version: { id: string; content: unknown; blocks: Array<Block> } | null,
 ): Promise<string> => {
   const now = ts(ctx.now);
   const docId = crypto.randomUUID();
@@ -824,7 +846,7 @@ const convertOwnedSource = async (ctx: Ctx, id: string): Promise<Response> => {
   const source = await one(ctx.deps.query,
     "SELECT id, file_name, mime_type, content FROM sources WHERE id = $1 AND user_id = $2",
     [id, ctx.user.id]);
-  if (!source) throw notFound();
+  if (!source) {throw notFound();}
   const title = clip(String(source.file_name || "프로필"), 300);
   const mime = String(source.mime_type || "");
   if (TEXT_SOURCE.has(mime)) {
@@ -839,21 +861,21 @@ const convertOwnedSource = async (ctx: Ctx, id: string): Promise<Response> => {
 };
 
 const convertHubDocument = async (
-  ctx: Ctx, id: string, doc: Row, target: string, values: Record<string, unknown>, present: Set<string>,
+  ctx: Ctx, id: string, doc: Row, target: string, values: Values, present: Set<string>,
 ): Promise<Response> => {
-  if (String(doc.kind) !== "HUB_PROFILE") throw fieldError("kind", "only a hub profile document can be converted");
+  if (String(doc.kind) !== "HUB_PROFILE") {throw fieldError("kind", "only a hub profile document can be converted");}
   if (target === "application") {
-    if (!present.has("applicationId")) return data(200, { target, documentId: id, applicationId: null }, ctx.rid);
-    if (!present.has("expectedRevision")) throw fieldError("expectedRevision", "required");
+    if (!present.has("applicationId")) {return data(200, { target, documentId: id, applicationId: null }, ctx.rid);}
+    if (!present.has("expectedRevision")) {throw fieldError("expectedRevision", "required");}
     const expected = Number(values.expectedRevision);
-    if (Number(doc.revision) !== expected) throw conflict(doc.revision);
+    if (Number(doc.revision) !== expected) {throw conflict(doc.revision);}
     const app = await one(ctx.deps.query, "SELECT id FROM applications WHERE id = $1 AND user_id = $2", [values.applicationId, ctx.user.id]);
-    if (!app) throw notFound();
+    if (!app) {throw notFound();}
     const now = ts(ctx.now);
     const updated = await one(ctx.deps.query,
       "UPDATE documents SET application_id = $3, revision = revision + 1, updated_at = $4 WHERE id = $1 AND user_id = $2 AND revision = $5 RETURNING id",
       [id, ctx.user.id, values.applicationId, now, expected]);
-    if (!updated) await failedUpdate(ctx, "documents", id);
+    if (!updated) {await failedUpdate(ctx, "documents", id);}
     return data(200, { target, documentId: id, applicationId: String(values.applicationId) }, ctx.rid);
   }
   const copied = await copyOntoBaseProfile(ctx, doc, id, present.has("sections") ? sectionsOf(values.sections) : null);
@@ -869,11 +891,11 @@ export const convertProfile = async (ctx: Ctx, idRaw: string): Promise<Response>
     sections: { kind: "any" },
   });
   const target = present.has("target") ? String(values.target) : "application";
-  if (target !== "hub" && target !== "application") throw fieldError("target", "must be hub or application");
-  if (present.has("sections") && target !== "hub") throw unprocessable("sections", "unsupported section");
+  if (target !== "hub" && target !== "application") {throw fieldError("target", "must be hub or application");}
+  if (present.has("sections") && target !== "hub") {throw unprocessable("sections", "unsupported section");}
   const doc = await one(ctx.deps.query, `SELECT ${DOC_COLS} FROM documents WHERE id = $1 AND user_id = $2`, [id, ctx.user.id]);
   rejectArchived(doc);
-  if (doc) return convertHubDocument(ctx, id, doc, target, values, present);
+  if (doc) {return convertHubDocument(ctx, id, doc, target, values, present);}
   return convertOwnedSource(ctx, id);
 };
 
@@ -881,15 +903,20 @@ export const setBaseProfile = async (ctx: Ctx, idRaw: string): Promise<Response>
   const id = requireUuid(idRaw, "id");
   const { values, present } = await strictBody(ctx.request, { sections: { kind: "any" } });
   const doc = await loadMutable(ctx, id);
-  if (String(doc.kind) !== "HUB_PROFILE") throw fieldError("kind", "only a hub profile document can be the base profile");
+  if (String(doc.kind) !== "HUB_PROFILE") {throw fieldError("kind", "only a hub profile document can be the base profile");}
   return data(200, await copyOntoBaseProfile(ctx, doc, id, present.has("sections") ? sectionsOf(values.sections) : null), ctx.rid);
 };
 
 const sharingUnavailable = (): HttpError => new HttpError(404, "SHARING_UNAVAILABLE", "sharing unavailable");
 
-const jsonValue = (value: unknown): unknown => {
-  if (typeof value !== "string" || value === "") return value ?? null;
-  try { return JSON.parse(value); } catch { return value; }
+const storedOf = (value: unknown): Stored => {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean" || (typeof value === "object" && value !== null)) {return value;}
+  return null;
+};
+
+const jsonValue = (value: unknown): Stored => {
+  if (typeof value !== "string" || value === "") {return storedOf(value);}
+  try { return storedOf(JSON.parse(value)); } catch { return value; }
 };
 
 const shareDocument = async (ctx: Ctx, idRaw: string): Promise<Response> => {
@@ -900,11 +927,11 @@ const shareDocument = async (ctx: Ctx, idRaw: string): Promise<Response> => {
     let parsed: unknown;
     try { parsed = JSON.parse(raw); } catch { throw new HttpError(400, "VALIDATION_ERROR", "invalid request body"); }
     const body = strictObject(parsed, { versionId: { kind: "uuid" } });
-    if (body.present.has("versionId")) versionId = String(body.values.versionId);
+    if (body.present.has("versionId")) {versionId = String(body.values.versionId);}
   }
   const doc = await loadMutable(ctx, id);
-  const pinned = versionId || (doc.latest_version_id == null ? "" : String(doc.latest_version_id));
-  if (!pinned) throw notFound();
+  const pinned = versionId || (nil(doc.latest_version_id) ? "" : String(doc.latest_version_id));
+  if (!pinned) {throw notFound();}
   await loadVersion(ctx, id, pinned);
   const token = randomToken();
   const now = ts(ctx.now);
@@ -918,9 +945,9 @@ const shareDocument = async (ctx: Ctx, idRaw: string): Promise<Response> => {
        INSERT INTO document_shares (id, document_id, version_id, token_hash, created_by, created_at)
        VALUES ($1::uuid, $2::uuid, $3::uuid, $4::text, $5::uuid, $6::timestamptz)`,
       [crypto.randomUUID(), id, pinned, await sha256Hex(token), ctx.user.id, now]);
-  } catch (err) {
-    if (isMissingRelation(err)) throw sharingUnavailable();
-    throw err;
+  } catch (error) {
+    if (isMissingRelation(error)) {throw sharingUnavailable();}
+    throw error;
   }
   return data(200, { token, path: `/api/v1/documents/shared/${token}`, versionId: pinned, createdAt: now }, ctx.rid);
 };
@@ -935,9 +962,9 @@ const revokeShare = async (ctx: Ctx, idRaw: string): Promise<Response> => {
        RETURNING id`,
       [id, ctx.user.id, ts(ctx.now)]);
     return data(200, { revoked: Boolean(row) }, ctx.rid);
-  } catch (err) {
-    if (isMissingRelation(err)) throw sharingUnavailable();
-    throw err;
+  } catch (error) {
+    if (isMissingRelation(error)) {throw sharingUnavailable();}
+    throw error;
   }
 };
 
@@ -951,11 +978,11 @@ const readShare = async (ctx: Ctx, token: string): Promise<Response> => {
        JOIN documents d ON d.id = s.document_id
        WHERE s.token_hash = $1::text AND s.revoked_at IS NULL AND d.status <> 'ARCHIVED'`,
       [await sha256Hex(token)]);
-  } catch (err) {
-    if (isMissingRelation(err)) throw sharingUnavailable();
-    throw err;
+  } catch (error) {
+    if (isMissingRelation(error)) {throw sharingUnavailable();}
+    throw error;
   }
-  if (!row) throw notFound();
+  if (!row) {throw notFound();}
   return data(200, {
     title: String(row.title ?? ""),
     kind: String(row.kind),
@@ -970,41 +997,41 @@ export const isDocumentEdit = (method: string, path: string): boolean =>
 export const dispatchDocuments = async (ctx: Ctx, path: string): Promise<Response | null> => {
   const method = ctx.request.method;
   if (path === "/api/v1/documents") {
-    if (method === "GET") return listDocuments(ctx);
-    if (method === "POST") return createDocument(ctx);
+    if (method === "GET") {return listDocuments(ctx);}
+    if (method === "POST") {return createDocument(ctx);}
     return null;
   }
   const versions = path.match(/^\/api\/v1\/documents\/([^/]+)\/versions(?:\/([^/]+))?$/);
   if (versions) {
-    if (!versions[2] && method === "GET") return listVersions(ctx, versions[1]);
-    if (!versions[2] && method === "POST") return createVersion(ctx, versions[1]);
-    if (versions[2] && method === "GET") return getVersion(ctx, versions[1], versions[2]);
+    if (!versions[2] && method === "GET") {return listVersions(ctx, versions[1]);}
+    if (!versions[2] && method === "POST") {return createVersion(ctx, versions[1]);}
+    if (versions[2] && method === "GET") {return getVersion(ctx, versions[1], versions[2]);}
     return null;
   }
   const apply = path.match(/^\/api\/v1\/documents\/([^/]+)\/revisions\/([^/]+)\/apply$/);
-  if (apply && method === "POST") return applyRevision(ctx, apply[1], apply[2]);
+  if (apply && method === "POST") {return applyRevision(ctx, apply[1], apply[2]);}
   const result = path.match(/^\/api\/v1\/documents\/([^/]+)\/exports\/([^/]+)\/result$/);
-  if (result && method === "POST") return recordExportResult(ctx, result[1], result[2]);
+  if (result && method === "POST") {return recordExportResult(ctx, result[1], result[2]);}
   const shared = path.match(/^\/api\/v1\/documents\/shared\/([^/]+)$/);
-  if (shared && method === "GET") return readShare(ctx, shared[1]);
+  if (shared && method === "GET") {return readShare(ctx, shared[1]);}
   const share = path.match(/^\/api\/v1\/documents\/([^/]+)\/share$/);
-  if (share && method === "POST") return shareDocument(ctx, share[1]);
-  if (share && method === "DELETE") return revokeShare(ctx, share[1]);
+  if (share && method === "POST") {return shareDocument(ctx, share[1]);}
+  if (share && method === "DELETE") {return revokeShare(ctx, share[1]);}
   const baseProfile = path.match(/^\/api\/v1\/documents\/([^/]+)\/base-profile$/);
-  if (baseProfile && method === "POST") return setBaseProfile(ctx, baseProfile[1]);
+  if (baseProfile && method === "POST") {return setBaseProfile(ctx, baseProfile[1]);}
   const profile = path.match(/^\/api\/v1\/documents\/([^/]+)\/profile$/);
-  if (profile && method === "POST") return convertProfile(ctx, profile[1]);
+  if (profile && method === "POST") {return convertProfile(ctx, profile[1]);}
   const m = path.match(/^\/api\/v1\/documents\/([^/]+)(?:\/(edits|review|finalize|archive|restore|exports))?$/);
-  if (!m) return null;
+  if (!m) {return null;}
   const [, id, sub] = m;
-  if (!sub && method === "GET") return getDocument(ctx, id);
-  if (!sub && method === "PATCH") return patchDocument(ctx, id);
-  if (sub === "edits" && method === "POST") return applyEdits(ctx, id);
-  if (sub === "review" && method === "POST") return reviewDocument(ctx, id);
-  if (sub === "finalize" && method === "POST") return finalizeDocument(ctx, id);
-  if (sub === "archive" && method === "POST") return archiveDocument(ctx, id);
-  if (sub === "restore" && method === "POST") return restoreDocument(ctx, id);
-  if (sub === "exports" && method === "GET") return listExports(ctx, id);
-  if (sub === "exports" && method === "POST") return createExport(ctx, id);
+  if (!sub && method === "GET") {return getDocument(ctx, id);}
+  if (!sub && method === "PATCH") {return patchDocument(ctx, id);}
+  if (sub === "edits" && method === "POST") {return applyEdits(ctx, id);}
+  if (sub === "review" && method === "POST") {return reviewDocument(ctx, id);}
+  if (sub === "finalize" && method === "POST") {return finalizeDocument(ctx, id);}
+  if (sub === "archive" && method === "POST") {return archiveDocument(ctx, id);}
+  if (sub === "restore" && method === "POST") {return restoreDocument(ctx, id);}
+  if (sub === "exports" && method === "GET") {return listExports(ctx, id);}
+  if (sub === "exports" && method === "POST") {return createExport(ctx, id);}
   return null;
 };

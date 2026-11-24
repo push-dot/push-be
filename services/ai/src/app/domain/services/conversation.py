@@ -11,6 +11,7 @@ from app.domain.managed_ai import with_managed_default
 from app.domain.employer_chat import turn_from_payload
 from app.domain.errors import DomainError, missing_provider_key
 from app.domain.services.ai import AIGate
+from app.domain.a2ui import CARD_KINDS, mint_sid, surfaces
 from app.jobs import get_job_scheduler, set_job_scheduler
 from app.infrastructure.store_ai import AiUsageStore
 from app.infrastructure.store_applications import ApplicationStore
@@ -44,7 +45,7 @@ _LIVE_EVENT_TYPES = frozenset(
 )
 
 
-def _live_event(chunk: dict):
+def _live_event(chunk: dict, job_id):
     kind = chunk.get("type")
     if kind not in _LIVE_EVENT_TYPES:
         return None
@@ -52,7 +53,16 @@ def _live_event(chunk: dict):
     # reads always has one (harness/status.py).
     if kind == "status" and "phase" not in chunk:
         return None
-    return kind, {key: value for key, value in chunk.items() if key != "type"}
+    payload = {key: value for key, value in chunk.items() if key != "type"}
+    if kind in CARD_KINDS:
+        sid = mint_sid(kind, payload, str(job_id))
+        if sid is not None:
+            payload["sid"] = sid
+        # Every version is stored so the gateway can answer A2UI-Version without calling Python.
+        projections = surfaces(kind, payload)
+        if projections is not None:
+            payload["a2ui"] = projections
+    return kind, payload
 
 
 IDLE_MIN_S = 1.0
@@ -265,7 +275,7 @@ class ConversationService:
                     if "token" in chunk:
                         await self.jobs.emit(job_id, "token", {"text": chunk["token"]})
                     else:
-                        live = _live_event(chunk)
+                        live = _live_event(chunk, job_id)
                         if live is not None:
                             await self.jobs.emit(job_id, live[0], live[1])
                 elif mode == "values" and chunk.get("operation"):

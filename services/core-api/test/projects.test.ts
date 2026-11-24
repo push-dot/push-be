@@ -19,10 +19,10 @@ test("a run is not inserted when moving its selected blueprint loses the revisio
     if (sql.includes("INSERT INTO cli_runs")) {
       // Another request moved the blueprint first: no row passes a revision guard.
       const guarded = sql.includes("revision = $11") && sql.indexOf("revision = $11") < sql.indexOf("INSERT INTO cli_runs");
-      if (!guarded) stored += 1;
+      if (!guarded) {stored += 1;}
       return [{ runs: guarded ? 0 : 1, moved: 0 }];
     }
-    if (sql.startsWith("SELECT revision FROM project_blueprints")) return [{ revision: 3 }];
+    if (sql.startsWith("SELECT revision FROM project_blueprints")) {return [{ revision: 3 }];}
     return null;
   });
   const res = await handle(new Request(`https://core.example/api/v1/projects/${BP}/runs`, {

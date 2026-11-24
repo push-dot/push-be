@@ -1,18 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
-import type { Query, Transaction } from "../db.ts";
+import type { DbValue, Query, Transaction } from "../db.ts";
 import { isLockTimeout, isUnique, one } from "../db.ts";
 import { HttpError } from "../http.ts";
 import { reserveCredits } from "./credits.ts";
-import {
-  estimateMicro,
-  maxAttempts,
-  queueFor,
-  type Audience,
-  type JobType,
-  type Plan,
-  type QueueName,
-} from "./config.ts";
+import { estimateMicro, maxAttempts, queueFor } from './config.ts';
+import type { Audience, JobType, Plan, QueueName } from './config.ts';
 
 import { boundTransaction, ensureMonthlyGrant, lockOwner } from "../billing/credits.ts";
 
@@ -83,7 +76,7 @@ export const withDispatcher = async <T>(
 export const kickDispatcher = async (queue: QueueName): Promise<void> => {
   const bound = kickStore.getStore();
   const origin = bound?.origin || trimOrigin(process.env.DISPATCH_ORIGIN);
-  if (!origin) return;
+  if (!origin) {return;}
   const secret = bound?.secret || process.env.DISPATCH_SECRET || "";
   const fetchImpl = bound?.fetchImpl || fetch;
   try {
@@ -95,29 +88,42 @@ export const kickDispatcher = async (queue: QueueName): Promise<void> => {
       },
       body: JSON.stringify({ queue }),
     });
-    if (!res.ok) console.error("dispatcher kick failed");
+    if (!res.ok) {console.error("dispatcher kick failed");}
   } catch {
     console.error("dispatcher kick failed");
   }
 };
 
-const queued = (row: Record<string, unknown>): { jobId: string; queue: QueueName } => ({
+type Row = NonNullable<Awaited<ReturnType<typeof one>>>;
+
+interface Queued { jobId: string; queue: QueueName }
+
+const QUEUE_NAMES: ReadonlyArray<QueueName> = ["q:chat:priority", "q:chat", "q:document", "q:ingest", "q:notify", "q:dead"];
+
+// ai_jobs.queue only ever holds a name queueFor returned; anything else is a corrupt row.
+const queueNameOf = (value: DbValue | undefined): QueueName => {
+  const name = QUEUE_NAMES.find((candidate) => candidate === value);
+  if (name === undefined) {throw new Error(`unknown queue ${String(value)}`);}
+  return name;
+};
+
+const queued = (row: Row): Queued => ({
   jobId: String(row.id),
-  queue: String(row.queue) as QueueName,
+  queue: queueNameOf(row.queue),
 });
 
 // A charged job grants the month, reads the balance and reserves in one transaction that first locks the owner row, the lock
 // billing writes (store and Stripe refunds) take: a refund cannot land between the read and the reservation. Free jobs skip it.
-export const enqueueJob = async (db: Query, input: EnqueueInput, transaction?: Transaction): Promise<{ jobId: string; queue: QueueName }> => {
+export const enqueueJob = async (db: Query, input: EnqueueInput, transaction?: Transaction): Promise<Queued> => {
   if (input.idempotencyKey) {
     const existing = await one(db, EXISTING, [input.userId, input.idempotencyKey]);
-    if (existing) return queued(existing);
+    if (existing) {return queued(existing);}
   }
   const audience: Audience = input.companyId ? "EMPLOYER" : "PERSONAL";
   const queue = queueFor(input.type, input.plan, audience);
   const amount = estimateMicro(input.type, input.plan);
   const hold = amount > 0n;
-  const params: unknown[] = [
+  const params: Array<unknown> = [
     crypto.randomUUID(),
     input.type,
     queue,
@@ -129,7 +135,7 @@ export const enqueueJob = async (db: Query, input: EnqueueInput, transaction?: T
     input.idempotencyKey ?? null,
     input.conversationId ?? null,
   ];
-  if (hold) params.push(amount.toString());
+  if (hold) {params.push(amount.toString());}
   const inTransaction: Transaction = transaction ?? ((work) => work(db));
   try {
     const row = !hold ? await one(db, INSERT_OPEN, params) : await inTransaction(async (tx) => {
@@ -148,14 +154,14 @@ export const enqueueJob = async (db: Query, input: EnqueueInput, transaction?: T
       });
       return one(tx, INSERT_WITH_RESERVE, params);
     });
-    if (!row?.id) throw new HttpError(500, "INTERNAL", "internal error");
+    if (!row?.id) {throw new HttpError(500, "INTERNAL", "internal error");}
     return queued(row);
-  } catch (err) {
+  } catch (error) {
     // A Stripe webhook holds the owner row longer than a send should wait; nothing was written, so the client retries.
-    if (isLockTimeout(err)) throw new HttpError(429, "QUEUE_BUSY", "billing is busy", { retryAfterSec: 5, ahead: 0, reason: "BILLING_LOCKED" });
-    if (!isUnique(err) || !input.idempotencyKey) throw err;
+    if (isLockTimeout(error)) {throw new HttpError(429, "QUEUE_BUSY", "billing is busy", { retryAfterSec: 5, ahead: 0, reason: "BILLING_LOCKED" });}
+    if (!isUnique(error) || !input.idempotencyKey) {throw error;}
     const existing = await one(db, EXISTING, [input.userId, input.idempotencyKey]);
-    if (!existing) throw err;
+    if (!existing) {throw error;}
     return queued(existing);
   }
 };

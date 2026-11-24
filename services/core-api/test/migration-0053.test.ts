@@ -50,7 +50,7 @@ INSERT INTO notifications (id, user_id, type, title, target) VALUES
 `;
 
 test("migration 0053 on duplicate company bots and several conversations per bot", async (t) => {
-  if (!URL_) return t.skip("set BILLING_PG_URL to a Postgres that may create a database");
+  if (!URL_) {return t.skip("set BILLING_PG_URL to a Postgres that may create a database");}
   const name = `mig0053_${crypto.randomUUID().replaceAll("-", "")}`;
   // One connection helper at a time: livePg points the driver at its own proxy.
   const asAdmin = async (sql: string): Promise<void> => {
@@ -68,7 +68,7 @@ test("migration 0053 on duplicate company bots and several conversations per bot
   const rows = async (sql: string) => (await db.query(sql)).rows;
   try {
     const earlier = readdirSync(DIR).filter((file) => file.endsWith(".sql") && file < TARGET).sort();
-    for (const file of earlier) await db.query(readFileSync(new URL(file, DIR), "utf8"));
+    for (const file of earlier) {await db.query(readFileSync(new URL(file, DIR), "utf8"));}
     await db.query(SEED);
     const before = await rows("SELECT (SELECT count(*)::int FROM messages) AS messages, (SELECT count(*)::int FROM conversations) AS conversations");
 

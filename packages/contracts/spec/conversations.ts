@@ -1,6 +1,6 @@
 import type { Route, Schema } from "./shared.ts";
 import {
-  get, post, patch, del, ref, nullable, obj, closed, arr, str, int, num, bool, uuid, dateTime, any, enumOf,
+  get, post, patch, del, ref, nullable, obj, closed, arr, str, int, bool, uuid, dateTime, any, enumOf,
   body, ok, okPage, noContent, sse, pathParam, query, pageParams,
 } from "./shared.ts";
 
@@ -9,72 +9,6 @@ const id = pathParam("id");
 const seq = { type: "integer", description: "chat_events id; send back as ?after= or Last-Event-ID to resume" };
 const at = { ...dateTime, description: "When the event was stored" };
 const turn = { type: "string", description: "Opaque. Every frame of one run has the same value." };
-
-const option = obj({
-  id: str,
-  label: str,
-  desc: { type: "string", description: "Second line under the label" },
-  sub: { type: "string", description: "Source line on a material row, e.g. 마이 › 서류. Row ids are not answers." },
-  badge: { type: "string", description: "Short tag such as 추천, or the company initial on a material row" },
-  action: { ...enumOf("change"), description: "Material rows only. Opens the material picker. This id is not an answer." },
-}, ["id", "label"]);
-
-const choiceSubmit = obj({
-  label: { type: "string", description: "Confirm button. {n} is the number of selected ids in toggle sections." },
-  zeroLabel: { type: "string", description: "Button label when {n} would be 0" },
-  optionLabels: {
-    type: "object",
-    additionalProperties: { type: "string" },
-    description: "Thumbnails: button label for the selected option id. CLASSIC → 클래식으로 만들기.",
-  },
-}, ["label"]);
-
-const choiceSection = {
-  description: "A new client renders sections instead of options. options stays as the fallback for an older client.",
-  oneOf: [
-    obj({
-      id: str,
-      kind: enumOf("chips"),
-      title: str,
-      multiple: { type: "boolean", description: "Present and true when every chip in the section may be selected" },
-      options: arr(option),
-      selected: { ...arr(str), description: "Default ids. Applied only when the answer contains submit and the section has no pick." },
-    }, ["id", "kind", "options", "selected"]),
-    obj({
-      id: str,
-      kind: enumOf("rows"),
-      title: str,
-      options: arr(option),
-    }, ["id", "kind", "options"]),
-    obj({
-      id: str,
-      kind: enumOf("toggle"),
-      title: str,
-      options: arr(option),
-      selected: { ...arr(str), description: "Default on. With submit, an id is on only when it is in optionIds. Without submit, a toggle section that was not touched keeps selected." },
-    }, ["id", "kind", "options", "selected"]),
-    obj({
-      id: str,
-      kind: enumOf("thumbnails"),
-      title: str,
-      options: arr(option),
-      selected: arr(str),
-    }, ["id", "kind", "options", "selected"]),
-  ],
-};
-
-const hunk = obj({ line: nullable(int), sign: enumOf("+", "-", ""), text: str });
-
-const resolution = obj({
-  status: enumOf("PENDING", "APPROVED", "REJECTED", "EXPIRED"),
-  optionId: nullable(str),
-  optionIds: { ...arr(str), description: "Present when more than one option was picked" },
-}, ["status", "optionId"]);
-
-const resolutionField = {
-  ...resolution,
-  description: "GET .../turns only: how the card was answered. A typed answer to a text gate is APPROVED with optionId null.",
-};
 
 const sseError = obj({
   code: {
@@ -85,18 +19,11 @@ const sseError = obj({
   details: nullable({ type: "object", additionalProperties: true }),
 }, ["code", "message"]);
 
-const resultAction = obj({
-  id: enumOf("apply", "convert", "view"),
-  label: str,
-  method: str,
-  path: str,
-}, ["id", "label"]);
-
 const statusOf = (fields: Record<string, Schema>): Schema => obj({ type: enumOf("status"), text: str, ...fields, seq });
 const since = { ...dateTime, description: "When the run was queued. For waiting: when the card asked." };
 
 /** What a run is doing. The newest status with a phase is the current one. */
-export const statusPhases: Schema[] = [
+export const statusPhases: Array<Schema> = [
   statusOf({ phase: enumOf("queued"), since, ahead: { ...int, description: "In a bot thread, the caller's chat runs queued or running before this one (the bot state's queue position). 0 elsewhere" } }),
   statusOf({ phase: enumOf("thinking", "working"), since }),
   statusOf({ phase: enumOf("waiting"), since, for: enumOf("answer", "confirm"), cardId: uuid }),
@@ -108,7 +35,24 @@ const materialSource = obj({
   title: str,
 }, ["kind", "id", "title"]);
 
-export const chatEvents: Record<string, Schema> = {
+const CARD_KINDS = ["approval", "choice", "plan", "paper", "todo", "diff", "fit", "result"];
+
+/** On every route that returns frames: the A2UI version of the a2ui frames' messages. */
+export const a2uiVersionHeader = {
+  name: "A2UI-Version",
+  in: "header",
+  required: false,
+  schema: enumOf("1.0", "v0.9.1"),
+  description: "The A2UI version of the messages in every a2ui frame: 1.0 (iOS and web) or v0.9.1 (Android). Absent or any other value is v0.9.1. The frame around the messages is the same for both.",
+};
+
+const a2uiMessage = {
+  type: "object",
+  additionalProperties: true,
+  description: "One A2UI message of the Push catalog (catalogId https://push.app/a2ui/catalogs/push/v1/catalog.json), in the version the request's A2UI-Version names. v0.9.1: packages/contracts/a2ui/push-catalog.json with the spec in packages/contracts/a2ui/spec; 1.0: push-catalog.v1.json with spec/v1.0. One wire frame per card case: packages/contracts/a2ui/fixtures (v0.9.1) and fixtures/v1.0.",
+};
+
+export const chatEvents = {
   status: { anyOf: [statusOf({}), ...statusPhases] },
   token: obj({ type: enumOf("token"), text: str, seq }),
   think: obj({
@@ -117,27 +61,6 @@ export const chatEvents: Record<string, Schema> = {
     phase: { type: "string", description: "Resume phase id (analyze, strategy, craft, review, blueprints). The app does not render it." },
     seq,
   }, ["type", "seconds", "phase", "seq"]),
-  plan: obj({
-    type: enumOf("plan"),
-    id: { ...enumOf("strategy", "feedback", "blueprints"), description: "strategy (수정 전략), feedback (고칠 점) or blueprints (프로젝트 기획서). A later plan with the same id replaces the card." },
-    title: str,
-    meta: { type: "string", description: "섹션 4개 or 3개" },
-    rows: arr(obj({
-      tag: { type: "string", description: "전략: 강화, 수정, 추가, 축소. 피드백: 키워드, 도메인, 성과, 기술, 경력. 기획서: 통과, 조건부." },
-      label: str,
-      note: str,
-    }, ["tag", "label", "note"])),
-    keywords: { ...arr(str), description: "Strategy card only. Up to 6, without a leading +" },
-    seq,
-  }, ["type", "id", "title", "meta", "rows", "seq"]),
-  paper: obj({
-    type: enumOf("paper"),
-    id: { type: "string", description: "draft-{target}-v{version}, e.g. draft-resume-v1. A new version is a new card. The same id replaces the card." },
-    label: { type: "string", description: "이력서 초안 v1, 포트폴리오 초안 v1, or 자기소개서 초안 v1" },
-    heading: str,
-    lines: { ...arr(str), description: "Up to 6 preview lines, markdown stripped, each at most 120 characters" },
-    seq,
-  }, ["type", "id", "label", "heading", "lines", "seq"]),
   tool: obj({
     type: enumOf("tool"),
     name: str,
@@ -151,88 +74,22 @@ export const chatEvents: Record<string, Schema> = {
     warning: { type: "string", description: "Set when a READ tool failed with TOOL_FAILED and was retried once (state is ok or err after the retry)" },
     seq,
   }, ["type", "name", "state", "summary", "seq"]),
-  todo: obj({
-    type: enumOf("todo"),
-    id: { type: "string", description: "List id. A later todo with the same id replaces the earlier list. The resume analysis uses analyze." },
-    items: arr(obj({
-      id: str,
-      text: str,
-      state: enumOf("todo", "now", "done"),
-      added: { type: "boolean", description: "True for a step added after the list was first shown" },
-    }, ["id", "text", "state"])),
-    seq,
-  }, ["type", "items", "seq"]),
-  diff: obj({
-    type: enumOf("diff"),
-    documentId: str,
-    revisionId: str,
-    hunks: arr(hunk),
-    seq,
-  }),
-  approval: obj({
-    type: enumOf("approval"),
-    id: uuid,
-    kind: enumOf("DOCUMENT_EDIT", "TOOL_ACTION"),
-    title: str,
-    summary: str,
-    toolName: str,
-    args: { type: "object", additionalProperties: true },
-    documentId: str,
-    hunks: { ...arr(hunk), description: "DOCUMENT_EDIT: the proposed change, sent before it is applied" },
-    foot: { type: "string", description: "Warning under the options, e.g. a hint a tool card shows under its options" },
-    rows: {
-      ...arr(obj({
-        name: str,
-        initial: str,
-        from: str,
-        to: str,
-      }, ["name", "from", "to"])),
-      description: "change_applicant_stage: the person and the stage change. No colour; the client picks it. Absent for other tools.",
+  a2ui: obj({
+    type: enumOf("a2ui"),
+    kind: {
+      ...enumOf(...CARD_KINDS),
+      description: "The card the surface draws. approval and choice take an answer: POST .../approvals/{surfaceId} with the optionId and optionIds the surface's answer action carries.",
     },
-    options: arr(option),
-    expiresAt: { ...dateTime, description: "TOOL_ACTION only: when the card stops taking any answer but reject. null for a card that waits until it is answered, which is every card the server asks now; only a card asked before then carries a time." },
-    resolution: resolutionField,
-    seq,
-  }, ["type", "id", "kind", "title", "options", "seq"]),
-  choice: obj({
-    type: enumOf("choice"),
-    id: str,
-    kind: enumOf("RESUME_GATE", "EMPLOYER_GATE"),
-    title: str,
-    gate: str,
-    recommended: str,
-    auto: { type: "boolean", description: "Present and true when the server answered the gate itself and waits for no answer. The pick is recommended, or for a submit gate the selected ids of its sections." },
-    multiple: { type: "boolean", description: "Present and true when more than one option may be selected" },
-    detail: { type: "string", description: "Line under the title: the boost gate's score change, the review gate's template hint, or the start_document draft in progress" },
-    note: { type: "string", description: "Profile present gate: where the PDF can be exported" },
-    documentId: { type: "string", description: "Present gate: the saved profile document, when there is one" },
-    options: { ...arr(option), description: "Old-client fallback. A client that does not read sections answers from this list." },
-    sections: { ...arr(choiceSection), description: "Present → render these instead of options. Row sections are display only." },
-    submit: { ...choiceSubmit, description: "Present → the answer is the button, not a tapped option. Send optionId submit and optionIds [submit, …picked ids]." },
-    resolution: resolutionField,
-    seq,
-  }, ["type", "id", "options", "seq"]),
-  fit: obj({
-    type: enumOf("fit"),
-    score: num,
-    parts: {
-      ...obj({ techStack: num, experienceLink: num, careerLevel: num, keyword: num, domain: num }, []),
-      description: "Analysis card only. Sent for every plan; plan tells the client what to lock (FREE locks the bars).",
+    surfaceId: {
+      type: "string",
+      description: "The client upserts by this id. approval and choice: the approval id. plan, paper, todo: {kind}:{id}:{turn}, so a later frame of the same turn replaces the surface in place. fit, diff, result: an id stored with the row. The transcript returns the same id as the stream.",
     },
-    topGap: str,
-    plan: enumOf("FREE", "PRO", "ULTRA"),
-    band: { type: "string", description: "The end of the sentence that follows the score, e.g. 보통이고, 고칠 여지가 있어요. (8.0+ 높고, 6.0+ 보통이고, else 낮고)" },
-    summary: { type: "string", description: "Strongest part and up to two weak parts, e.g. 경력 수준은 잘 맞아요. 키워드와 도메인이 약해요." },
-    keywords: { ...arr(obj({ label: str, ok: bool })), description: "Up to 5 posting terms; ok when the resume text contains the term" },
-    projected: {
-      ...obj({ score: num, label: str, bullets: arr(str) }),
-      description: "ULTRA only: the score if every part below 8 reached 8 (label like 8점대) and up to 3 fixes",
+    messages: {
+      ...arr(a2uiMessage),
+      description: "A full snapshot: createSurface, updateComponents, updateDataModel. A client that already has the surface drops createSurface and applies the rest. An answered card replays with /open false and /picked set.",
     },
-    from: { type: "number", description: "Boost card: the score before the first boost cycle" },
-    delta: { type: "string", description: "Boost card: signed change from from, e.g. +1.4" },
-    note: { type: "string", description: "Boost card: 적합도 6.9 → 8.3 (+1.4)" },
     seq,
-  }, ["type", "score", "seq"]),
+  }, ["type", "kind", "surfaceId", "messages", "seq"]),
   file: obj({
     type: enumOf("file"),
     name: { type: "string", description: "Never a .md name. A new turn does not emit a file event; replay drops a stored markdown file event." },
@@ -292,49 +149,6 @@ export const chatEvents: Record<string, Schema> = {
     }, ["text", "verify"])),
     seq,
   }, ["type", "questions", "seq"]),
-  result: {
-    oneOf: [
-      obj({
-        type: enumOf("result"),
-        source: enumOf("external"),
-        taskLine: str,
-        checklist: arr(str),
-        documentId: str,
-        fileName: {
-          type: "string",
-          description: "Edited PDF. Each part drops /\\:*?\"<>|, characters below U+0020, and whitespace, then drops a leading or trailing . or _. With a company: {display}_{company}_{role}.pdf. Empty parts are dropped. The joined name before .pdf is capped at 80 characters; an empty name becomes 이력서. With no company: {original stem}_수정본.pdf, and the stem is shortened so that name stays within 80 characters. An empty stem becomes 이력서.",
-        },
-        pageLine: str,
-        savedLine: str,
-        cardMeta: str,
-        company: str,
-        actions: arr(resultAction),
-        summary: { type: "string", description: "다 됐어요! 적합도를 6.9 → 8.1로 올렸어요. when the fit rose, else 다 됐어요! 이력서를 고쳤어요. (external) or 다 됐어요! 프로필을 고쳤어요. (profile)" },
-        fitFrom: { type: "number", description: "Fit before any edit; present only when the fit rose" },
-        fitTo: { type: "number", description: "Fit after the last boost cycle; present only when the fit rose" },
-        bullets: { ...arr(str), description: "Up to 3 changes: the draft's changes, else the analysis improvements" },
-        seq,
-      }, ["type", "source", "taskLine", "checklist", "documentId", "fileName", "pageLine", "cardMeta", "actions", "seq"]),
-      obj({
-        type: enumOf("result"),
-        source: enumOf("profile"),
-        taskLine: str,
-        checklist: arr(str),
-        documentId: str,
-        name: str,
-        headline: str,
-        title: str,
-        subtitle: str,
-        company: str,
-        actions: arr(resultAction),
-        summary: { type: "string", description: "다 됐어요! 적합도를 6.9 → 8.1로 올렸어요. when the fit rose, else 다 됐어요! 이력서를 고쳤어요. (external) or 다 됐어요! 프로필을 고쳤어요. (profile)" },
-        fitFrom: { type: "number", description: "Fit before any edit; present only when the fit rose" },
-        fitTo: { type: "number", description: "Fit after the last boost cycle; present only when the fit rose" },
-        bullets: { ...arr(str), description: "Up to 3 changes: the draft's changes, else the analysis improvements" },
-        seq,
-      }, ["type", "source", "taskLine", "checklist", "documentId", "name", "headline", "title", "subtitle", "actions", "seq"]),
-    ],
-  },
   done: obj({
     type: enumOf("done"),
     operation: nullable(ref("Operation")),
@@ -358,15 +172,22 @@ export const chatEvents: Record<string, Schema> = {
   }, ["type", "seq"]),
 };
 
-const variants = (event: Schema): Schema[] | undefined => (event.oneOf ?? event.anyOf) as Schema[] | undefined;
+const schemaList = (value: unknown): Array<Schema> => (Array.isArray(value) ? value.filter(isSchema) : []);
+const isSchema = (value: unknown): value is Schema => typeof value === "object" && value !== null && !Array.isArray(value);
+const variantKey = (event: Schema): "oneOf" | "anyOf" | undefined => {
+  if (event.oneOf) {return "oneOf";}
+  return event.anyOf ? "anyOf" : undefined;
+};
 
 /** A stored frame as a stream sends it. A frame without a required seq is the gateway's own error and has no stamp. */
 export const stamped = (event: Schema): Schema => {
-  if (variants(event)) return { ...event, [event.oneOf ? "oneOf" : "anyOf"]: variants(event)!.map(stamped) };
-  const required = event.required as string[];
+  const key = variantKey(event);
+  if (key) {return { ...event, [key]: schemaList(event[key]).map(stamped) };}
+  const properties = isSchema(event.properties) ? event.properties : undefined;
+  const required = Array.isArray(event.required) ? event.required.filter((name) => typeof name === "string") : [];
   return {
     ...event,
-    properties: { ...(event.properties as Record<string, Schema>), at, turn },
+    properties: { ...properties, at, turn },
     required: required.includes("seq") ? [...required, "at", "turn"] : required,
   };
 };
@@ -380,15 +201,16 @@ const chatStreamDescription = "Frames are `id: <seq>` + `data: <json>` with no `
   + "After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. "
   + "done with `awaiting` means the turn paused for an approval or choice card (operation is null). done with a null operation and no awaiting ends a job that wrote no reply, such as a card answer the run dropped. A stream-level failure emits an error frame without seq. "
   + "The queued job writes one status frame, text 대기 중, with phase queued, since, and ahead. This stream carries no other status: the phases thinking, working and waiting, and the notice event, are written only in a bot thread (GET /bots/{id}/stream). A status row stored before phases has text only. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Replay still forwards a stored row of any of those types. "
-  + "The resume flow sends fit twice: after the analysis when a posting is known and managed AI is on, and after each boost cycle (with from, delta, note). "
-  + "During the analysis it sends todo id analyze with now/done states and READ tool lines with target, resultLine and extra. "
+  + "Every Bot card (approval, choice, plan, paper, todo, diff, fit, result) arrives as an a2ui frame: an A2UI surface of the Push catalog, in v0.9.1 or, with the request header A2UI-Version: 1.0, in 1.0. The card fields stay on the stored chat_events row, which services/ai turns into the surface, and are never sent. A card the server answered itself (a choice with auto) sends no frame; the Bot says what it picked in a token. "
+  + "Inside a surface, the action answer carries {optionId, optionIds?} for POST .../approvals/{surfaceId}. After answering, the client sets /open to false and /picked to the sent ids itself; the server sends no update. The actions open_review, share, result_action, open_plan, change and open_posting are handled in the app and never sent. "
+  + "The resume flow sends a fit surface after the analysis when a posting is known and managed AI is on, and after each boost cycle. During the analysis it sends the todo surface of list analyze, updated in place, and READ tool lines with target, resultLine and extra. "
   + "Every field added after the first release is optional; a client that ignores it keeps working. "
   + "A new turn does not emit a file event. Replay drops a stored file event whose name ends in .md or whose mime is text/markdown. Other stored file events are still replayed. GET .../artifacts omits markdown. GET .../artifacts/{name} still downloads any artifact by name, including markdown. "
-  + "think, plan, and paper are stored and replayed. think carries seconds and phase only, never model reasoning. plan id strategy is the 수정 전략 card; plan id feedback is the 고칠 점 card; the same id replaces the card. paper is a draft preview, not a markdown file card. "
-  + "A choice may add sections and submit. options stays the fallback an older client renders and answers. For a card with sections, send optionId submit and optionIds [submit, …picked ids]; ids from any answerable section are valid. The intake materials are a toggle section whose ids (m_file, m_posting, m_github) are answers; an unchecked id drops that material. Ids of a rows section are not answers. An answer contains submit only when optionId is submit or submit is in optionIds. Without submit, chips and thumbnails use the sent ids and a missing section stays unset; a toggle uses the sent ids, and a toggle section with no id keeps its selected default. "
-  + "Gate quality sits after review and before the template gate. It lists automatic fixes as a diff and recommendation toggles. Gate read_failed asks how to continue when the posting could not be read; paste and pick stay on that gate until the next message, and proceed continues to the analyze gate. Neither gate has a cancel option. The present gate (결과를 확인할까요?) is never asked: the flow saves the profile, sends the choice with auto true and no note, and goes on. The tool update_my_profile runs without an approval card; the client shows what changed and lets the person revert it.";
+  + "think is stored and replayed; it carries seconds and phase only, never model reasoning. The plan surface of id strategy is the 수정 전략 card and of id feedback the 고칠 점 card; the paper surface is a draft preview, not a markdown file card. "
+  + "A choice surface whose PushChoice answer is submit is answered with optionId submit and optionIds [submit, …picked ids]; ids from any answerable question are valid. The intake materials are a multiple question whose ids (m_file, m_posting, m_github) are answers; an unchecked id drops that material. Ids of a question with answerable false are not answers. An answer contains submit only when optionId is submit or submit is in optionIds. Without submit, chips and thumbnails use the sent ids and a missing section stays unset; a toggle uses the sent ids, and a toggle section with no id keeps its selected default. "
+  + "Gate quality sits after review and before the template gate. It lists automatic fixes as a diff and recommendation toggles. Gate read_failed asks how to continue when the posting could not be read; paste and pick stay on that gate until the next message, and proceed continues to the analyze gate. Neither gate has a cancel option. The present gate (결과를 확인할까요?) is never asked: the flow saves the profile, stores the choice with auto true and no note, sends no frame for it, and goes on. The tool update_my_profile runs without an approval card; the client shows what changed and lets the person revert it.";
 
-export const messageText = { type: "string", minLength: 1, maxLength: 20000 };
+export const messageText = { type: "string", minLength: 1, maxLength: 20_000 };
 
 export const PERSONAL_INTENTS = [
   "match_posting", "fit", "gaps", "experience", "boost",
@@ -439,7 +261,7 @@ const chatJob = obj({
 
 const expectedRevision = closed({ expectedRevision: int });
 
-export const routes: Route[] = [
+export const routes: Array<Route> = [
   get("gateway", "/api/v1/conversations", {
     tag: "conversations",
     summary: "List conversations",
@@ -512,9 +334,9 @@ export const routes: Route[] = [
     summary: "List chat turns with their cards",
     description: "Newest first; one item per chat job, so a reopened conversation can draw its cards again. In a personal conversation only the caller's jobs are listed. "
       + "events are the stored stream frames (same shapes as the stream, with seq) minus status and done; consecutive token frames are joined into one, and markdown file events are dropped. "
-      + "approval and choice events carry resolution. userMessageId and assistantMessageId are the messages this job wrote, or null when it wrote none (a resumed job has no USER message; a turn that paused before replying has no ASSISTANT message). "
+      + "Cards are a2ui frames in the version A2UI-Version names, with the answer from the approvals row baked into their data model. userMessageId and assistantMessageId are the messages this job wrote, or null when it wrote none (a resumed job has no USER message; a turn that paused before replying has no ASSISTANT message). "
       + "answer is set on a job started by answering a card. 404 when the conversation is not visible.",
-    params: [id, ...pageParams],
+    params: [id, ...pageParams, a2uiVersionHeader],
     responses: { 200: okPage(ref("ConversationTurn")) },
   }),
   get("gateway", "/api/v1/conversations/{id}/messages", {
@@ -536,7 +358,7 @@ export const routes: Route[] = [
     tag: "conversations",
     summary: "Send a message and stream the reply",
     description: "Same body and checks as POST .../messages; a non-202 result from core is returned as is. " + chatStreamDescription,
-    params: [id],
+    params: [id, a2uiVersionHeader],
     body: postMessageBody,
     responses: { 200: sse(streamEvents, "Chat reply stream") },
   }),
@@ -548,6 +370,7 @@ export const routes: Route[] = [
       id,
       query("after", { type: "integer", minimum: 0 }, "Resume after this seq; the Last-Event-ID header is used when absent"),
       { name: "Last-Event-ID", in: "header", required: false, schema: str },
+      a2uiVersionHeader,
     ],
     responses: { 200: sse(streamEvents, "Chat reply stream"), 204: { description: "No active chat job" } },
   }),
@@ -714,7 +537,7 @@ const opEvent = (payload: Schema): Schema => obj({ operationId: uuid, sequence: 
 
 const { status: _status, done: _done, ...turnEvents } = chatEvents;
 
-export const schemas: Record<string, Schema> = {
+export const schemas = {
   ConversationTurn: obj({
     jobId: uuid,
     status: enumOf("PENDING", "RUNNING", "DONE", "FAILED", "CANCELLED"),

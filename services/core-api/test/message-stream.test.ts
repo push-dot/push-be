@@ -1,40 +1,45 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import type { QueryResult } from "../src/db.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
+
+const jsonOf = <T>(res: Response): Promise<T> => res.json();
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const CONV = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const COMPANY = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const NOW = new Date("2026-10-22T00:00:00Z");
 
-type Row = Record<string, unknown>;
+type Row = QueryResult["rows"][number];
 type World = { company?: Row | null; balance?: string; depth?: number; consent?: boolean };
+
+const rows = (list: Array<Row>) => ({ rows: list, rowCount: list.length });
 
 const env = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
   APP_ENV: "production", AI_ORIGIN: "https://ai.example.test", MANAGED_AI: "1", ...extra,
 });
 
 const fake = (world: World = {}) => {
-  const sqls: string[] = [];
+  const sqls: Array<string> = [];
   const query: Deps["query"] = async (sql, params = []) => {
     sqls.push(sql);
-    const rows = (list: Row[]) => ({ rows: list, rowCount: list.length });
     if (sql.includes("access_tokens")) {
       return rows([{ id: USER, display_name: "Ada", locale: "ko", plan: "PRO", created_at: "2026-01-02T03:04:05Z", token_expires_at: "2099-01-01T00:00:00Z" }]);
     }
-    if (sql.includes("rate_limits")) return rows([{ hits: 1 }]);
-    if (sql.includes("user_consents")) return rows([{ reference_data: world.consent !== false }]);
-    if (sql.includes("co.verified_at")) return rows(world.company ? [world.company] : [{ company_id: null }]);
+    if (sql.includes("rate_limits")) {return rows([{ hits: 1 }]);}
+    if (sql.includes("user_consents")) {return rows([{ reference_data: world.consent !== false }]);}
+    if (sql.includes("co.verified_at")) {return rows(world.company ? [world.company] : [{ company_id: null }]);}
     if (sql.includes("FROM conversations c LEFT JOIN companies")) {
       const company = world.company;
       return rows([{ id: CONV, company_id: company?.company_id ?? null, company_plan: company?.plan ?? null, user_plan: "PRO" }]);
     }
-    if (sql.includes("count(*)::int AS n FROM ai_jobs")) return rows([{ n: world.depth ?? 0 }]);
-    if (sql.includes("balance_after")) return rows([{ balance_after: world.balance ?? "100000000" }]);
-    if (sql.includes("INSERT INTO ai_jobs")) return rows([{ id: params[0], queue: params[2] }]);
-    if (sql.startsWith("WITH conv")) return rows([{ id: params[2] }]);
+    if (sql.includes("count(*)::int AS n FROM ai_jobs")) {return rows([{ n: world.depth ?? 0 }]);}
+    if (sql.includes("balance_after")) {return rows([{ balance_after: world.balance ?? "100000000" }]);}
+    if (sql.includes("INSERT INTO ai_jobs")) {return rows([{ id: String(params[0]), queue: String(params[2]) }]);}
+    if (sql.startsWith("WITH conv")) {return rows([{ id: String(params[2]) }]);}
     return rows([]);
   };
   return { query, sqls };
@@ -49,7 +54,7 @@ const stream = (body: Row = { text: "안녕", accessMode: "AUTO" }): Request =>
 
 const deps = (query: Deps["query"]): Deps => ({ query, now: () => NOW, fetch: async () => new Response("{}", { status: 200 }) });
 
-const errorCode = async (res: Response): Promise<string> => (await res.json() as { error: { code: string } }).error.code;
+const errorCode = async (res: Response): Promise<string> => (await jsonOf<{ error: { code: string } }>(res)).error.code;
 
 test("a stuck dispatcher kick does not hold the chat response", async () => {
   resetLimits();
@@ -74,7 +79,7 @@ test("the stream route queues a job without an Idempotency-Key on both backends"
     const db = fake();
     const res = await handle(stream(), env({ QUEUE_BACKEND: backend }), deps(db.query));
     assert.equal(res.status, 202, backend);
-    const body = await res.json() as { data: { result: { value: { jobId: string } } } };
+    const body = await jsonOf<{ data: { result: { value: { jobId: string } } } }>(res);
     assert.match(body.data.result.value.jobId, /^[0-9a-f-]{36}$/);
     const insert = db.sqls.find((sql) => sql.startsWith("WITH conv")) || "";
     assert.match(insert, /UPDATE approvals SET status = 'REJECTED'/, backend);
@@ -104,7 +109,7 @@ test("the stream route rejects before queueing: plan gate, unverified company, c
   resetLimits();
   const busy = await handle(stream(), env({ QUEUE_BACKEND: "redis" }), deps(fake({ depth: 1_000_000 }).query));
   assert.equal(busy.status, 429);
-  const error = (await busy.json() as { error: { code: string; details: { retryAfterSec: number; ahead: number } } }).error;
+  const error = (await jsonOf<{ error: { code: string; details: { retryAfterSec: number; ahead: number } } }>(busy)).error;
   assert.equal(error.code, "QUEUE_BUSY");
   assert.equal(error.details.ahead, 1_000_000);
   assert.equal(typeof error.details.retryAfterSec, "number");
@@ -115,11 +120,10 @@ test("redis idempotent stream retry does not re-run approval rejection or status
   const JOB = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const KEY = "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee";
   let inserts = 0;
-  const sqls: string[] = [];
+  const sqls: Array<string> = [];
   const query: Deps["query"] = async (sql, params = []) => {
-    const rows = (list: Row[]) => ({ rows: list, rowCount: list.length });
     if (sql.includes("SELECT id, queue FROM ai_jobs WHERE user_id")) {
-      if (inserts > 0) return rows([{ id: JOB, queue: "personal.chat" }]);
+      if (inserts > 0) {return rows([{ id: JOB, queue: "q:chat" }]);}
       return rows([]);
     }
     if (sql.startsWith("WITH conv")) {
@@ -128,19 +132,19 @@ test("redis idempotent stream retry does not re-run approval rejection or status
     }
     if (sql.includes("INSERT INTO ai_jobs")) {
       inserts += 1;
-      return rows([{ id: params[0], queue: params[2] }]);
+      return rows([{ id: String(params[0]), queue: String(params[2]) }]);
     }
     if (sql.includes("access_tokens")) {
       return rows([{ id: USER, display_name: "Ada", locale: "ko", plan: "PRO", created_at: "2026-01-02T03:04:05Z", token_expires_at: "2099-01-01T00:00:00Z" }]);
     }
-    if (sql.includes("rate_limits")) return rows([{ hits: 1 }]);
-    if (sql.includes("user_consents")) return rows([{ reference_data: true }]);
-    if (sql.includes("co.verified_at")) return rows([{ company_id: null }]);
+    if (sql.includes("rate_limits")) {return rows([{ hits: 1 }]);}
+    if (sql.includes("user_consents")) {return rows([{ reference_data: true }]);}
+    if (sql.includes("co.verified_at")) {return rows([{ company_id: null }]);}
     if (sql.includes("FROM conversations c LEFT JOIN companies")) {
       return rows([{ id: CONV, company_id: null, company_plan: null, user_plan: "PRO" }]);
     }
-    if (sql.includes("count(*)::int AS n FROM ai_jobs")) return rows([{ n: 0 }]);
-    if (sql.includes("balance_after")) return rows([{ balance_after: "100000000" }]);
+    if (sql.includes("count(*)::int AS n FROM ai_jobs")) {return rows([{ n: 0 }]);}
+    if (sql.includes("balance_after")) {return rows([{ balance_after: "100000000" }]);}
     return rows([]);
   };
   const run = () => handle(new Request(`https://core.example/api/v1/conversations/${CONV}/messages/stream`, {

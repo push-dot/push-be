@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
+import { handle, resetLimits } from '../src/handler.ts';
+import type { Deps, FrontEnv, Query } from '../src/handler.ts';
 import { complete, STORED } from "./fakes.ts";
+import type { Row } from "../src/types.ts";
 import { ownerOf } from "../src/routes/owner.ts";
+
+function assertBody<T>(_value: unknown): asserts _value is T { /* the test's own assertions check the shape it reads */ }
+
+const readJson = async <T>(res: Response): Promise<T> => {
+  const body: unknown = await res.json();
+  assertBody<T>(body);
+  return body;
+};
 
 const CONV = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const JOB = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -27,16 +37,16 @@ const send = (body: unknown = { text: "안녕", accessMode: "AUTO" }): Request =
 
 test("the gateway queues the message in core and streams that job's events", async () => {
   resetLimits();
-  const forwarded: { path: string; body: string }[] = [];
-  const reads: unknown[][] = [];
+  const forwarded: Array<{ path: string; body: string }> = [];
+  const reads: Array<Array<unknown>> = [];
   const res = await handle(send(), env(async (request) => {
     forwarded.push({ path: new URL(request.url).pathname, body: await request.text() });
     return new Response(JSON.stringify({ data: { id: JOB, status: "QUEUED", result: { kind: "CHAT_MESSAGE", value: { jobId: JOB } } } }),
       { status: 202, headers: { "content-type": "application/json" } });
-  }), deps(async (sql, params = []) => {
-    if (!sql.includes("chat_events")) return [];
+  }), deps(async (sql, params = []): Promise<Array<Row>> => {
+    if (!sql.includes("chat_events")) {return [];}
     reads.push(params);
-    if (reads.length > 1) return [];
+    if (reads.length > 1) {return [];}
     return [
       { id: 7, type: "status", payload: { text: "대기 중" } },
       { id: 8, type: "token", payload: { text: "안녕하세요" } },
@@ -62,7 +72,7 @@ test("core errors come back as JSON before any stream", async () => {
     )), deps(async () => { throw new Error("no event reads on an error"); }));
     assert.equal(res.status, status);
     assert.equal(res.headers.get("content-type"), "application/json");
-    assert.equal((await res.json() as { error: { code: string } }).error.code, code);
+    assert.equal((await readJson<{ error: { code: string } }>(res)).error.code, code);
   }
 });
 
@@ -70,21 +80,22 @@ test("chat stream messages are owned by core", () => {
   assert.equal(ownerOf("POST", `/api/v1/conversations/${CONV}/messages/stream`), "core");
 });
 
+const acceptedCore = async () => new Response(JSON.stringify({ data: { id: JOB, status: "QUEUED", result: { kind: "CHAT_MESSAGE", value: { jobId: JOB } } } }),
+  { status: 202, headers: { "content-type": "application/json" } });
+
 test("a token holds at most three open streams; closing one frees a slot", async () => {
   resetLimits();
-  const core = async () => new Response(JSON.stringify({ data: { id: JOB, status: "QUEUED", result: { kind: "CHAT_MESSAGE", value: { jobId: JOB } } } }),
-    { status: 202, headers: { "content-type": "application/json" } });
   const quiet = { ...deps(async () => []), sleep: () => new Promise<void>(() => {}) };
   const open = [];
   for (let i = 0; i < 3; i++) {
-    const res = await handle(send(), env(core), quiet);
+    const res = await handle(send(), env(acceptedCore), quiet);
     assert.equal(res.status, 200);
     open.push(res);
   }
-  const over = await handle(send(), env(core), quiet);
+  const over = await handle(send(), env(acceptedCore), quiet);
   assert.equal(over.status, 429);
-  assert.equal((await over.json() as { error: { code: string } }).error.code, "RATE_LIMITED");
+  assert.equal((await readJson<{ error: { code: string } }>(over)).error.code, "RATE_LIMITED");
   await open[0].body!.cancel();
-  assert.equal((await handle(send(), env(core), quiet)).status, 200);
+  assert.equal((await handle(send(), env(acceptedCore), quiet)).status, 200);
   await Promise.all(open.slice(1).map((r) => r.body!.cancel()));
 });

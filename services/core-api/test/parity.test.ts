@@ -3,21 +3,29 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import { base64ToBytes, decryptAes, encryptAes, masterKey, verifyPkce } from "../src/crypto.ts";
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
 import { verifyStripe } from "../src/routes/billing.ts";
 import { decodeCursor, encodeCursor, formatJsonTimestamp } from "../src/time.ts";
 import { uuid5Url } from "../src/http.ts";
 
+const parseAs = <T>(text: string): T => {
+  const parsed: T = JSON.parse(text);
+  return parsed;
+};
+const jsonOf = <T>(res: Response): Promise<T> => res.json();
+
 const USER = "12345678-1234-5678-1234-567812345678";
 const NOW = new Date("2026-10-18T00:00:00Z");
-const VECTORS = JSON.parse(readFileSync(new URL("../../../packages/contracts/parity-vectors.json", import.meta.url), "utf8")) as {
+type Vectors = {
   timestamp: { input: string; json: string };
   userMessageId: { jobId: string; id: string };
   pkce: { verifier: string; challenge: string };
   aes: { master: string; userId: string; provider: string; plaintext: string; nonce: string; ciphertext: string };
   stripe: { payload: string; secret: string; timestamp: number; header: string };
 };
+const VECTORS = parseAs<Vectors>(readFileSync(new URL("../../../packages/contracts/parity-vectors.json", import.meta.url), "utf8"));
 
 function env(extra: Partial<CoreEnv> = {}): CoreEnv {
   return {
@@ -49,7 +57,7 @@ test("timestamps, cursors, uuid5, pkce, AES-GCM, and Stripe match Python", async
   assert.equal(opened, VECTORS.aes.plaintext);
   const sealed = await encryptAes(key, VECTORS.aes.plaintext, VECTORS.aes.userId, VECTORS.aes.provider, nonce);
   let bin = "";
-  for (const b of sealed.ciphertext) bin += String.fromCharCode(b);
+  for (const b of sealed.ciphertext) {bin += String.fromCharCode(b);}
   assert.equal(btoa(bin), VECTORS.aes.ciphertext);
   await verifyStripe(
     new TextEncoder().encode(VECTORS.stripe.payload),
@@ -59,19 +67,20 @@ test("timestamps, cursors, uuid5, pkce, AES-GCM, and Stripe match Python", async
   );
 });
 
+const query: Deps["query"] = async (sql) => {
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+  if (sql.includes("refresh_tokens")) {return { rows: [], rowCount: 0 };}
+  return { rows: [], rowCount: 0 };
+};
+
 test("auth and idempotency errors match the Python middleware", async () => {
   resetLimits();
-  const query: Deps["query"] = async (sql) => {
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("refresh_tokens")) return { rows: [], rowCount: 0 };
-    return { rows: [], rowCount: 0 };
-  };
   const missing = await handle(new Request("https://core.example/api/v1/conversations", {
     method: "POST",
     body: "{}",
   }), env(), deps(query));
   assert.equal(missing.status, 401);
-  assert.equal((await missing.json() as { error: { code: string; message: string } }).error.message, "missing bearer token");
+  assert.equal((await jsonOf<{ error: { code: string; message: string } }>(missing)).error.message, "missing bearer token");
 
   const refresh = await handle(new Request("https://core.example/api/v1/auth/refresh", {
     method: "POST",
@@ -79,7 +88,7 @@ test("auth and idempotency errors match the Python middleware", async () => {
     body: '{"refreshToken":"nope"}',
   }), env(), deps(query));
   assert.equal(refresh.status, 401);
-  assert.equal((await refresh.json() as { error: { message: string } }).error.message, "invalid refresh token");
+  assert.equal((await jsonOf<{ error: { message: string } }>(refresh)).error.message, "invalid refresh token");
 
   const key = await handle(new Request("https://core.example/api/v1/conversations", {
     method: "POST",
@@ -89,30 +98,30 @@ test("auth and idempotency errors match the Python middleware", async () => {
     if (sql.includes("access_tokens")) {
       return { rows: [{ id: USER, display_name: "Ada", locale: "ko", plan: "PRO", created_at: "2026-01-02T03:04:05Z", token_expires_at: "2099-01-01T00:00:00Z" }], rowCount: 1 };
     }
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     return { rows: [], rowCount: 0 };
   }));
   assert.equal(key.status, 400);
-  const body = await key.json() as { error: { code: string; details: { field: string } } };
+  const body = await jsonOf<{ error: { code: string; details: { field: string } } }>(key);
   assert.equal(body.error.code, "VALIDATION_ERROR");
   assert.equal(body.error.details.field, "Idempotency-Key");
 });
 
 test("an exhausted free managed chat is rejected and a paid chat is queued", async () => {
   resetLimits();
-  const sqls: string[] = [];
+  const sqls: Array<string> = [];
   let scheduled = "";
   const query: Deps["query"] = async (sql) => {
     sqls.push(sql);
     if (sql.includes("access_tokens")) {
       return { rows: [{ id: USER, display_name: "Ada", locale: "ko", plan: "FREE", created_at: "2026-01-02T03:04:05Z", token_expires_at: "2099-01-01T00:00:00Z" }], rowCount: 1 };
     }
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
-    if (sql.includes("co.verified_at")) return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };
-    if (sql.includes("FROM users")) return { rows: [{ plan: "FREE" }], rowCount: 1 };
-    if (sql.includes("ai_usage")) return { rows: [{ spent: 1_800_000 }], rowCount: 1 };
-    if (sql.includes("idempotency_keys") && sql.startsWith("INSERT")) return { rows: [{ id: "idem" }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("user_consents")) {return { rows: [{ reference_data: true }], rowCount: 1 };}
+    if (sql.includes("co.verified_at")) {return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };}
+    if (sql.includes("FROM users")) {return { rows: [{ plan: "FREE" }], rowCount: 1 };}
+    if (sql.includes("ai_usage")) {return { rows: [{ spent: 1_800_000 }], rowCount: 1 };}
+    if (sql.includes("idempotency_keys") && sql.startsWith("INSERT")) {return { rows: [{ id: "idem" }], rowCount: 1 };}
     return { rows: [], rowCount: 0 };
   };
   const body = JSON.stringify({
@@ -130,7 +139,7 @@ test("an exhausted free managed chat is rejected and a paid chat is queued", asy
     body,
   }), env(), deps(query));
   assert.equal(denied.status, 403);
-  assert.equal((await denied.json() as { error: { code: string } }).error.code, "FEATURE_DISABLED");
+  assert.equal((await jsonOf<{ error: { code: string } }>(denied)).error.code, "FEATURE_DISABLED");
   assert.equal(sqls.some((sql) => sql.includes("chat_jobs")), false);
 
   const wake: Deps["fetch"] = async (_input, init) => {
@@ -142,13 +151,13 @@ test("an exhausted free managed chat is rejected and a paid chat is queued", asy
     if (sql.includes("access_tokens")) {
       return { rows: [{ id: USER, display_name: "Ada", locale: "ko", plan: "FREE", created_at: "2026-01-02T03:04:05Z", token_expires_at: "2099-01-01T00:00:00Z" }], rowCount: 1 };
     }
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
-    if (sql.includes("co.verified_at")) return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };
-    if (sql.includes("FROM users")) return { rows: [{ plan: null }], rowCount: 1 };
-    if (sql.includes("ai_usage")) return { rows: [{ spent: 0 }], rowCount: 1 };
-    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-free" }], rowCount: 1 };
-    if (sql.includes("chat_jobs")) return { rows: [{ id: "job-free" }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("user_consents")) {return { rows: [{ reference_data: true }], rowCount: 1 };}
+    if (sql.includes("co.verified_at")) {return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };}
+    if (sql.includes("FROM users")) {return { rows: [{ plan: null }], rowCount: 1 };}
+    if (sql.includes("ai_usage")) {return { rows: [{ spent: 0 }], rowCount: 1 };}
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {return { rows: [{ id: "idem-free" }], rowCount: 1 };}
+    if (sql.includes("chat_jobs")) {return { rows: [{ id: "job-free" }], rowCount: 1 };}
     return { rows: [], rowCount: 0 };
   };
   const opened = await handle(new Request("https://core.example/api/v1/conversations/" + USER + "/messages", {
@@ -167,13 +176,13 @@ test("an exhausted free managed chat is rejected and a paid chat is queued", asy
     if (sql.includes("access_tokens")) {
       return { rows: [{ id: USER, display_name: "Ada", locale: "ko", plan: "PRO", created_at: "2026-01-02T03:04:05Z", token_expires_at: "2099-01-01T00:00:00Z" }], rowCount: 1 };
     }
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
-    if (sql.includes("co.verified_at")) return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };
-    if (sql.includes("FROM users")) return { rows: [{ plan: "PRO" }], rowCount: 1 };
-    if (sql.includes("ai_usage")) return { rows: [{ spent: 0 }], rowCount: 1 };
-    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-2" }], rowCount: 1 };
-    if (sql.includes("chat_jobs")) return { rows: [{ id: "job-1" }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("user_consents")) {return { rows: [{ reference_data: true }], rowCount: 1 };}
+    if (sql.includes("co.verified_at")) {return { rows: [{ company_id: null, plan: null, verified_at: null }], rowCount: 1 };}
+    if (sql.includes("FROM users")) {return { rows: [{ plan: "PRO" }], rowCount: 1 };}
+    if (sql.includes("ai_usage")) {return { rows: [{ spent: 0 }], rowCount: 1 };}
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {return { rows: [{ id: "idem-2" }], rowCount: 1 };}
+    if (sql.includes("chat_jobs")) {return { rows: [{ id: "job-1" }], rowCount: 1 };}
     return { rows: [], rowCount: 0 };
   };
   const queued = await handle(new Request("https://core.example/api/v1/conversations/" + USER + "/messages", {
@@ -186,7 +195,7 @@ test("an exhausted free managed chat is rejected and a paid chat is queued", asy
     body,
   }), env(origin), deps(paid, { fetch: wake }));
   assert.equal(queued.status, 202);
-  const op = await queued.json() as { data: { id: string; status: string; type: string; result: { value: { jobId: string } } } };
+  const op = await jsonOf<{ data: { id: string; status: string; type: string; result: { value: { jobId: string } } } }>(queued);
   assert.equal(op.data.status, "QUEUED");
   assert.equal(op.data.type, "CHAT_MESSAGE");
   assert.equal(op.data.result.value.jobId, op.data.id);
@@ -213,7 +222,7 @@ test("a conversation patch reports the current revision", async () => {
     if (sql.includes("access_tokens")) {
       return { rows: [{ id: USER, display_name: "Ada", locale: "ko", plan: "PRO", created_at: "2026-01-02T03:04:05.172000Z", token_expires_at: "2099-01-01T00:00:00Z" }], rowCount: 1 };
     }
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     if (sql.startsWith("SELECT") && sql.includes("FROM conversations")) {
       return { rows: [{ id: USER, revision: 4, application_id: null, title: "old", pinned: false, archived: false, created_at: "2026-01-02T03:04:05.172000Z" }], rowCount: 1 };
     }
@@ -229,21 +238,22 @@ test("a conversation patch reports the current revision", async () => {
     body: '{"expectedRevision":1,"title":"new"}',
   }), env(), deps(query));
   assert.equal(res.status, 409);
-  const body = await res.json() as { error: { code: string; details: { currentRevision: number } } };
+  const body = await jsonOf<{ error: { code: string; details: { currentRevision: number } } }>(res);
   assert.equal(body.error.code, "REVISION_CONFLICT");
   assert.equal(body.error.details.currentRevision, 4);
 });
 
+const authed: Deps["query"] = async (sql) => {
+  if (sql.includes("access_tokens")) {
+    return { rows: [{ id: USER, display_name: "Ada", locale: "ko", plan: "FREE", subscription_status: "NONE", created_at: "2026-01-02T03:04:05Z", token_expires_at: "2099-01-01T00:00:00Z" }], rowCount: 1 };
+  }
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+  if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {return { rows: [{ id: "idem" }], rowCount: 1 };}
+  return { rows: [], rowCount: 0 };
+};
+
 test("checkout rejects an unknown plan and an empty webhook body", async () => {
   resetLimits();
-  const authed: Deps["query"] = async (sql) => {
-    if (sql.includes("access_tokens")) {
-      return { rows: [{ id: USER, display_name: "Ada", locale: "ko", plan: "FREE", subscription_status: "NONE", created_at: "2026-01-02T03:04:05Z", token_expires_at: "2099-01-01T00:00:00Z" }], rowCount: 1 };
-    }
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem" }], rowCount: 1 };
-    return { rows: [], rowCount: 0 };
-  };
   const bad = await handle(new Request("https://core.example/api/v1/billing/checkout", {
     method: "POST",
     headers: {
@@ -254,16 +264,16 @@ test("checkout rejects an unknown plan and an empty webhook body", async () => {
     body: '{"planId":"FREE"}',
   }), env(), deps(authed));
   assert.equal(bad.status, 403);
-  assert.equal((await bad.json() as { error: { code: string } }).error.code, "FORBIDDEN");
+  assert.equal((await jsonOf<{ error: { code: string } }>(bad)).error.code, "FORBIDDEN");
 
   const hook = await handle(new Request("https://core.example/api/v1/billing/webhook", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: "",
   }), env(), deps(async (sql) => {
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     return { rows: [], rowCount: 0 };
   }));
   assert.equal(hook.status, 400);
-  assert.equal((await hook.json() as { error: { message: string } }).error.message, "unreadable body");
+  assert.equal((await jsonOf<{ error: { message: string } }>(hook)).error.message, "unreadable body");
 });

@@ -5,18 +5,18 @@ import type { Route, Schema } from "../spec/shared.ts";
 
 const IDEMPOTENCY_KEY = { $ref: "#/components/parameters/IdempotencyKey" };
 
-const sortDeep = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map(sortDeep);
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return Object.fromEntries(Object.keys(record).sort().map((key) => [key, sortDeep(record[key])]));
-  }
+const sortKeys = (value: Schema): Schema =>
+  Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortDeep(value[key])]));
+
+const sortDeep = (value: Schema[string]): Schema[string] => {
+  if (Array.isArray(value)) {return value.map(sortDeep);}
+  if (value && typeof value === "object") {return sortKeys(value);}
   return value;
 };
 
 const operationIdOf = (method: string, path: string): string => {
   const scoped = path.startsWith("/api/v1/") ? path.slice("/api/v1".length) : `/root${path}`;
-  const words = scoped.replace(/\{(\w+)\}/g, "By-$1").split(/[/_-]/).filter(Boolean);
+  const words = scoped.replaceAll(/\{(\w+)\}/g, "By-$1").split(/[/_-]/).filter(Boolean);
   return method + words.map((word) => word[0].toUpperCase() + word.slice(1)).join("");
 };
 
@@ -24,23 +24,25 @@ const operationOf = ({ method, path, owner, spec }: Route): Schema => {
   const auth = spec.auth ?? "user";
   const needsKey = method === "post" && auth === "user" && !path.endsWith("/stream");
   const params = [...(spec.params ?? []), ...(needsKey ? [IDEMPOTENCY_KEY] : [])];
-  return {
+  const operation: Schema = {
     operationId: operationIdOf(method, path),
     tags: [spec.tag],
     summary: spec.summary,
-    ...(spec.description ? { description: spec.description } : {}),
     "x-owner": owner,
-    ...(auth === "public" ? { security: [] } : auth === "optional" ? { security: [{}, { bearer: [] }] } : {}),
-    ...(params.length ? { parameters: params } : {}),
-    ...(spec.body ? { requestBody: spec.body } : {}),
     responses: { ...spec.responses, default: { $ref: "#/components/responses/Error" } },
   };
+  if (spec.description) {operation.description = spec.description;}
+  if (auth === "public") {operation.security = [];}
+  else if (auth === "optional") {operation.security = [{}, { bearer: [] }];}
+  if (params.length) {operation.parameters = params;}
+  if (spec.body) {operation.requestBody = spec.body;}
+  return operation;
 };
 
-const danglingRefs = (spec: Schema): string[] => {
+const danglingRefs = (spec: Schema): Array<string> => {
   const text = JSON.stringify(spec);
   const names = new Set(Object.keys(schemas));
-  return [...text.matchAll(/"#\/components\/schemas\/([^"]+)"/g)].map((m) => m[1]).filter((name) => !names.has(name));
+  return [...text.matchAll(/"#\/components\/schemas\/([^"]+)"/g)].flatMap((m) => (names.has(m[1]) ? [] : [m[1]]));
 };
 
 export const buildSpec = (): Schema => {
@@ -48,13 +50,13 @@ export const buildSpec = (): Schema => {
   const operationIds = new Set<string>();
   for (const r of routes) {
     const item = (paths[r.path] ??= {});
-    if (item[r.method]) throw new Error(`duplicate route ${r.method.toUpperCase()} ${r.path}`);
+    if (item[r.method]) {throw new Error(`duplicate route ${r.method.toUpperCase()} ${r.path}`);}
     item[r.method] = operationOf(r);
     const id = String(item[r.method].operationId);
-    if (operationIds.has(id)) throw new Error(`duplicate operationId ${id}`);
+    if (operationIds.has(id)) {throw new Error(`duplicate operationId ${id}`);}
     operationIds.add(id);
   }
-  const spec = sortDeep({
+  const spec = sortKeys({
     openapi: "3.1.0",
     info: {
       title: "Push API",
@@ -83,9 +85,9 @@ export const buildSpec = (): Schema => {
       },
       schemas,
     },
-  }) as Schema;
+  });
   const dangling = danglingRefs(spec);
-  if (dangling.length) throw new Error(`unknown schemas: ${[...new Set(dangling)].join(", ")}`);
+  if (dangling.length) {throw new Error(`unknown schemas: ${[...new Set(dangling)].join(", ")}`);}
   return spec;
 };
 

@@ -30,7 +30,7 @@ const serves = async (method: string, path: string): Promise<boolean> => {
   const ctx: Ctx = { request, env: {}, deps: { query: refuse, fetch: refuse }, rid: "probe", url, user: USER, now: new Date() };
   try {
     const res = await dispatch(ctx, path);
-    if (touched || res.status !== 404) return true;
+    if (touched || res.status !== 404) {return true;}
     return !(await res.text()).includes("resource not found");
   } catch {
     return true;
@@ -38,20 +38,20 @@ const serves = async (method: string, path: string): Promise<boolean> => {
 };
 
 test("every route core serves is in openapi.json or listed as internal", async () => {
-  const missing: string[] = [];
+  const missing: Array<string> = [];
   for (const path of candidatePaths(FILES)) {
     for (const method of METHODS) {
-      if (!(await serves(method, path))) continue;
-      if (!specRouteFor(method, path) && !isInternal(method, path)) missing.push(`${method} ${path}`);
+      if (!(await serves(method, path))) {continue;}
+      if (!specRouteFor(method, path) && !isInternal(method, path)) {missing.push(`${method} ${path}`);}
     }
   }
   assert.deepEqual(missing, []);
 });
 
 test("every core route in openapi.json is served by core", async () => {
-  const stale: string[] = [];
+  const stale: Array<string> = [];
   for (const route of specRoutes.filter((r) => r.owner === "core")) {
-    if (!(await serves(route.method, route.path))) stale.push(`${route.method} ${route.template}`);
+    if (!(await serves(route.method, route.path))) {stale.push(`${route.method} ${route.template}`);}
   }
   assert.deepEqual(stale, []);
 });

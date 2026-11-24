@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
 import { encodeCursor } from "../src/time.ts";
+
+const jsonOf = async <T>(res: Response): Promise<T> => {
+  const value: T = await res.json();
+  return value;
+};
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const OTHER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -17,17 +23,20 @@ const ANALYSIS_NEW = "33333333-3333-4333-8333-333333333333";
 const ANALYSIS_OLD = "44444444-4444-4444-8444-444444444444";
 const NOW = "2026-10-21T00:00:00.000Z";
 
-type Call = { sql: string; params: unknown[] };
+type Call = { sql: string; params: Array<unknown> };
 type Err = { error: { code: string; details: { field?: string } | null } };
-type Page = { data: { id: string }[]; page: { nextCursor: string | null; hasMore: boolean; total: number } };
+type Page = { data: Array<{ id: string }>; page: { nextCursor: string | null; hasMore: boolean; total: number } };
 
 const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
 const deps = (query: Deps["query"]): Deps => ({ query, now: () => new Date(NOW) });
-const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
+type Row = Awaited<ReturnType<Deps["query"]>>["rows"][number];
 
-const authed = (seen: Call[], extra: Deps["query"]): Deps["query"] => async (sql, params = []) => {
+const emptyRows: Array<Row> = [];
+const empty = { rows: emptyRows, rowCount: 0 };
+
+const authed = (seen: Array<Call>, extra: Deps["query"]): Deps["query"] => async (sql, params = []) => {
   seen.push({ sql, params });
-  if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
   if (sql.includes("access_tokens")) {
     return {
       rows: [{
@@ -37,7 +46,7 @@ const authed = (seen: Call[], extra: Deps["query"]): Deps["query"] => async (sql
       rowCount: 1,
     };
   }
-  if (sql.includes("idempotency_keys")) return { rows: [], rowCount: 0 };
+  if (sql.includes("idempotency_keys")) {return { rows: [], rowCount: 0 };}
   return extra(sql, params);
 };
 
@@ -50,18 +59,18 @@ const card = (id: string, viewedOn: string) => ({
   viewed_on: viewedOn, created_at: NOW, revision: 1, closed_at: null,
 });
 
-const codeOf = async (res: Response): Promise<Err> => await res.json() as Err;
+const codeOf = async (res: Response): Promise<Err> => await jsonOf<Err>(res);
 
 test("lists a posting once, newest viewed day first", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(get("/api/v1/me/posting-views"), env(), deps(authed(seen, async (sql) => {
-    if (sql.includes("count(*)") && sql.includes("posting_views")) return { rows: [{ total: 2 }], rowCount: 1 };
-    if (sql.includes("posting_views")) return { rows: [card(POSTING_A, "2026-10-21"), card(POSTING_B, "2026-10-19")], rowCount: 2 };
+    if (sql.includes("count(*)") && sql.includes("posting_views")) {return { rows: [{ total: 2 }], rowCount: 1 };}
+    if (sql.includes("posting_views")) {return { rows: [card(POSTING_A, "2026-10-21"), card(POSTING_B, "2026-10-19")], rowCount: 2 };}
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as Page;
+  const body = await jsonOf<Page>(res);
   assert.deepEqual(body.data.map((row) => row.id), [POSTING_A, POSTING_B]);
   assert.equal(body.page.total, 2);
   const listed = seen.find((call) => call.sql.includes("ORDER BY") && call.sql.includes("posting_views"));
@@ -74,15 +83,15 @@ test("lists a posting once, newest viewed day first", async () => {
 
 test("hides another user's views", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(get("/api/v1/me/posting-views"), env(), deps(authed(seen, async (sql) => {
-    if (sql.includes("count(*)") && sql.includes("posting_views")) return { rows: [{ total: 1 }], rowCount: 1 };
-    if (sql.includes("pv.user_id = $1") && sql.includes("posting_views")) return { rows: [card(POSTING_A, "2026-10-21")], rowCount: 1 };
-    if (sql.includes("posting_views")) return { rows: [card(POSTING_A, "2026-10-21"), card(POSTING_B, "2026-10-20")], rowCount: 2 };
+    if (sql.includes("count(*)") && sql.includes("posting_views")) {return { rows: [{ total: 1 }], rowCount: 1 };}
+    if (sql.includes("pv.user_id = $1") && sql.includes("posting_views")) {return { rows: [card(POSTING_A, "2026-10-21")], rowCount: 1 };}
+    if (sql.includes("posting_views")) {return { rows: [card(POSTING_A, "2026-10-21"), card(POSTING_B, "2026-10-20")], rowCount: 2 };}
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as Page;
+  const body = await jsonOf<Page>(res);
   assert.deepEqual(body.data.map((row) => row.id), [POSTING_A]);
   const listed = seen.find((call) => call.sql.includes("posting_views") && call.sql.includes("ORDER BY"));
   assert.ok(listed);
@@ -95,11 +104,11 @@ test("returns an empty page when posting_views is missing", async () => {
   resetLimits();
   const missing = Object.assign(new Error('relation "posting_views" does not exist'), { code: "42P01" });
   const res = await handle(get("/api/v1/me/posting-views"), env(), deps(authed([], async (sql) => {
-    if (sql.includes("posting_views")) throw missing;
+    if (sql.includes("posting_views")) {throw missing;}
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as Page;
+  const body = await jsonOf<Page>(res);
   assert.deepEqual(body.data, []);
   assert.deepEqual(body.page, { nextCursor: null, hasMore: false, total: 0 });
 });
@@ -111,8 +120,8 @@ test("rejects a guest", async () => {
   assert.equal((await codeOf(res)).error.code, "UNAUTHENTICATED");
 });
 
-const apps = (rows: Record<string, unknown>[]) => async (sql: string) => {
-  if (sql.includes("FROM applications")) return { rows, rowCount: rows.length };
+const apps = (rows: Array<Row>) => async (sql: string) => {
+  if (sql.includes("FROM applications")) {return { rows, rowCount: rows.length };}
   return empty;
 };
 
@@ -135,7 +144,7 @@ test("finalized document is READY and a draft is DRAFT", async () => {
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { items: { postingId: string; status: string; label: string }[] } };
+  const body = await jsonOf<{ data: { items: Array<{ postingId: string; status: string; label: string }> } }>(res);
   assert.deepEqual(body.data.items, [
     { postingId: POSTING_A, status: "DRAFT", label: "초안 있음" },
     { postingId: POSTING_B, status: "READY", label: "서류 준비됨" },
@@ -145,12 +154,12 @@ test("finalized document is READY and a draft is DRAFT", async () => {
 test("snapshot without a document is READY", async () => {
   resetLimits();
   const res = await handle(get(`/api/v1/me/posting-document-status?postingIds=${POSTING_A}`), env(), deps(authed([], async (sql) => {
-    if (sql.includes("FROM applications")) return { rows: [{ application_id: APP_A, posting_id: POSTING_A }], rowCount: 1 };
-    if (sql.includes("application_snapshots")) return { rows: [{ application_id: APP_A }], rowCount: 1 };
+    if (sql.includes("FROM applications")) {return { rows: [{ application_id: APP_A, posting_id: POSTING_A }], rowCount: 1 };}
+    if (sql.includes("application_snapshots")) {return { rows: [{ application_id: APP_A }], rowCount: 1 };}
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { items: { status: string; label: string }[] } };
+  const body = await jsonOf<{ data: { items: Array<{ status: string; label: string }> } }>(res);
   assert.equal(body.data.items[0].status, "READY");
   assert.equal(body.data.items[0].label, "서류 준비됨");
 });
@@ -159,7 +168,7 @@ test("discovered application with no snapshot is NONE", async () => {
   resetLimits();
   const res = await handle(get(`/api/v1/me/posting-document-status?postingIds=${POSTING_A}`), env(), deps(authed([], apps([{ application_id: APP_A, posting_id: POSTING_A }]))));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { items: { status: string; label: string }[] } };
+  const body = await jsonOf<{ data: { items: Array<{ status: string; label: string }> } }>(res);
   assert.equal(body.data.items[0].status, "NONE");
   assert.equal(body.data.items[0].label, "서류 없음");
 });
@@ -168,20 +177,20 @@ test("unknown id is NONE and does not 404", async () => {
   resetLimits();
   const res = await handle(get(`/api/v1/me/posting-document-status?postingIds=${POSTING_B}`), env(), deps(authed([], async () => empty)));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { items: { postingId: string; status: string }[] } };
+  const body = await jsonOf<{ data: { items: Array<{ postingId: string; status: string }> } }>(res);
   assert.deepEqual(body.data.items, [{ postingId: POSTING_B, status: "NONE", label: "서류 없음" }]);
 });
 
 test("archived document is ignored", async () => {
   resetLimits();
   const res = await handle(get(`/api/v1/me/posting-document-status?postingIds=${POSTING_A}`), env(), deps(authed([], async (sql) => {
-    if (sql.includes("FROM applications")) return { rows: [{ application_id: APP_A, posting_id: POSTING_A }], rowCount: 1 };
-    if (sql.includes("FROM documents")) return { rows: [{ application_id: APP_A, status: "ARCHIVED", updated_at: NOW, id: DOC_A, user_id: USER }], rowCount: 1 };
-    if (sql.includes("application_snapshots")) return { rows: [{ application_id: APP_A }], rowCount: 1 };
+    if (sql.includes("FROM applications")) {return { rows: [{ application_id: APP_A, posting_id: POSTING_A }], rowCount: 1 };}
+    if (sql.includes("FROM documents")) {return { rows: [{ application_id: APP_A, status: "ARCHIVED", updated_at: NOW, id: DOC_A, user_id: USER }], rowCount: 1 };}
+    if (sql.includes("application_snapshots")) {return { rows: [{ application_id: APP_A }], rowCount: 1 };}
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { items: { status: string }[] } };
+  const body = await jsonOf<{ data: { items: Array<{ status: string }> } }>(res);
   assert.equal(body.data.items[0].status, "READY");
 });
 
@@ -203,31 +212,31 @@ test("51 ids is 400", async () => {
 test("other user's document stays NONE", async () => {
   resetLimits();
   const res = await handle(get(`/api/v1/me/posting-document-status?postingIds=${POSTING_A}`), env(), deps(authed([], async (sql) => {
-    if (sql.includes("FROM applications")) return { rows: [{ application_id: APP_A, posting_id: POSTING_A }], rowCount: 1 };
-    if (sql.includes("FROM documents")) return { rows: [{ application_id: APP_A, status: "FINALIZED", updated_at: NOW, id: DOC_A, user_id: OTHER }], rowCount: 1 };
+    if (sql.includes("FROM applications")) {return { rows: [{ application_id: APP_A, posting_id: POSTING_A }], rowCount: 1 };}
+    if (sql.includes("FROM documents")) {return { rows: [{ application_id: APP_A, status: "FINALIZED", updated_at: NOW, id: DOC_A, user_id: OTHER }], rowCount: 1 };}
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { items: { status: string }[] } };
+  const body = await jsonOf<{ data: { items: Array<{ status: string }> } }>(res);
   assert.equal(body.data.items[0].status, "NONE");
 });
 
-const gapRow = (id: string, preferred: string[], missing: string[], posting: string | null = POSTING_A) => ({
+const gapRow = (id: string, preferred: Array<string>, missing: Array<string>, posting: string | null = POSTING_A) => ({
   id, preferred_missing: preferred, missing, application_id: APP_A, company: "Acme", title: "Backend", source_posting_id: posting,
 });
 
 test("preferred_missing comes before missing, newest analysis first, cap 5", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(get("/api/v1/me/suggested-experiences"), env(), deps(authed(seen, async (sql) => {
-    if (sql.includes("gap_analyses")) return { rows: [
+    if (sql.includes("gap_analyses")) {return { rows: [
       gapRow(ANALYSIS_NEW, ["p0", "p1", "p2"], ["m0", "m1", "m2"]),
       gapRow(ANALYSIS_OLD, ["old-pref"], ["old-miss"]),
-    ], rowCount: 2 };
+    ], rowCount: 2 };}
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { items: { id: string; sub: string }[] } };
+  const body = await jsonOf<{ data: { items: Array<{ id: string; sub: string }> } }>(res);
   assert.deepEqual(body.data.items.map((item) => item.id), [
     `${ANALYSIS_NEW}:preferred:0`,
     `${ANALYSIS_NEW}:preferred:1`,
@@ -243,10 +252,10 @@ test("preferred_missing comes before missing, newest analysis first, cap 5", asy
 test("blank and duplicate strings are skipped", async () => {
   resetLimits();
   const res = await handle(get("/api/v1/me/suggested-experiences"), env(), deps(authed([], async (sql) => {
-    if (sql.includes("gap_analyses")) return { rows: [gapRow(ANALYSIS_NEW, ["", "  ", "Kafka", "Kafka", "Go"], [])], rowCount: 1 };
+    if (sql.includes("gap_analyses")) {return { rows: [gapRow(ANALYSIS_NEW, ["", "  ", "Kafka", "Kafka", "Go"], [])], rowCount: 1 };}
     return empty;
   })));
-  const body = await res.json() as { data: { items: { id: string; title: string }[] } };
+  const body = await jsonOf<{ data: { items: Array<{ id: string; title: string }> } }>(res);
   assert.deepEqual(body.data.items.map((item) => item.id), [`${ANALYSIS_NEW}:preferred:2`, `${ANALYSIS_NEW}:preferred:4`]);
   assert.deepEqual(body.data.items.map((item) => item.title), ["Kafka", "Go"]);
 });
@@ -255,11 +264,11 @@ test("title is clipped to 80 code points and is not split", async () => {
   resetLimits();
   const title = "가".repeat(90);
   const res = await handle(get("/api/v1/me/suggested-experiences"), env(), deps(authed([], async (sql) => {
-    if (sql.includes("gap_analyses")) return { rows: [gapRow(ANALYSIS_NEW, [title], [], null)], rowCount: 1 };
+    if (sql.includes("gap_analyses")) {return { rows: [gapRow(ANALYSIS_NEW, [title], [], null)], rowCount: 1 };}
     return empty;
   })));
-  const body = await res.json() as { data: { items: { title: string; meta: string; postingId: string | null }[] } };
-  assert.equal([...body.data.items[0].title].length, 80);
+  const body = await jsonOf<{ data: { items: Array<{ title: string; meta: string; postingId: string | null }> } }>(res);
+  assert.equal(Array.from(body.data.items[0].title).length, 80);
   assert.equal(body.data.items[0].title.includes("\n"), false);
   assert.equal(body.data.items[0].meta, "Acme · Backend");
   assert.equal(body.data.items[0].postingId, null);
@@ -269,7 +278,7 @@ test("no analyses returns items empty", async () => {
   resetLimits();
   const res = await handle(get("/api/v1/me/suggested-experiences"), env(), deps(authed([], async () => empty)));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { items: unknown[] } };
+  const body = await jsonOf<{ data: { items: Array<unknown> } }>(res);
   assert.deepEqual(body.data.items, []);
 });
 
@@ -277,11 +286,11 @@ test("missing gap_analyses table returns items empty", async () => {
   resetLimits();
   const missing = Object.assign(new Error('relation "gap_analyses" does not exist'), { code: "42P01" });
   const res = await handle(get("/api/v1/me/suggested-experiences"), env(), deps(authed([], async (sql) => {
-    if (sql.includes("gap_analyses")) throw missing;
+    if (sql.includes("gap_analyses")) {throw missing;}
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { items: unknown[] } };
+  const body = await jsonOf<{ data: { items: Array<unknown> } }>(res);
   assert.deepEqual(body.data.items, []);
 });
 
@@ -296,26 +305,26 @@ test("guest is 401", async () => {
 
 test("recommended is empty when the caller has no job_category", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(get("/api/v1/profiles?explore=recommended"), env(), deps(authed(seen, async (sql) => {
-    if (sql.includes("SELECT email FROM users")) return { rows: [{ email: "ada@acme.com" }], rowCount: 1 };
-    if (sql.startsWith("SELECT count(*)")) return { rows: [{ total: 0 }], rowCount: 1 };
+    if (sql.includes("SELECT email FROM users")) {return { rows: [{ email: "ada@acme.com" }], rowCount: 1 };}
+    if (sql.startsWith("SELECT count(*)")) {return { rows: [{ total: 0 }], rowCount: 1 };}
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: unknown[] };
+  const body = await jsonOf<{ data: Array<unknown> }>(res);
   assert.deepEqual(body.data, []);
   const listed = seen.find((call) => call.sql.includes("explore") || call.sql.includes("job_category = (SELECT job_category"));
   const sql = seen.map((call) => call.sql).join("\n");
   assert.match(sql, /p\.job_category = \(SELECT job_category FROM profiles WHERE user_id = \$1\)/);
   assert.doesNotMatch(sql, /OR p\.job_category/);
-  assert.equal(listed == null || !String(listed.sql).includes("popular"), true);
+  assert.equal((listed === null || listed === undefined) || !String(listed.sql).includes("popular"), true);
 });
 
-const profile = (extra: Record<string, unknown>) => async (sql: string) => {
-  if (sql.includes("FROM profiles")) return { rows: [extra], rowCount: 1 };
-  if (sql.includes("FROM applications")) return { rows: [{ title: "백엔드", stage: "APPLIED" }], rowCount: 1 };
-  if (sql.includes("gap_analyses")) return { rows: [{ missing: ["Kafka 운영"] }], rowCount: 1 };
+const profile = (extra: Row) => async (sql: string) => {
+  if (sql.includes("FROM profiles")) {return { rows: [extra], rowCount: 1 };}
+  if (sql.includes("FROM applications")) {return { rows: [{ title: "백엔드", stage: "APPLIED" }], rowCount: 1 };}
+  if (sql.includes("gap_analyses")) {return { rows: [{ missing: ["Kafka 운영"] }], rowCount: 1 };}
   return empty;
 };
 
@@ -326,7 +335,7 @@ test("returns career, then application, then gap when all three exist", async ()
     careers: [{ role: "백엔드", description: "api" }],
   }))));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { items: { id: string; title: string; sub: string; source: string }[] } };
+  const body = await jsonOf<{ data: { items: Array<{ id: string; title: string; sub: string; source: string }> } }>(res);
   assert.deepEqual(body.data.items.map((item) => item.id), ["career", "application", "gap"]);
   assert.equal(body.data.items[0].title, "백엔드");
   assert.equal(body.data.items[0].sub, "개발 · 이력서 경력에서");
@@ -339,14 +348,14 @@ test("returns career, then application, then gap when all three exist", async ()
 test("skips a rejected application and a blank career", async () => {
   resetLimits();
   const res = await handle(get("/api/v1/me/career-topics"), env(), deps(authed([], async (sql) => {
-    if (sql.includes("FROM profiles")) return { rows: [{ job_category: "dev", careers: [{ role: "  ", description: "" }] }], rowCount: 1 };
+    if (sql.includes("FROM profiles")) {return { rows: [{ job_category: "dev", careers: [{ role: "  ", description: "" }] }], rowCount: 1 };}
     if (sql.includes("FROM applications")) {
-      if (!sql.includes("REJECTED")) return { rows: [{ title: "거절된 공고" }], rowCount: 1 };
+      if (!sql.includes("REJECTED")) {return { rows: [{ title: "거절된 공고" }], rowCount: 1 };}
       return { rows: [{ title: "백엔드" }], rowCount: 1 };
     }
     return empty;
   })));
-  const body = await res.json() as { data: { items: { id: string; title: string }[] } };
+  const body = await jsonOf<{ data: { items: Array<{ id: string; title: string }> } }>(res);
   assert.deepEqual(body.data.items.map((item) => item.id), ["application"]);
   assert.equal(body.data.items[0].title, "백엔드 준비");
 });
@@ -354,22 +363,22 @@ test("skips a rejected application and a blank career", async () => {
 test("dev gap sub is 개발 · 역량 보완에서", async () => {
   resetLimits();
   const res = await handle(get("/api/v1/me/career-topics"), env(), deps(authed([], async (sql) => {
-    if (sql.includes("FROM profiles")) return { rows: [{ job_category: "dev", careers: [] }], rowCount: 1 };
-    if (sql.includes("gap_analyses")) return { rows: [{ missing: ["스트리밍"] }], rowCount: 1 };
+    if (sql.includes("FROM profiles")) {return { rows: [{ job_category: "dev", careers: [] }], rowCount: 1 };}
+    if (sql.includes("gap_analyses")) {return { rows: [{ missing: ["스트리밍"] }], rowCount: 1 };}
     return empty;
   })));
-  const body = await res.json() as { data: { items: { sub: string }[] } };
+  const body = await jsonOf<{ data: { items: Array<{ sub: string }> } }>(res);
   assert.equal(body.data.items[0].sub, "개발 · 역량 보완에서");
 });
 
 test("null category uses 커리어", async () => {
   resetLimits();
   const res = await handle(get("/api/v1/me/career-topics"), env(), deps(authed([], async (sql) => {
-    if (sql.includes("FROM profiles")) return { rows: [{ job_category: null, careers: [{ description: "설명만 있는 경력 문장입니다" }] }], rowCount: 1 };
-    if (sql.includes("gap_analyses")) return { rows: [{ missing: ["운영"] }], rowCount: 1 };
+    if (sql.includes("FROM profiles")) {return { rows: [{ job_category: null, careers: [{ description: "설명만 있는 경력 문장입니다" }] }], rowCount: 1 };}
+    if (sql.includes("gap_analyses")) {return { rows: [{ missing: ["운영"] }], rowCount: 1 };}
     return empty;
   })));
-  const body = await res.json() as { data: { items: { id: string; sub: string }[] } };
+  const body = await jsonOf<{ data: { items: Array<{ id: string; sub: string }> } }>(res);
   assert.equal(body.data.items.find((item) => item.id === "career")?.sub, "커리어 · 이력서 경력에서");
   assert.equal(body.data.items.find((item) => item.id === "gap")?.sub, "커리어 · 역량 보완에서");
 });
@@ -378,18 +387,18 @@ test("no profile and no applications returns items empty", async () => {
   resetLimits();
   const res = await handle(get("/api/v1/me/career-topics"), env(), deps(authed([], async () => empty)));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { items: unknown[] } };
+  const body = await jsonOf<{ data: { items: Array<unknown> } }>(res);
   assert.deepEqual(body.data.items, []);
 });
 
-const chipsOf = async (row: Record<string, unknown> | null): Promise<string[]> => {
+const chipsOf = async (row: Row | null): Promise<Array<string>> => {
   resetLimits();
   const res = await handle(get("/api/v1/me/match-chips"), env(), deps(authed([], async (sql) => {
-    if (sql.includes("FROM profiles") && row) return { rows: [row], rowCount: 1 };
+    if (sql.includes("FROM profiles") && row) {return { rows: [row], rowCount: 1 };}
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { chips: string[] } };
+  const body = await jsonOf<{ data: { chips: Array<string> } }>(res);
   return body.data.chips;
 };
 
@@ -431,17 +440,17 @@ test("no profile returns chips empty", async () => {
 
 test("omitted sort matches relevance order", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(get("/api/v1/search?type=postings&q=backend"), env(), deps(authed(seen, async (sql) => {
-    if (sql.includes("count(*)")) return { rows: [{ total: 2 }], rowCount: 1 };
-    if (sql.includes("job_postings")) return { rows: [
+    if (sql.includes("count(*)")) {return { rows: [{ total: 2 }], rowCount: 1 };}
+    if (sql.includes("job_postings")) {return { rows: [
       { id: POSTING_A, company: "Acme", title: "backend", created_at: "2026-10-01T00:00:00.000Z", revision: 1 },
       { id: POSTING_B, company: "Acme", title: "newer", created_at: "2026-10-20T00:00:00.000Z", revision: 1 },
-    ], rowCount: 2 };
+    ], rowCount: 2 };}
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as Page;
+  const body = await jsonOf<Page>(res);
   assert.deepEqual(body.data.map((row) => row.id), [POSTING_A, POSTING_B]);
   const ordered = seen.find((call) => call.sql.includes("ORDER BY") && call.sql.includes("job_postings"));
   assert.ok(ordered);
@@ -451,10 +460,10 @@ test("omitted sort matches relevance order", async () => {
 
 test("latest postings ignore relevance", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(get("/api/v1/search?type=postings&q=backend&sort=latest"), env(), deps(authed(seen, async (sql) => {
-    if (sql.includes("count(*)")) return { rows: [{ total: 1 }], rowCount: 1 };
-    if (sql.includes("job_postings")) return { rows: [{ id: POSTING_B, company: "Acme", title: "newer", created_at: NOW, revision: 1 }], rowCount: 1 };
+    if (sql.includes("count(*)")) {return { rows: [{ total: 1 }], rowCount: 1 };}
+    if (sql.includes("job_postings")) {return { rows: [{ id: POSTING_B, company: "Acme", title: "newer", created_at: NOW, revision: 1 }], rowCount: 1 };}
     return empty;
   })));
   assert.equal(res.status, 200);
@@ -466,7 +475,7 @@ test("latest postings ignore relevance", async () => {
 
 test("latest posts order by created_at", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(get("/api/v1/search?type=posts&q=backend&sort=latest"), env(), deps(authed(seen, async () => empty)));
   assert.equal(res.status, 200);
   const ordered = seen.find((call) => call.sql.includes("ORDER BY") && call.sql.includes("FROM posts"));
@@ -477,10 +486,10 @@ test("latest posts order by created_at", async () => {
 
 test("latest people order by updated_at", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(get("/api/v1/search?type=people&q=ada&sort=latest"), env(), deps(authed(seen, async (sql) => {
-    if (sql.includes("SELECT email FROM users")) return { rows: [{ email: "ada@acme.com" }], rowCount: 1 };
-    if (sql.includes("count(*)")) return { rows: [{ total: 0 }], rowCount: 1 };
+    if (sql.includes("SELECT email FROM users")) {return { rows: [{ email: "ada@acme.com" }], rowCount: 1 };}
+    if (sql.includes("count(*)")) {return { rows: [{ total: 0 }], rowCount: 1 };}
     return empty;
   })));
   assert.equal(res.status, 200);
@@ -519,7 +528,7 @@ test("relevance cursor with sort=latest is 400 field cursor", async () => {
 
 test("GET /api/v1/postings?sort=deadline still orders by deadline", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(get("/api/v1/postings?sort=deadline"), env(), deps(authed(seen, async () => empty)));
   assert.equal(res.status, 200);
   const ordered = seen.find((call) => call.sql.includes("ORDER BY") && call.sql.includes("job_postings"));
@@ -530,7 +539,7 @@ test("GET /api/v1/postings?sort=deadline still orders by deadline", async () => 
 test("guest people search stays 401", async () => {
   resetLimits();
   const res = await handle(get("/api/v1/search?type=people&q=ada&sort=latest", false), env(), deps(async (sql) => {
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     return empty;
   }));
   assert.equal(res.status, 401);

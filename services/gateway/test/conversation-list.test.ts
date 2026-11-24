@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
+import { handle, resetLimits } from '../src/handler.ts';
+import type { Deps, FrontEnv, Query } from '../src/handler.ts';
 import { complete } from "./fakes.ts";
 import {
-  CONVERSATION_STATUS, conversationListAuxCtesForLive, LAST_LINE, LAST_MSG_LATERAL, liveOwnerJoin,
+  CONVERSATION_STATUS, LAST_LINE, LAST_MSG_LATERAL, liveOwnerJoin,
   personalOwnerPc,
 } from "../src/middleware/ratelimit.ts";
 import { encodeCursor } from "../src/time.ts";
+import type { JsonObject } from "../src/types.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const COMPANY = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -17,8 +19,8 @@ const DONE_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const POSTING_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const APP_ID = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 const NOW = new Date("2026-10-18T00:00:00Z");
-const RAW_Q = "100%_a\\b";
-const ESCAPED_Q = "%100\\%\\_a\\\\b%";
+const RAW_Q = String.raw`100%_a\b`;
+const ESCAPED_Q = String.raw`%100\%\_a\\b%`;
 const LONG_PREVIEW = "가".repeat(160);
 
 type Fixture = {
@@ -37,7 +39,7 @@ type Fixture = {
   queue_position: number | null;
 };
 
-const FIXTURES: Fixture[] = [
+const FIXTURES: Array<Fixture> = [
   {
     id: RUNNING_ID,
     revision: 2,
@@ -102,11 +104,13 @@ const deps = (query: Query): Deps => ({
 const ordersByUpdated = (sql: string): boolean =>
   /ORDER BY\s+(?:c\.|page\.)?updated_at DESC/.test(sql);
 
-const rowsFor = (sql: string): Record<string, unknown>[] => {
+type Row = Awaited<ReturnType<Query>>[number];
+
+const rowsFor = (sql: string): Array<JsonObject> => {
   const key = ordersByUpdated(sql) ? "updated_at" : "created_at";
   const cut = sql.includes("left(last_msg.text, 140)");
   return [...FIXTURES].sort((a, b) => {
-    if (a[key] === b[key]) return a.id < b.id ? 1 : -1;
+    if (a[key] === b[key]) {return a.id < b.id ? 1 : -1;}
     return a[key] < b[key] ? 1 : -1;
   }).map((row) => ({
     id: row.id,
@@ -125,7 +129,7 @@ const rowsFor = (sql: string): Record<string, unknown>[] => {
   }));
 };
 
-const authRow = (): Record<string, unknown> => ({
+const authRow = (): Row => ({
   id: USER,
   display_name: "Ada",
   locale: "ko",
@@ -137,15 +141,15 @@ const authRow = (): Record<string, unknown> => ({
   hits: 1,
 });
 
-const listQuery = (seen: Array<[string, unknown[]]>): Query => {
+const listQuery = (seen: Array<[string, Array<unknown>]>): Query => {
   return async (sql, params) => {
     seen.push([sql, params]);
     if (sql.includes("access_tokens")) {
       return [{ ...authRow(), rows: rowsFor(sql) }];
     }
-    if (sql.includes("FROM users")) return [authRow()];
-    if (sql.includes("rate_limits")) return [{ hits: 1 }];
-    if (sql.includes("FROM conversations")) return rowsFor(sql);
+    if (sql.includes("FROM users")) {return [authRow()];}
+    if (sql.includes("rate_limits")) {return [{ hits: 1 }];}
+    if (sql.includes("FROM conversations")) {return rowsFor(sql);}
     return [];
   };
 };
@@ -171,7 +175,7 @@ const assertStatusSql = (sql: string): void => {
   assert.ok(sql.includes(LAST_LINE), "last_line uses the shared fragment");
   assert.match(sql, /COALESCE\(appr_last\.title, event_last\.line\)/);
   assertQueuePositionSql(sql);
-  assert.match(sql, new RegExp(LAST_MSG_LATERAL.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(sql, new RegExp(LAST_MSG_LATERAL.trim().replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)));
   assert.doesNotMatch(sql, /m\.text ILIKE/);
   assert.match(sql, /COALESCE\(last_msg\.text, ''\) ILIKE/);
   assert.match(sql, /c\.title ILIKE/);
@@ -187,16 +191,16 @@ const assertStatusSql = (sql: string): void => {
 
 test("newer updated_at leads and the cursor uses that pair", async () => {
   resetLimits();
-  const seen: Array<[string, unknown[]]> = [];
+  const seen: Array<[string, Array<unknown>]> = [];
   const res = await handle(new Request(
     "https://push-be.example/api/v1/conversations?limit=2",
     { headers: { authorization: "Bearer secret-token" } },
   ), env(), deps(listQuery(seen)));
   assert.equal(res.status, 200);
-  const body = await res.json() as {
-    data: { id: string; createdAt: string; updatedAt: string }[];
+  const body: {
+    data: Array<{ id: string; createdAt: string; updatedAt: string }>;
     page: { hasMore: boolean; nextCursor: string };
-  };
+  } = await res.json();
   assert.deepEqual(body.data.map((item) => item.id), [NEEDS_ID, RUNNING_ID]);
   assert.equal(body.data[0].createdAt, "2026-10-15T00:00:00Z");
   assert.equal(body.data[0].updatedAt, "2026-10-17T00:00:00Z");
@@ -211,13 +215,13 @@ test("newer updated_at leads and the cursor uses that pair", async () => {
 
 test("pending approval is NEEDS_APPROVAL with no running job, a running job is RUNNING, otherwise DONE", async () => {
   resetLimits();
-  const seen: Array<[string, unknown[]]> = [];
+  const seen: Array<[string, Array<unknown>]> = [];
   const res = await handle(new Request(
     "https://push-be.example/api/v1/conversations",
     { headers: { authorization: "Bearer secret-token" } },
   ), env(), deps(listQuery(seen)));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: Record<string, unknown>[] };
+  const body: { data: Array<unknown> } = await res.json();
   assert.deepEqual(body.data, [
     {
       id: NEEDS_ID,
@@ -270,7 +274,7 @@ test("pending approval is NEEDS_APPROVAL with no running job, a running job is R
 
 test("both list queries bind the escaped q and keep audience scope", async () => {
   resetLimits();
-  const personalSeen: Array<[string, unknown[]]> = [];
+  const personalSeen: Array<[string, Array<unknown>]> = [];
   const personal = await handle(new Request(
     `https://push-be.example/api/v1/conversations?q=${encodeURIComponent(RAW_Q)}`,
     { headers: { authorization: "Bearer secret-token" } },
@@ -291,7 +295,7 @@ test("both list queries bind the escaped q and keep audience scope", async () =>
   assertStatusSql(personalSql);
 
   resetLimits();
-  const blankSeen: Array<[string, unknown[]]> = [];
+  const blankSeen: Array<[string, Array<unknown>]> = [];
   const blank = await handle(new Request(
     "https://push-be.example/api/v1/conversations?q=%20%20",
     { headers: { authorization: "Bearer secret-token" } },
@@ -300,7 +304,7 @@ test("both list queries bind the escaped q and keep audience scope", async () =>
   assert.equal(blankSeen[0][1][11], null);
 
   resetLimits();
-  const employerSeen: Array<[string, unknown[]]> = [];
+  const employerSeen: Array<[string, Array<unknown>]> = [];
   const cursor = encodeCursor("2026-10-16T00:00:00Z", RUNNING_ID);
   const employer = await handle(new Request(
     `https://push-be.example/api/v1/conversations?audience=EMPLOYER&q=${encodeURIComponent(RAW_Q)}&cursor=${cursor}`,
@@ -315,7 +319,7 @@ test("both list queries bind the escaped q and keep audience scope", async () =>
   assert.match(employerList[0], /\(c\.updated_at, c\.id\) < \(\$\d+::timestamptz, \$\d+::uuid\)/);
   assert.equal(employerList[1][0], COMPANY);
   assert.ok(employerList[1].includes(ESCAPED_Q));
-  const employerBody = await employer.json() as { data: { id: string; status: string }[] };
+  const employerBody: { data: Array<{ id: string; status: string }> } = await employer.json();
   assert.equal(employerBody.data[0].id, NEEDS_ID);
   assert.equal(employerBody.data[0].status, "NEEDS_APPROVAL");
 
@@ -324,7 +328,7 @@ test("both list queries bind the escaped q and keep audience scope", async () =>
   devEnv.APP_ENV = "development";
   devEnv.DEV_AUTH_TOKEN = "secret-token";
   devEnv.DEV_USER_ID = USER;
-  const personalForSeen: Array<[string, unknown[]]> = [];
+  const personalForSeen: Array<[string, Array<unknown>]> = [];
   const personalFor = await handle(new Request(
     `https://push-be.example/api/v1/conversations?q=${encodeURIComponent(RAW_Q)}`,
     { headers: { authorization: "Bearer secret-token" } },
@@ -336,7 +340,7 @@ test("both list queries bind the escaped q and keep audience scope", async () =>
   assert.match(forList[0], /user_id = \$1::uuid AND company_id IS NULL/);
   assert.equal(forList[1][0], USER);
   assert.ok(forList[1].includes(ESCAPED_Q));
-  const forBody = await personalFor.json() as { data: { id: string; createdBy: { displayName: string }; postingId: string | null }[] };
+  const forBody: { data: Array<{ id: string; createdBy: { displayName: string }; postingId: string | null }> } = await personalFor.json();
   assert.equal(forBody.data[0].id, NEEDS_ID);
   assert.equal(forBody.data[0].createdBy.displayName, "Bea");
   assert.equal(forBody.data[0].postingId, POSTING_ID);
@@ -355,7 +359,7 @@ test("list uses one database round trip on the standalone list path", async () =
   devEnv.APP_ENV = "development";
   devEnv.DEV_AUTH_TOKEN = "secret-token";
   devEnv.DEV_USER_ID = USER;
-  const seen: Array<[string, unknown[]]> = [];
+  const seen: Array<[string, Array<unknown>]> = [];
   const res = await handle(new Request(
     "https://push-be.example/api/v1/conversations",
     { headers: { authorization: "Bearer secret-token" } },
@@ -368,7 +372,7 @@ test("list uses one database round trip on the standalone list path", async () =
 
 test("combined auth+list uses owner-scoped queue_rank CTE", async () => {
   resetLimits();
-  const seen: Array<[string, unknown[]]> = [];
+  const seen: Array<[string, Array<unknown>]> = [];
   const res = await handle(new Request(
     "https://push-be.example/api/v1/conversations",
     { headers: { authorization: "Bearer secret-token" } },
@@ -381,12 +385,12 @@ test("combined auth+list uses owner-scoped queue_rank CTE", async () => {
   assertQueuePositionSql(listSql);
 });
 
-const getQuery = (seen: Array<[string, unknown[]]>, ownerId = USER): Query => {
+const getQuery = (seen: Array<[string, Array<unknown>]>, ownerId = USER): Query => {
   const base = listQuery([]);
   return async (sql, params) => {
-    if (!sql.includes("WHERE c.id = $1::uuid")) return base(sql, params);
+    if (!sql.includes("WHERE c.id = $1::uuid")) {return base(sql, params);}
     seen.push([sql, params]);
-    if (params[1] !== ownerId) return [];
+    if (params[1] !== ownerId) {return [];}
     return rowsFor(sql).filter((row) => row.id === params[0]);
   };
 };
@@ -398,7 +402,7 @@ const getOne = (id: string, query: Query) => handle(new Request(
 
 test("get one returns the list item shape for the caller's own conversation", async () => {
   resetLimits();
-  const seen: Array<[string, unknown[]]> = [];
+  const seen: Array<[string, Array<unknown>]> = [];
   const res = await getOne(NEEDS_ID, getQuery(seen));
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { data: {
@@ -423,10 +427,10 @@ test("get one returns the list item shape for the caller's own conversation", as
 
 test("get one carries queuePosition for a conversation waiting in the queue", async () => {
   resetLimits();
-  const seen: Array<[string, unknown[]]> = [];
+  const seen: Array<[string, Array<unknown>]> = [];
   const res = await getOne(RUNNING_ID, getQuery(seen));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { status: string; queuePosition: number | null } };
+  const body: { data: { status: string; queuePosition: number | null } } = await res.json();
   assert.equal(body.data.status, "RUNNING");
   assert.equal(body.data.queuePosition, 3);
   assertQueuePositionSql(String(seen[0][0]));
@@ -443,7 +447,7 @@ test("get one is 404 for another user's or a missing conversation", async () => 
 
 test("get one is 400 for a non-UUID id and never reaches the database", async () => {
   resetLimits();
-  const seen: Array<[string, unknown[]]> = [];
+  const seen: Array<[string, Array<unknown>]> = [];
   const res = await getOne("not-a-uuid", getQuery(seen));
   assert.equal(res.status, 400);
   assert.equal(seen.length, 0);

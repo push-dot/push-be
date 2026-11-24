@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { postJson, recorder, USER } from "../test-support/recorder.ts";
+import { postJson, recorder, USER, readJson, parseJson } from "../test-support/recorder.ts";
+import type { Row } from "../test-support/recorder.ts";
 
 const NOW = new Date("2026-10-21T00:00:00Z");
 const ENV = { APP_ENV: "production" };
@@ -16,16 +17,16 @@ test("create accepts HUB_PROFILE and a hub profile exports its latest version", 
   const DOC = "d0000000-0000-4000-8000-000000000010";
   const VER = "d0000000-0000-4000-8000-000000000011";
   const { calls, query } = recorder((sql) => {
-    if (sql.includes("FROM applications")) return [{ id: APP }];
-    if (sql.includes("FROM documents WHERE id")) return [{
+    if (sql.includes("FROM applications")) {return [{ id: APP }];}
+    if (sql.includes("FROM documents WHERE id")) {return [{
       id: DOC, revision: 1, application_id: null, title: "Push 프로필", kind: "HUB_PROFILE",
       template: "SIMPLE", language: "ko", status: "DRAFT", latest_version_id: VER,
       finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
-    }];
-    if (sql.includes("FROM document_versions")) return [{
+    }];}
+    if (sql.includes("FROM document_versions")) {return [{
       id: VER, document_id: DOC, number: 1, content: { type: "doc" },
       blocks: [{ id: "b1", text: "허브 본문" }], created_at: "2026-10-01T00:00:00Z",
-    }];
+    }];}
     return null;
   });
   const created = await handle(postJson("/api/v1/documents", {
@@ -39,14 +40,14 @@ test("create accepts HUB_PROFILE and a hub profile exports its latest version", 
   assert.equal(calls.some((call) => call.sql.includes("INSERT INTO document_exports")), true);
 
   const { query: resumeQuery } = recorder((sql) => {
-    if (sql.includes("FROM documents WHERE id")) return [{
+    if (sql.includes("FROM documents WHERE id")) {return [{
       id: DOC, revision: 1, application_id: APP, title: "이력서", kind: "RESUME",
       template: "SIMPLE", language: "ko", status: "DRAFT", latest_version_id: VER,
       finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
-    }];
-    if (sql.includes("FROM document_versions")) return [{
+    }];}
+    if (sql.includes("FROM document_versions")) {return [{
       id: VER, document_id: DOC, number: 1, content: {}, blocks: [], created_at: "2026-10-01T00:00:00Z",
-    }];
+    }];}
     return null;
   });
   const blocked = await handle(postJson(`/api/v1/documents/${DOC}/exports`, {
@@ -66,19 +67,19 @@ test("a hub profile converts to the default profile or an application profile", 
     finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
   };
   const { calls, query } = recorder((sql) => {
-    if (sql.includes("FROM documents WHERE id")) return [doc];
-    if (sql.includes("FROM document_versions")) return [{
+    if (sql.includes("FROM documents WHERE id")) {return [doc];}
+    if (sql.includes("FROM document_versions")) {return [{
       id: VER, document_id: DOC, number: 1, content: {}, blocks: [{ id: "b1", text: "백엔드" }],
       created_at: "2026-10-01T00:00:00Z",
-    }];
-    if (sql.includes("FROM profiles")) return [{ display_name: "Ada", skills: ["Go"] }];
+    }];}
+    if (sql.includes("FROM profiles")) {return [{ display_name: "Ada", skills: ["Go"] }];}
     return null;
   });
   const hub = await handle(postJson(`/api/v1/documents/${DOC}/profile`, {
     target: "hub",
   }, "00000000-0000-4000-8000-000000000021"), ENV, { query, now: () => NOW });
   assert.equal(hub.status, 200);
-  const hubBody = await hub.json() as { data: { target: string; documentId: string; profileUserId: string } };
+  const hubBody = await readJson<{ data: { target: string; documentId: string; profileUserId: string } }>(hub);
   assert.equal(hubBody.data.target, "hub");
   assert.equal(hubBody.data.documentId, DOC);
   assert.equal(typeof hubBody.data.profileUserId, "string");
@@ -93,16 +94,16 @@ test("a hub profile converts to the default profile or an application profile", 
   assert.equal(update?.sql.includes("ELSE profiles.skills"), true);
 
   const { calls: appCalls, query: appQuery } = recorder((sql) => {
-    if (sql.includes("FROM documents WHERE id")) return [{ ...doc, revision: 2 }];
-    if (sql.includes("FROM applications")) return [{ id: APP }];
-    if (sql.startsWith("UPDATE documents")) return [{ id: DOC }];
+    if (sql.includes("FROM documents WHERE id")) {return [{ ...doc, revision: 2 }];}
+    if (sql.includes("FROM applications")) {return [{ id: APP }];}
+    if (sql.startsWith("UPDATE documents")) {return [{ id: DOC }];}
     return null;
   });
   const linked = await handle(postJson(`/api/v1/documents/${DOC}/profile`, {
     target: "application", applicationId: APP, expectedRevision: 2,
   }, "00000000-0000-4000-8000-000000000022"), ENV, { query: appQuery, now: () => NOW });
   assert.equal(linked.status, 200);
-  const linkedBody = await linked.json() as { data: { target: string; applicationId: string } };
+  const linkedBody = await readJson<{ data: { target: string; applicationId: string } }>(linked);
   assert.equal(linkedBody.data.target, "application");
   assert.equal(linkedBody.data.applicationId, APP);
   const wrote = appCalls.find((call) => call.sql.startsWith("UPDATE documents"));
@@ -121,28 +122,28 @@ test("omitted profile target is an application profile and does not write the hu
     finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
   };
   const { calls, query } = recorder((sql) => {
-    if (sql.includes("FROM documents WHERE id")) return [doc];
+    if (sql.includes("FROM documents WHERE id")) {return [doc];}
     return null;
   });
   const res = await handle(postJson(`/api/v1/documents/${DOC}/profile`, {}, "00000000-0000-4000-8000-000000000030"), ENV, { query, now: () => NOW });
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { target: string; documentId: string; applicationId: string | null } };
+  const body = await readJson<{ data: { target: string; documentId: string; applicationId: string | null } }>(res);
   assert.equal(body.data.target, "application");
   assert.equal(body.data.documentId, DOC);
   assert.equal(body.data.applicationId, null);
   assert.equal(calls.some((call) => call.sql.includes("UPDATE profiles") || call.sql.startsWith("UPDATE documents")), false);
 
   const { calls: linkedCalls, query: linkedQuery } = recorder((sql) => {
-    if (sql.includes("FROM documents WHERE id")) return [doc];
-    if (sql.includes("FROM applications")) return [{ id: APP }];
-    if (sql.startsWith("UPDATE documents")) return [{ id: DOC }];
+    if (sql.includes("FROM documents WHERE id")) {return [doc];}
+    if (sql.includes("FROM applications")) {return [{ id: APP }];}
+    if (sql.startsWith("UPDATE documents")) {return [{ id: DOC }];}
     return null;
   });
   const linked = await handle(postJson(`/api/v1/documents/${DOC}/profile`, {
     applicationId: APP, expectedRevision: 4,
   }, "00000000-0000-4000-8000-000000000031"), ENV, { query: linkedQuery, now: () => NOW });
   assert.equal(linked.status, 200);
-  const linkedBody = await linked.json() as { data: { target: string; applicationId: string } };
+  const linkedBody = await readJson<{ data: { target: string; applicationId: string } }>(linked);
   assert.equal(linkedBody.data.target, "application");
   assert.equal(linkedBody.data.applicationId, APP);
   assert.equal(linkedCalls.some((call) => call.sql.startsWith("UPDATE documents")), true);
@@ -159,18 +160,18 @@ test("setting the base profile copies the document onto the hub profile and repe
     finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
   };
   const answer = (sql: string) => {
-    if (sql.includes("FROM documents WHERE id")) return [doc];
-    if (sql.includes("FROM document_versions")) return [{
+    if (sql.includes("FROM documents WHERE id")) {return [doc];}
+    if (sql.includes("FROM document_versions")) {return [{
       id: VER, document_id: DOC, number: 1, content: {}, blocks: [{ id: "b1", text: "소개 본문" }],
       created_at: "2026-10-01T00:00:00Z",
-    }];
-    if (sql.includes("FROM profiles")) return [{ display_name: "Ada", skills: ["Go"] }];
+    }];}
+    if (sql.includes("FROM profiles")) {return [{ display_name: "Ada", skills: ["Go"] }];}
     return null;
   };
   const first = recorder(answer);
   const once = await handle(postJson(`/api/v1/documents/${DOC}/base-profile`, {}, "00000000-0000-4000-8000-000000000040"), ENV, { query: first.query, now: () => NOW });
   assert.equal(once.status, 200);
-  const onceBody = await once.json() as { data: { documentId: string; profileUserId: string } };
+  const onceBody = await readJson<{ data: { documentId: string; profileUserId: string } }>(once);
   assert.equal(onceBody.data.documentId, DOC);
   assert.equal(typeof onceBody.data.profileUserId, "string");
   const update = first.calls.find((call) => call.sql.includes("INSERT INTO profiles") && call.sql.includes("careers"));
@@ -186,7 +187,7 @@ test("setting the base profile copies the document onto the hub profile and repe
   const second = recorder(answer);
   const again = await handle(postJson(`/api/v1/documents/${DOC}/base-profile`, {}, "00000000-0000-4000-8000-000000000041"), ENV, { query: second.query, now: () => NOW });
   assert.equal(again.status, 200);
-  const againBody = await again.json() as { data: { documentId: string; profileUserId: string } };
+  const againBody = await readJson<{ data: { documentId: string; profileUserId: string } }>(again);
   assert.equal(againBody.data.profileUserId, onceBody.data.profileUserId);
   const againUpdate = second.calls.find((call) => call.sql.includes("INSERT INTO profiles") && call.sql.includes("careers"));
   assert.deepEqual(againUpdate?.params.slice(1, 5), ["지원용 프로필", "소개 본문", "[]", "[]"]);
@@ -201,7 +202,7 @@ test("setting the base profile copies the document onto the hub profile and repe
 });
 
 const profileSections = () => {
-  const nodes: [string, string][] = [
+  const nodes: Array<[string, string]> = [
     ["heading", "소개"],
     ["paragraph", "새 소개"],
     ["heading", "경력"],
@@ -227,7 +228,7 @@ const profileSections = () => {
   };
 };
 
-const profileWrite = (calls: { sql: string; params: unknown[] }[]) =>
+const profileWrite = (calls: Array<{ sql: string; params: Array<unknown> }>) =>
   calls.find((call) => call.sql.includes("INSERT INTO profiles") && call.sql.includes("careers"));
 
 test("setting the base profile replaces careers, skills, and links from the document", async () => {
@@ -241,9 +242,9 @@ test("setting the base profile replaces careers, skills, and links from the docu
   };
   const version = { id: VER, document_id: DOC, number: 1, ...profileSections(), created_at: "2026-10-01T00:00:00Z" };
   const answer = (sql: string) => {
-    if (sql.includes("FROM documents WHERE id")) return [doc];
-    if (sql.includes("FROM document_versions")) return [version];
-    if (sql.includes("FROM profiles")) return [{ display_name: "Ada", skills: ["Rust"] }];
+    if (sql.includes("FROM documents WHERE id")) {return [doc];}
+    if (sql.includes("FROM document_versions")) {return [version];}
+    if (sql.includes("FROM profiles")) {return [{ display_name: "Ada", skills: ["Rust"] }];}
     return null;
   };
   const careers = [{ company: "Acme", role: "Engineer", startedOn: "2020-01-01", endedOn: "2022-06-01", description: "백엔드" }];
@@ -263,7 +264,7 @@ test("setting the base profile replaces careers, skills, and links from the docu
   assert.equal(write?.sql.includes("DELETE FROM user_links"), true);
   assert.equal(write?.sql.includes(";"), false);
   assert.equal(first.calls.filter((call) => call.sql.includes("INSERT INTO profiles") || call.sql.includes("UPDATE profiles")).length, 1);
-  const links = JSON.parse(String(write?.params[10])) as { kind: string; url: string; title: string }[];
+  const links = parseJson<Array<{ kind: string; url: string; title: string }>>(String(write?.params[10]));
   assert.deepEqual(links.map((link) => ({ kind: link.kind, url: link.url, title: link.title })), [
     { kind: "github", url: "https://github.com/ada", title: "GitHub" },
   ]);
@@ -275,7 +276,7 @@ test("setting the base profile replaces careers, skills, and links from the docu
   assert.equal(again.status, 200);
   const againWrite = profileWrite(second.calls);
   assert.deepEqual(againWrite?.params.slice(1, 5), write?.params.slice(1, 5));
-  const againLinks = JSON.parse(String(againWrite?.params[10])) as { url: string }[];
+  const againLinks = parseJson<Array<{ url: string }>>(String(againWrite?.params[10]));
   assert.deepEqual(againLinks.map((link) => link.url), links.map((link) => link.url));
 
   const { calls: hubCalls, query: hubQuery } = recorder(answer);
@@ -294,20 +295,20 @@ test("a document without a career heading keeps the existing careers", async () 
     template: "SIMPLE", language: "ko", status: "DRAFT", latest_version_id: VER,
     finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
   };
-  const nodes: [string, string][] = [
+  const nodes: Array<[string, string]> = [
     ["heading", "프로젝트"],
     ["paragraph", "Side project"],
   ];
   const kept = [{ company: "Kept", role: "Eng", startedOn: null, endedOn: null, description: "" }];
   const { calls, query } = recorder((sql) => {
-    if (sql.includes("FROM documents WHERE id")) return [doc];
-    if (sql.includes("FROM document_versions")) return [{
+    if (sql.includes("FROM documents WHERE id")) {return [doc];}
+    if (sql.includes("FROM document_versions")) {return [{
       id: VER, document_id: DOC, number: 1,
       content: { type: "doc", content: nodes.map(([type, text], i) => ({ type, attrs: { blockId: "b" + i }, content: [{ type: "text", text }] })) },
       blocks: nodes.map(([, text], i) => ({ id: "b" + i, text })),
       created_at: "2026-10-01T00:00:00Z",
-    }];
-    if (sql.includes("FROM profiles")) return [{ skills: ["Rust"], careers: kept }];
+    }];}
+    if (sql.includes("FROM profiles")) {return [{ skills: ["Rust"], careers: kept }];}
     return null;
   });
   const res = await handle(postJson(`/api/v1/documents/${DOC}/base-profile`, {}, "00000000-0000-4000-8000-000000000080"), ENV, { query, now: () => NOW });
@@ -320,7 +321,7 @@ test("a document without a career heading keeps the existing careers", async () 
   assert.equal(write?.sql.includes("ELSE profiles.careers"), true);
   assert.equal(write?.sql.includes("ELSE profiles.skills"), true);
   assert.equal(write?.sql.includes("ELSE profiles.intro"), true);
-  assert.equal(JSON.parse(String(write?.params[3])).some((career: { company?: string }) => career.company === "Kept"), false);
+  assert.equal(parseJson<Array<{ company?: string }>>(String(write?.params[3])).some((career) => career.company === "Kept"), false);
   assert.equal(String(write?.params[5]).includes("Rust"), true);
 });
 
@@ -334,11 +335,11 @@ test("a failed base profile write does not send a second profile write", async (
     finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
   };
   const { calls, query } = recorder((sql) => {
-    if (sql.includes("FROM documents WHERE id")) return [doc];
-    if (sql.includes("FROM document_versions")) return [{
+    if (sql.includes("FROM documents WHERE id")) {return [doc];}
+    if (sql.includes("FROM document_versions")) {return [{
       id: VER, document_id: DOC, number: 1, ...profileSections(), created_at: "2026-10-01T00:00:00Z",
-    }];
-    if (sql.includes("DELETE FROM user_links")) throw new Error("db down");
+    }];}
+    if (sql.includes("DELETE FROM user_links")) {throw new Error("db down");}
     return null;
   });
   const res = await handle(postJson(`/api/v1/documents/${DOC}/base-profile`, {}, "00000000-0000-4000-8000-000000000060"), ENV, { query, now: () => NOW });
@@ -366,8 +367,8 @@ test("only the document owner can set the base profile", async () => {
     finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
   };
   const owned = recorder((sql) => {
-    if (sql.includes("FROM documents WHERE id")) return [doc];
-    if (sql.includes("FROM profiles")) return [{ display_name: "Ada", skills: ["Go"] }];
+    if (sql.includes("FROM documents WHERE id")) {return [doc];}
+    if (sql.includes("FROM profiles")) {return [{ display_name: "Ada", skills: ["Go"] }];}
     return null;
   });
   const ok = await handle(postJson(`/api/v1/documents/${DOC}/base-profile`, {}, "00000000-0000-4000-8000-000000000071"), ENV, { query: owned.query, now: () => NOW });
@@ -386,20 +387,20 @@ test("create accepts CAREER_STATEMENT and rejects an unknown kind", async () => 
   const { handle } = await import("../src/handler.ts");
   const APP = "a0000000-0000-4000-8000-000000000001";
   const { calls, query } = recorder((sql) => {
-    if (sql.includes("FROM applications")) return [{ id: APP }];
+    if (sql.includes("FROM applications")) {return [{ id: APP }];}
     return null;
   });
   const created = await handle(postJson("/api/v1/documents", {
     applicationId: APP, title: "경력기술서", kind: "CAREER_STATEMENT", template: "SIMPLE", language: "ko",
   }, "00000000-0000-4000-8000-000000000008"), ENV, { query, now: () => NOW });
   assert.equal(created.status, 201);
-  const body = await created.json() as { data: { kind: string } };
+  const body = await readJson<{ data: { kind: string } }>(created);
   assert.equal(body.data.kind, "CAREER_STATEMENT");
   const insert = calls.find((call) => call.sql.includes("INSERT INTO documents"));
   assert.equal(insert?.params.includes("CAREER_STATEMENT"), true);
 
   const { query: rejectQuery } = recorder((sql) => {
-    if (sql.includes("FROM applications")) return [{ id: APP }];
+    if (sql.includes("FROM applications")) {return [{ id: APP }];}
     return null;
   });
   const rejected = await handle(postJson("/api/v1/documents", {
@@ -417,7 +418,7 @@ test("an export result can be recorded only once even when two reports race", as
       return [{ id: EXP, document_id: DOC, version_id: E1, format: "PDF", template: "SIMPLE", content: {}, blocks: [], content_hash: "h", status: "READY_TO_RENDER", renderer_version: "1", created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z" }];
     }
     // The other report already moved the row out of READY_TO_RENDER.
-    if (sql.startsWith("UPDATE document_exports")) return sql.includes("status = 'READY_TO_RENDER'") ? [] : [{ id: EXP }];
+    if (sql.startsWith("UPDATE document_exports")) {return sql.includes("status = 'READY_TO_RENDER'") ? [] : [{ id: EXP }];}
     return null;
   });
   const res = await handle(postJson(`/api/v1/documents/${DOC}/exports/${EXP}/result`, {
@@ -430,10 +431,10 @@ test("a new document version verifies all cited evidence in one query", async ()
   const { handle } = await import("../src/handler.ts");
   const DOC = "d0000000-0000-4000-8000-000000000003";
   const { calls, query } = recorder((sql, params) => {
-    if (sql.startsWith("SELECT") && sql.includes("FROM documents WHERE id = $1")) return [{ id: DOC, revision: 1, status: "DRAFT", title: "t", kind: "RESUME", template: "SIMPLE", created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z" }];
-    if (sql.includes("FROM career_evidence")) return [E1, E2, E3].map((id) => ({ id, source_text: "Go and Postgres", archived: false }));
-    if (sql.startsWith("WITH upd AS")) return [{ number: 2 }];
-    if (sql.includes("INSERT INTO ai_jobs")) return [{ id: params[0], queue: params[2] }];
+    if (sql.startsWith("SELECT") && sql.includes("FROM documents WHERE id = $1")) {return [{ id: DOC, revision: 1, status: "DRAFT", title: "t", kind: "RESUME", template: "SIMPLE", created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z" }];}
+    if (sql.includes("FROM career_evidence")) {return [E1, E2, E3].map((id) => ({ id, source_text: "Go and Postgres", archived: false }));}
+    if (sql.startsWith("WITH upd AS")) {return [{ number: 2 }];}
+    if (sql.includes("INSERT INTO ai_jobs")) {return [{ id: String(params[0]), queue: String(params[2]) }];}
     return null;
   });
   const blocks = [E1, E2, E3].map((eid, i) => ({ id: "b" + i, text: "Go", evidenceRefs: [{ evidenceId: eid, start: 0, end: 2 }, { evidenceId: E1, start: 3, end: 6 }] }));
@@ -451,16 +452,16 @@ test("a source the caller owns becomes an application profile document", async (
   const { handle } = await import("../src/handler.ts");
   const text = "# 경력\n백엔드";
   const { calls, query } = recorder((sql) => {
-    if (sql.includes("FROM documents WHERE id")) return [];
-    if (sql.includes("FROM sources WHERE id")) return [{
+    if (sql.includes("FROM documents WHERE id")) {return [];}
+    if (sql.includes("FROM sources WHERE id")) {return [{
       id: SOURCE, file_name: "이력서.md", mime_type: "text/markdown",
       content: Buffer.from(text, "utf8").toString("base64"),
-    }];
+    }];}
     return null;
   });
   const res = await handle(postJson(`/api/v1/documents/${SOURCE}/profile`, {}, "00000000-0000-4000-8000-0000000000a1"), ENV, { query, now: () => NOW });
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { target: string; documentId: string; applicationId: string | null } };
+  const body = await readJson<{ data: { target: string; documentId: string; applicationId: string | null } }>(res);
   assert.equal(body.data.target, "application");
   assert.equal(body.data.applicationId, null);
   assert.notEqual(body.data.documentId, SOURCE);
@@ -475,16 +476,16 @@ test("a source the caller owns becomes an application profile document", async (
 test("a pdf source returns 202 and a job the app can follow", async () => {
   const { handle } = await import("../src/handler.ts");
   const { calls, query } = recorder((sql, params) => {
-    if (sql.includes("FROM documents WHERE id")) return [];
-    if (sql.includes("FROM sources WHERE id")) return [{
+    if (sql.includes("FROM documents WHERE id")) {return [];}
+    if (sql.includes("FROM sources WHERE id")) {return [{
       id: SOURCE, file_name: "이력서.pdf", mime_type: "application/pdf", content: "",
-    }];
-    if (sql.includes("INSERT INTO ai_jobs")) return [{ id: params[0], queue: params[2] }];
+    }];}
+    if (sql.includes("INSERT INTO ai_jobs")) {return [{ id: String(params[0]), queue: String(params[2]) }];}
     return null;
   });
   const res = await handle(postJson(`/api/v1/documents/${SOURCE}/profile`, {}, "00000000-0000-4000-8000-0000000000a2"), ENV, { query, now: () => NOW });
   assert.equal(res.status, 202);
-  const body = await res.json() as { data: { documentId: string; jobId: string } };
+  const body = await readJson<{ data: { documentId: string; jobId: string } }>(res);
   assert.ok(body.data.documentId);
   assert.notEqual(body.data.documentId, SOURCE);
   assert.ok(body.data.jobId);
@@ -497,8 +498,8 @@ test("a pdf source returns 202 and a job the app can follow", async () => {
 test("another user's source is 404", async () => {
   const { handle } = await import("../src/handler.ts");
   const { calls, query } = recorder((sql) => {
-    if (sql.includes("FROM documents WHERE id")) return [];
-    if (sql.includes("FROM sources WHERE id")) return [];
+    if (sql.includes("FROM documents WHERE id")) {return [];}
+    if (sql.includes("FROM sources WHERE id")) {return [];}
     return null;
   });
   const res = await handle(postJson(`/api/v1/documents/${OTHER_SOURCE}/profile`, {}, "00000000-0000-4000-8000-0000000000a3"), ENV, { query, now: () => NOW });
@@ -543,14 +544,14 @@ const profileDoc = (kind = "HUB_PROFILE") => ({
 });
 
 const profileQuery = (kind = "HUB_PROFILE") => (sql: string) => {
-  if (sql.includes("FROM documents WHERE id")) return [profileDoc(kind)];
-  if (sql.includes("FROM document_versions")) return [{
+  if (sql.includes("FROM documents WHERE id")) {return [profileDoc(kind)];}
+  if (sql.includes("FROM document_versions")) {return [{
     id: "d0000000-0000-4000-8000-000000000091",
     content: profileContent,
     blocks: [],
     created_at: "2026-10-01T00:00:00Z",
-  }];
-  if (sql.includes("FROM profiles")) return [{ skills: ["Go"] }];
+  }];}
+  if (sql.includes("FROM profiles")) {return [{ skills: ["Go"] }];}
   return null;
 };
 
@@ -559,7 +560,7 @@ test("omitted sections on target hub still copies every present heading", async 
   const { calls, query } = recorder(profileQuery());
   const res = await handle(postJson("/api/v1/documents/d0000000-0000-4000-8000-000000000090/profile", { target: "hub" }, "00000000-0000-4000-8000-000000000090"), ENV, { query, now: () => NOW });
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { applied: string[] } };
+  const body = await readJson<{ data: { applied: Array<string> } }>(res);
   assert.deepEqual(body.data.applied, ["headline", "intro", "careers", "skills", "links"]);
   const update = profileWrite(calls);
   assert.equal(update?.params[1], "한 줄");
@@ -580,7 +581,7 @@ test("sections skills replaces skills only", async () => {
     target: "hub", sections: ["skills"],
   }, "00000000-0000-4000-8000-000000000091"), ENV, { query, now: () => NOW });
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { applied: string[] } };
+  const body = await readJson<{ data: { applied: Array<string> } }>(res);
   assert.deepEqual(body.data.applied, ["skills"]);
   const update = profileWrite(calls);
   assert.equal(update?.params[9], false);
@@ -601,7 +602,7 @@ test("empty sections leaves the profile unchanged", async () => {
     target: "hub", sections: [],
   }, "00000000-0000-4000-8000-000000000092"), ENV, { query, now: () => NOW });
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { applied: string[] } };
+  const body = await readJson<{ data: { applied: Array<string> } }>(res);
   assert.deepEqual(body.data.applied, []);
   assert.equal(calls.some((call) => call.sql.includes("INSERT INTO profiles") || call.sql.includes("UPDATE profiles")), false);
 });
@@ -613,7 +614,7 @@ test("unknown section is 422 field sections", async () => {
     target: "hub", sections: ["projects"],
   }, "00000000-0000-4000-8000-000000000093"), ENV, { query, now: () => NOW });
   assert.equal(res.status, 422);
-  const body = await res.json() as { error: { details: { field: string } } };
+  const body = await readJson<{ error: { details: { field: string } } }>(res);
   assert.equal(body.error.details.field, "sections");
 });
 
@@ -624,7 +625,7 @@ test("sections without target hub is 422 field sections", async () => {
     sections: ["skills"],
   }, "00000000-0000-4000-8000-000000000094"), ENV, { query, now: () => NOW });
   assert.equal(res.status, 422);
-  const body = await res.json() as { error: { details: { field: string } } };
+  const body = await readJson<{ error: { details: { field: string } } }>(res);
   assert.equal(body.error.details.field, "sections");
 });
 
@@ -635,7 +636,7 @@ test("non hub profile kind still errors on kind", async () => {
     target: "hub", sections: ["skills"],
   }, "00000000-0000-4000-8000-000000000095"), ENV, { query, now: () => NOW });
   assert.equal(res.status, 400);
-  const body = await res.json() as { error: { details: { field: string } } };
+  const body = await readJson<{ error: { details: { field: string } } }>(res);
   assert.equal(body.error.details.field, "kind");
 });
 
@@ -646,7 +647,7 @@ test("base-profile sections intro does not overwrite headline", async () => {
     sections: ["intro"],
   }, "00000000-0000-4000-8000-000000000096"), ENV, { query, now: () => NOW });
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { applied: string[] } };
+  const body = await readJson<{ data: { applied: Array<string> } }>(res);
   assert.deepEqual(body.data.applied, ["intro"]);
   const update = profileWrite(calls);
   assert.equal(update?.params[13], true);
@@ -657,19 +658,19 @@ test("base-profile sections intro does not overwrite headline", async () => {
 test("empty base-profile body still sets headline from the title", async () => {
   const { handle } = await import("../src/handler.ts");
   const { calls, query } = recorder((sql) => {
-    if (sql.includes("FROM documents WHERE id")) return [profileDoc()];
-    if (sql.includes("FROM document_versions")) return [{
+    if (sql.includes("FROM documents WHERE id")) {return [profileDoc()];}
+    if (sql.includes("FROM document_versions")) {return [{
       id: "d0000000-0000-4000-8000-000000000091",
       content: { type: "doc", content: [heading("h2", "소개"), paragraph("p2", "소개 본문")] },
       blocks: [],
       created_at: "2026-10-01T00:00:00Z",
-    }];
-    if (sql.includes("FROM profiles")) return [{ skills: ["Go"] }];
+    }];}
+    if (sql.includes("FROM profiles")) {return [{ skills: ["Go"] }];}
     return null;
   });
   const res = await handle(postJson("/api/v1/documents/d0000000-0000-4000-8000-000000000090/base-profile", {}, "00000000-0000-4000-8000-000000000097"), ENV, { query, now: () => NOW });
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { applied: string[] } };
+  const body = await readJson<{ data: { applied: Array<string> } }>(res);
   assert.equal(body.data.applied.includes("headline"), true);
   const update = profileWrite(calls);
   assert.equal(update?.params[1], "문서 제목");
@@ -681,16 +682,16 @@ test("a version post that changes the intro keeps the career nodes", async () =>
   const DOC = "d0000000-0000-4000-8000-0000000000b0";
   let revision = 3;
   const { query } = recorder((sql, params) => {
-    if (sql.includes("FROM documents WHERE id")) return [{
+    if (sql.includes("FROM documents WHERE id")) {return [{
       id: DOC, revision, application_id: null, title: "서류", kind: "RESUME", template: "SIMPLE", language: "ko",
       status: "DRAFT", latest_version_id: null, finalized_version_id: null,
       created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
-    }];
+    }];}
     if (sql.startsWith("WITH upd AS")) {
       revision += 1;
       return [{ number: 2 }];
     }
-    if (sql.includes("INSERT INTO ai_jobs")) return [{ id: params[0], queue: params[2] }];
+    if (sql.includes("INSERT INTO ai_jobs")) {return [{ id: String(params[0]), queue: String(params[2]) }];}
     return null;
   });
   const kept = "기존 경력";
@@ -713,7 +714,7 @@ test("a version post that changes the intro keeps the career nodes", async () =>
     expectedRevision: 3, content, blocks, changeNote: "intro",
   }, "00000000-0000-4000-8000-0000000000b0"), ENV, { query, now: () => NOW });
   assert.equal(res.status, 201);
-  const body = await res.json() as { data: { document: { revision: number }; version: { content: { content: { content: { text: string }[] }[] } } } };
+  const body = await readJson<{ data: { document: { revision: number }; version: { content: { content: Array<{ content: Array<{ text: string }> }> } } } }>(res);
   const texts = body.data.version.content.content.map((node) => node.content[0].text);
   assert.equal(texts[1], "새 소개");
   assert.equal(texts[3], kept);
@@ -722,7 +723,7 @@ test("a version post that changes the intro keeps the career nodes", async () =>
     expectedRevision: 3, content, blocks, changeNote: "intro",
   }, "00000000-0000-4000-8000-0000000000b1"), ENV, { query, now: () => NOW });
   assert.equal(again.status, 409);
-  const err = await again.json() as { error: { code: string; details: { currentRevision: number } } };
+  const err = await readJson<{ error: { code: string; details: { currentRevision: number } } }>(again);
   assert.equal(err.error.code, "REVISION_CONFLICT");
   assert.equal(err.error.details.currentRevision, 4);
 });
@@ -732,35 +733,35 @@ test("share returns the raw token once and a later GET returns the pinned versio
   const DOC = "d0000000-0000-4000-8000-0000000000c0";
   const VER = "d0000000-0000-4000-8000-0000000000c1";
   const pinned = { type: "doc", content: [{ type: "paragraph", text: "pinned" }] };
-  const shares: { hash: string; versionId: string; revoked: boolean }[] = [];
+  const shares: Array<{ hash: string; versionId: string; revoked: boolean }> = [];
   const query = recorder((sql, params) => {
-    if (sql.includes("FROM documents WHERE id")) return [{
+    if (sql.includes("FROM documents WHERE id")) {return [{
       id: DOC, user_id: USER, revision: 1, application_id: "a0000000-0000-4000-8000-0000000000c0", title: "이력서",
       kind: "RESUME", template: "SIMPLE", language: "ko", status: "DRAFT", latest_version_id: VER,
       finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
-    }];
-    if (sql.includes("FROM document_versions")) return [{ id: VER, content: pinned, blocks: [], created_at: "2026-10-01T00:00:00Z" }];
+    }];}
+    if (sql.includes("FROM document_versions")) {return [{ id: VER, content: pinned, blocks: [], created_at: "2026-10-01T00:00:00Z" }];}
     if (sql.includes("INSERT INTO document_shares")) {
-      for (const share of shares) share.revoked = true;
+      for (const share of shares) {share.revoked = true;}
       shares.push({ hash: String(params[3]), versionId: String(params[2]), revoked: false });
-      return [{ id: params[0] }];
+      return [{ id: String(params[0]) }];
     }
     if (sql.includes("token_hash")) {
       const hit = shares.find((share) => share.hash === String(params[0]) && !share.revoked);
-      if (!hit) return [];
+      if (!hit) {return [];}
       return [{ title: "현재 제목", kind: "RESUME", content: pinned, blocks: [], userId: USER, applicationId: "a0000000-0000-4000-8000-0000000000c0" }];
     }
     return null;
   }).query;
   const created = await handle(postJson(`/api/v1/documents/${DOC}/share`, {}, "00000000-0000-4000-8000-0000000000c0"), ENV, { query, now: () => NOW });
   assert.equal(created.status, 200);
-  const share = await created.json() as { data: { token: string; path: string; versionId: string } };
+  const share = await readJson<{ data: { token: string; path: string; versionId: string } }>(created);
   assert.equal(share.data.path, `/api/v1/documents/shared/${share.data.token}`);
   assert.equal(share.data.versionId, VER);
   assert.notEqual(share.data.token, shares[0]?.hash);
   const read = await handle(new Request("https://core.example" + share.data.path), ENV, { query, now: () => NOW });
   assert.equal(read.status, 200);
-  const body = await read.json() as { data: Record<string, unknown> };
+  const body = await readJson<{ data: Row }>(read);
   assert.deepEqual(body.data.content, pinned);
   assert.equal(body.data.title, "현재 제목");
   assert.equal("userId" in body.data, false);
@@ -771,17 +772,17 @@ test("a second share revokes the first token", async () => {
   const { handle } = await import("../src/handler.ts");
   const DOC = "d0000000-0000-4000-8000-0000000000d0";
   const VER = "d0000000-0000-4000-8000-0000000000d1";
-  const shares: { hash: string; revoked: boolean }[] = [];
+  const shares: Array<{ hash: string; revoked: boolean }> = [];
   const query = recorder((sql, params) => {
-    if (sql.includes("FROM documents WHERE id")) return [{
+    if (sql.includes("FROM documents WHERE id")) {return [{
       id: DOC, revision: 1, title: "이력서", kind: "RESUME", template: "SIMPLE", language: "ko", status: "DRAFT",
       latest_version_id: VER, application_id: null, finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
-    }];
-    if (sql.includes("FROM document_versions")) return [{ id: VER, content: { type: "doc", content: [] }, blocks: [] }];
+    }];}
+    if (sql.includes("FROM document_versions")) {return [{ id: VER, content: { type: "doc", content: [] }, blocks: [] }];}
     if (sql.includes("INSERT INTO document_shares")) {
-      for (const share of shares) share.revoked = true;
+      for (const share of shares) {share.revoked = true;}
       shares.push({ hash: String(params[3]), revoked: false });
-      return [{ id: params[0] }];
+      return [{ id: String(params[0]) }];
     }
     if (sql.includes("token_hash")) {
       const hit = shares.find((share) => share.hash === String(params[0]) && !share.revoked);
@@ -790,12 +791,12 @@ test("a second share revokes the first token", async () => {
     return null;
   }).query;
   const first = await handle(postJson(`/api/v1/documents/${DOC}/share`, {}, "00000000-0000-4000-8000-0000000000d0"), ENV, { query, now: () => NOW });
-  const firstBody = await first.json() as { data: { token: string } };
+  const firstBody = await readJson<{ data: { token: string } }>(first);
   const second = await handle(postJson(`/api/v1/documents/${DOC}/share`, {}, "00000000-0000-4000-8000-0000000000d1"), ENV, { query, now: () => NOW });
-  const secondBody = await second.json() as { data: { token: string } };
+  const secondBody = await readJson<{ data: { token: string } }>(second);
   const oldRead = await handle(new Request(`https://core.example/api/v1/documents/shared/${firstBody.data.token}`), ENV, { query, now: () => NOW });
   assert.equal(oldRead.status, 404);
-  assert.equal((await oldRead.json() as { error: { code: string } }).error.code, "NOT_FOUND");
+  assert.equal((await readJson<{ error: { code: string } }>(oldRead)).error.code, "NOT_FOUND");
   const newRead = await handle(new Request(`https://core.example/api/v1/documents/shared/${secondBody.data.token}`), ENV, { query, now: () => NOW });
   assert.equal(newRead.status, 200);
 });
@@ -806,17 +807,17 @@ test("DELETE revokes and a second DELETE returns revoked false", async () => {
   const VER = "d0000000-0000-4000-8000-0000000000e1";
   let active = false;
   const query = recorder((sql) => {
-    if (sql.includes("FROM documents WHERE id")) return [{
+    if (sql.includes("FROM documents WHERE id")) {return [{
       id: DOC, revision: 1, title: "이력서", kind: "RESUME", template: "SIMPLE", language: "ko", status: "DRAFT",
       latest_version_id: VER, application_id: null, finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
-    }];
-    if (sql.includes("FROM document_versions")) return [{ id: VER, content: {}, blocks: [] }];
+    }];}
+    if (sql.includes("FROM document_versions")) {return [{ id: VER, content: {}, blocks: [] }];}
     if (sql.includes("INSERT INTO document_shares")) {
       active = true;
       return [{ id: DOC }];
     }
     if (sql.includes("UPDATE document_shares")) {
-      if (!active) return [];
+      if (!active) {return [];}
       active = false;
       return [{ id: DOC }];
     }
@@ -828,12 +829,12 @@ test("DELETE revokes and a second DELETE returns revoked false", async () => {
     method: "DELETE", headers: { authorization: "Bearer t" },
   }), ENV, { query, now: () => NOW });
   assert.equal(once.status, 200);
-  assert.equal((await once.json() as { data: { revoked: boolean } }).data.revoked, true);
+  assert.equal((await readJson<{ data: { revoked: boolean } }>(once)).data.revoked, true);
   const twice = await handle(new Request(`https://core.example/api/v1/documents/${DOC}/share`, {
     method: "DELETE", headers: { authorization: "Bearer t" },
   }), ENV, { query, now: () => NOW });
   assert.equal(twice.status, 200);
-  assert.equal((await twice.json() as { data: { revoked: boolean } }).data.revoked, false);
+  assert.equal((await readJson<{ data: { revoked: boolean } }>(twice)).data.revoked, false);
 });
 
 test("non-owner POST is 404", async () => {
@@ -841,22 +842,22 @@ test("non-owner POST is 404", async () => {
   const { calls, query } = recorder(() => null);
   const res = await handle(postJson("/api/v1/documents/d0000000-0000-4000-8000-0000000000f0/share", {}, "00000000-0000-4000-8000-0000000000f0"), ENV, { query, now: () => NOW });
   assert.equal(res.status, 404);
-  assert.equal((await res.json() as { error: { code: string } }).error.code, "NOT_FOUND");
+  assert.equal((await readJson<{ error: { code: string } }>(res)).error.code, "NOT_FOUND");
   assert.equal(calls.some((call) => call.sql.includes("document_shares")), false);
 });
 
 test("public GET does not include userId or applicationId", async () => {
   const { handle } = await import("../src/handler.ts");
   const { query } = recorder((sql) => {
-    if (sql.includes("token_hash")) return [{
+    if (sql.includes("token_hash")) {return [{
       title: "이력서", kind: "COVER_LETTER", content: { type: "doc", content: [] }, blocks: [],
       userId: USER, applicationId: "a0000000-0000-4000-8000-0000000000f1", documentId: "d0",
-    }];
+    }];}
     return null;
   });
   const res = await handle(new Request("https://core.example/api/v1/documents/shared/tok"), ENV, { query, now: () => NOW });
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: Record<string, unknown> };
+  const body = await readJson<{ data: Row }>(res);
   assert.deepEqual(Object.keys(body.data).sort(), ["blocks", "content", "kind", "title"]);
   assert.equal(body.data.kind, "COVER_LETTER");
 });
@@ -867,25 +868,25 @@ test("missing document_shares returns SHARING_UNAVAILABLE", async () => {
   const VER = "d0000000-0000-4000-8000-0000000000f3";
   const missing = Object.assign(new Error('relation "document_shares" does not exist'), { code: "42P01" });
   const query = recorder((sql) => {
-    if (sql.includes("document_shares")) throw missing;
-    if (sql.includes("FROM documents WHERE id")) return [{
+    if (sql.includes("document_shares")) {throw missing;}
+    if (sql.includes("FROM documents WHERE id")) {return [{
       id: DOC, revision: 1, title: "이력서", kind: "RESUME", template: "SIMPLE", language: "ko", status: "DRAFT",
       latest_version_id: VER, application_id: null, finalized_version_id: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
-    }];
-    if (sql.includes("FROM document_versions")) return [{ id: VER, content: {}, blocks: [] }];
+    }];}
+    if (sql.includes("FROM document_versions")) {return [{ id: VER, content: {}, blocks: [] }];}
     return null;
   }).query;
   const post = await handle(postJson(`/api/v1/documents/${DOC}/share`, {}, "00000000-0000-4000-8000-0000000000f2"), ENV, { query, now: () => NOW });
   assert.equal(post.status, 404);
-  assert.equal((await post.json() as { error: { code: string; details: unknown } }).error.code, "SHARING_UNAVAILABLE");
+  assert.equal((await readJson<{ error: { code: string; details: unknown } }>(post)).error.code, "SHARING_UNAVAILABLE");
   const del = await handle(new Request(`https://core.example/api/v1/documents/${DOC}/share`, {
     method: "DELETE", headers: { authorization: "Bearer t" },
   }), ENV, { query, now: () => NOW });
   assert.equal(del.status, 404);
-  assert.equal((await del.json() as { error: { code: string } }).error.code, "SHARING_UNAVAILABLE");
+  assert.equal((await readJson<{ error: { code: string } }>(del)).error.code, "SHARING_UNAVAILABLE");
   const get = await handle(new Request("https://core.example/api/v1/documents/shared/tok"), ENV, { query, now: () => NOW });
   assert.equal(get.status, 404);
-  const got = await get.json() as { error: { code: string; details: unknown } };
+  const got = await readJson<{ error: { code: string; details: unknown } }>(get);
   assert.equal(got.error.code, "SHARING_UNAVAILABLE");
   assert.equal(got.error.details, null);
 });

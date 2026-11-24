@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
+import type { QueryResult } from "../src/db.ts";
 import { ReadCache, READ_CACHE_TTL_MS } from "../src/read-cache.ts";
+import { readJson } from "../test-support/recorder.ts";
+import type { Row } from "../test-support/recorder.ts";
 
 const ADA = "12345678-1234-5678-1234-567812345678";
 const BOB = "87654321-4321-5678-1234-567812345678";
@@ -11,24 +15,24 @@ const COMPANY = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const POSTING = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const START = Date.parse("2026-10-21T00:00:00.000Z");
 
-type Call = { sql: string; params: unknown[] };
+type Call = { sql: string; params: Array<unknown> };
 
 const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
 
-const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
+const empty = { rows: [] as Array<Row>, rowCount: 0 };
 
 const world = () => {
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const clock = { ms: START };
-  const cache = new ReadCache();
-  const hashes: string[] = [];
+  const cache = new ReadCache<QueryResult>();
+  const hashes: Array<string> = [];
   let total = 7;
   const bookmarkedBy = new Set([ADA]);
   const query: Deps["query"] = async (sql, params = []) => {
     seen.push({ sql, params });
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     if (sql.includes("access_tokens")) {
-      if (!hashes.includes(String(params[0]))) hashes.push(String(params[0]));
+      if (!hashes.includes(String(params[0]))) {hashes.push(String(params[0]));}
       const user = hashes.indexOf(String(params[0])) === 1 ? BOB : ADA;
       return {
         rows: [{
@@ -50,12 +54,12 @@ const world = () => {
     if (sql.includes("jsonb_array_elements_text(COALESCE(p.skills")) {
       return { rows: [{ id: "Go", count: 4 }, { id: "SQL", count: 2 }], rowCount: 2 };
     }
-    if (sql.includes("GROUP BY p.job_category")) return { rows: [{ id: "dev", count: 5 }], rowCount: 1 };
-    if (sql.includes("GROUP BY p.employment_type")) return { rows: [{ id: "full_time", count: 5 }], rowCount: 1 };
-    if (sql.includes("GROUP BY p.location")) return { rows: [{ id: "서울 강남구", count: 5 }], rowCount: 1 };
-    if (sql.includes("career_0")) return { rows: [{ career_0: 1, career_1_3: 2, career_4_6: 0, career_7_9: 0, career_10: 0 }], rowCount: 1 };
-    if (sql.includes("count(*)::int AS total")) return { rows: [{ total }], rowCount: 1 };
-    if (sql.includes("FROM search_queries")) return { rows: [{ term: "go", count: 3 }], rowCount: 1 };
+    if (sql.includes("GROUP BY p.job_category")) {return { rows: [{ id: "dev", count: 5 }], rowCount: 1 };}
+    if (sql.includes("GROUP BY p.employment_type")) {return { rows: [{ id: "full_time", count: 5 }], rowCount: 1 };}
+    if (sql.includes("GROUP BY p.location")) {return { rows: [{ id: "서울 강남구", count: 5 }], rowCount: 1 };}
+    if (sql.includes("career_0")) {return { rows: [{ career_0: 1, career_1_3: 2, career_4_6: 0, career_7_9: 0, career_10: 0 }], rowCount: 1 };}
+    if (sql.includes("count(*)::int AS total")) {return { rows: [{ total }], rowCount: 1 };}
+    if (sql.includes("FROM search_queries")) {return { rows: [{ term: "go", count: 3 }], rowCount: 1 };}
     if (sql.includes("ORDER BY") && sql.includes("FROM job_postings")) {
       const user = String(params[0]);
       return {
@@ -78,13 +82,13 @@ const world = () => {
   return { seen, clock, cache, query, get, close, aggregates, lists, setTotal: (n: number) => { total = n; } };
 };
 
-type ListBody = { data: { id: string; bookmarked: boolean }[]; page: { total: number } };
+type ListBody = { data: Array<{ id: string; bookmarked: boolean }>; page: { total: number } };
 
 test("GET /postings reads the total from Postgres once a minute, and the rows every time", async () => {
   resetLimits();
   const w = world();
-  const first = await (await w.get("/postings")).json() as ListBody;
-  const second = await (await w.get("/postings")).json() as ListBody;
+  const first = await readJson<ListBody>(await w.get("/postings"));
+  const second = await readJson<ListBody>(await w.get("/postings"));
   assert.equal(first.page.total, 7);
   assert.equal(second.page.total, 7);
   assert.equal(w.aggregates().length, 1);
@@ -94,8 +98,8 @@ test("GET /postings reads the total from Postgres once a minute, and the rows ev
 test("the cache holds no user value: Bob gets his own bookmark flag and Ada's cached total", async () => {
   resetLimits();
   const w = world();
-  const ada = await (await w.get("/postings")).json() as ListBody;
-  const bob = await (await w.get("/postings", "bob-token")).json() as ListBody;
+  const ada = await readJson<ListBody>(await w.get("/postings"));
+  const bob = await readJson<ListBody>(await w.get("/postings", "bob-token"));
   assert.equal(ada.data[0].bookmarked, true);
   assert.equal(bob.data[0].bookmarked, false);
   assert.equal(ada.page.total, bob.page.total);
@@ -103,7 +107,7 @@ test("the cache holds no user value: Bob gets his own bookmark flag and Ada's ca
   assert.deepEqual(w.lists().map((c) => c.params[0]), [ADA, BOB], "each list ran with its own user id");
   const counted = w.aggregates()[0];
   assert.equal(counted.sql.includes("bookmarks"), false);
-  assert.equal(counted.sql.replace(/\$1\b/g, "").includes(ADA), false);
+  assert.equal(counted.sql.replaceAll(/\$1\b/g, "").includes(ADA), false);
 });
 
 test("a different filter is a different cache entry", async () => {
@@ -111,8 +115,8 @@ test("a different filter is a different cache entry", async () => {
   const w = world();
   await w.get("/postings?category=dev");
   w.setTotal(9);
-  const other = await (await w.get("/postings?category=design")).json() as ListBody;
-  const again = await (await w.get("/postings?category=dev")).json() as ListBody;
+  const other = await readJson<ListBody>(await w.get("/postings?category=design"));
+  const again = await readJson<ListBody>(await w.get("/postings?category=dev"));
   assert.equal(other.page.total, 9);
   assert.equal(again.page.total, 7);
   assert.equal(w.aggregates().length, 2);
@@ -136,7 +140,7 @@ test("the total is read again 60 seconds later", async () => {
   assert.equal(w.aggregates().length, 1);
   w.setTotal(8);
   w.clock.ms += 1;
-  const later = await (await w.get("/postings")).json() as ListBody;
+  const later = await readJson<ListBody>(await w.get("/postings"));
   assert.equal(later.page.total, 8);
   assert.equal(w.aggregates().length, 2);
 });
@@ -144,9 +148,9 @@ test("the total is read again 60 seconds later", async () => {
 test("GET /postings/facets runs its five aggregates once, for every user", async () => {
   resetLimits();
   const w = world();
-  const first = await (await w.get("/postings/facets")).json() as { data: Record<string, unknown> };
+  const first = await readJson<{ data: Row }>(await w.get("/postings/facets"));
   assert.equal(w.aggregates().length, 5);
-  const second = await (await w.get("/postings/facets", "bob-token")).json() as { data: Record<string, unknown> };
+  const second = await readJson<{ data: Row }>(await w.get("/postings/facets", "bob-token"));
   assert.equal(w.aggregates().length, 5, "the second read ran no aggregate");
   assert.deepEqual(second.data, first.data);
   assert.deepEqual(Object.keys(first.data).sort(), ["career", "category", "employmentType", "location", "skills"]);
@@ -165,7 +169,7 @@ test("a facet filter keeps its own entry, and the facet a filter skips keeps the
 test("GET /search/trending reads the skill counts once and the search terms every time", async () => {
   resetLimits();
   const w = world();
-  const first = await (await w.get("/search/trending")).json() as { data: { terms: unknown[]; skills: { id: string; count: number }[] } };
+  const first = await readJson<{ data: { terms: Array<unknown>; skills: Array<{ id: string; count: number }> } }>(await w.get("/search/trending"));
   await w.get("/search/trending", "bob-token");
   assert.deepEqual(first.data.skills, [{ id: "Go", count: 4 }, { id: "SQL", count: 2 }]);
   assert.equal(w.seen.filter((c) => c.sql.includes("jsonb_array_elements_text")).length, 1);
@@ -188,7 +192,7 @@ test("closing a posting drops the cached counts in the same isolate", async () =
   await w.get("/postings");
   assert.equal((await w.close()).status, 200);
   w.setTotal(6);
-  const after = await (await w.get("/postings")).json() as ListBody;
+  const after = await readJson<ListBody>(await w.get("/postings"));
   assert.equal(after.page.total, 6);
   assert.equal(w.aggregates().length, 2);
 });

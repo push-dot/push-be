@@ -16,6 +16,7 @@ from langgraph.types import Send, interrupt
 from pydantic import ValidationError
 from typing_extensions import TypedDict
 
+from app.domain.a2ui import auto_pick_line
 from app.framework.models import _content
 from app.framework.untrusted import DATA_RULE, as_data
 from app.harness.approvals import insert_chat_approval
@@ -37,6 +38,7 @@ from app.harness.personal.resume.progress import (
     blueprints_text,
     boost_fit,
     boost_line,
+    boost_rounds,
     craft_text,
     done_summary,
     feedback_line,
@@ -294,6 +296,7 @@ class ResumeGraphState(TypedDict, total=False):
     scores: list
     boost_acked: int
     boost_parts: dict
+    boost_rounds: dict
     boost_stopped: str
     profile_document_id: str
     source_saved: bool | None
@@ -854,6 +857,14 @@ def _choice(
     if auto:
         event["auto"] = True
     return event
+
+
+def _emit_auto(event: dict) -> None:
+    """A gate the server answered itself draws no surface: the Bot says what it picked instead."""
+    emit(event)
+    line = auto_pick_line(event)
+    if line:
+        emit({"token": f"\n\n{line}\n\n"})
 
 
 async def _ask(db: Any, state: Mapping[str, Any], event: dict[str, Any]) -> None:
@@ -1509,7 +1520,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                 return await accepted(current, gate_id, {"option_id": "continue"})
             if not _must_stop(current, gate_id):
                 if gate_id not in _INTAKE_NEXT and (gate_id in _NEVER_ASKED or len(_gate_options(current, gate_id)) > 1):
-                    emit(_choice(current, gate_id, auto=True))
+                    _emit_auto(_choice(current, gate_id, auto=True))
                 return await accepted(current, gate_id, _auto_answer(gate_id, current))
             asks = int(current.get("intake_asks") or 0)
             event = _choice(
@@ -1672,24 +1683,23 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         view = await score_draft({**view_state, **stored})
         scores.append(float(view["fitScore"]))
         terms, _description = _posting(view_state)
-        emit(
-            boost_line(
-                len(scores) - 1,
-                scores[-2],
-                scores[-1],
-                parts,
-                view.get("parts"),
-                added=added_keywords(
-                    terms, draft_text(drafts), draft_text(stored.get("drafts"))
-                ),
-                company=_target_company(view_state),
-            )
+        line = boost_line(
+            len(scores) - 1,
+            scores[-2],
+            scores[-1],
+            parts,
+            view.get("parts"),
+            added=added_keywords(terms, draft_text(drafts), draft_text(stored.get("drafts"))),
+            company=_target_company(view_state),
         )
-        emit(boost_fit(scores[0], scores[-1]))
+        emit(line)
+        rounds = boost_rounds(view_state.get("boost_rounds"), job_of(view_state), line)
+        emit(boost_fit(scores[0], scores[-1], rounds["items"]))
         return {
             **stored,
             "scores": scores,
             "boost_parts": view.get("parts") or {},
+            "boost_rounds": rounds,
             "draft_version": version,
         }
 
@@ -1743,7 +1753,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             emit({"token": f"{detail} — {note}"})
             return await _finish_boost(state, outcome, stopped)
         if not _must_stop(state, "boost"):
-            emit(_choice(state, "boost", auto=True, cycle=pending["cycle"], detail=detail))
+            _emit_auto(_choice(state, "boost", auto=True, cycle=pending["cycle"], detail=detail))
             answer: dict = {"option_id": "continue"}
         else:
             event = _choice(state, "boost", auto=False, cycle=pending["cycle"], detail=detail)

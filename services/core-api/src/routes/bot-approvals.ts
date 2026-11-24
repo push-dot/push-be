@@ -24,7 +24,9 @@ const CARD = `SELECT a.id, a.status, a.created_at, a.expires_at, a.expires_at > 
     approval_superseded(a.conversation_id, a.created_at) AS superseded
   FROM approvals a WHERE ${BOT_CARD}`;
 
-const cardRetry = (row: Record<string, unknown>) => ({
+type Row = NonNullable<Awaited<ReturnType<typeof one>>>;
+
+const cardRetry = (row: Row) => ({
   id: String(row.id), status: "PENDING", openedAt: ts(row.created_at), expiresAt: ts(row.expires_at),
 });
 
@@ -32,12 +34,12 @@ const retryCard = async (ctx: Ctx, idRaw: string, approvalRaw: string): Promise<
   const bot = await resolveBot(ctx, idRaw);
   const params = [requireUuid(approvalRaw, "approvalId"), ctx.user.id, bot.id, ctx.now.toISOString()];
   const rearmed = await one(ctx.deps.query, REARM, params);
-  if (rearmed) return data(200, cardRetry(rearmed), ctx.rid);
+  if (rearmed) {return data(200, cardRetry(rearmed), ctx.rid);}
   const card = await one(ctx.deps.query, CARD, params);
-  if (!card) throw notFound();
-  if (card.superseded) throw new HttpError(409, "APPROVAL_SUPERSEDED", "a newer message moved the chat on");
+  if (!card) {throw notFound();}
+  if (card.superseded) {throw new HttpError(409, "APPROVAL_SUPERSEDED", "a newer message moved the chat on");}
   // Still open: a second tap asks nothing new.
-  if (card.status === "PENDING" && card.open) return data(200, cardRetry(card), ctx.rid);
+  if (card.status === "PENDING" && card.open) {return data(200, cardRetry(card), ctx.rid);}
   throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");
 };
 
@@ -54,7 +56,7 @@ const revokeSiteGrant = async (ctx: Ctx, idRaw: string, hostRaw: string): Promis
   const bot = await resolveBot(ctx, idRaw);
   let host: string;
   try { host = decodeURIComponent(hostRaw).toLowerCase(); } catch { throw fieldError("host", "must be a host name"); }
-  if (host.length < 1 || host.length > 255) throw fieldError("host", "must be a host name");
+  if (host.length < 1 || host.length > 255) {throw fieldError("host", "must be a host name");}
   await query(ctx.deps.query, "DELETE FROM bot_site_grants WHERE bot_id = $1 AND host = $2", [bot.id, host]);
   return noContent(ctx.rid);
 };
@@ -62,10 +64,10 @@ const revokeSiteGrant = async (ctx: Ctx, idRaw: string, hostRaw: string): Promis
 export const dispatchBotApprovals = async (ctx: Ctx, path: string): Promise<Response | null> => {
   const method = ctx.request.method;
   const retry = path.match(/^\/api\/v1\/bots\/([^/]+)\/approvals\/([^/]+)\/retry$/);
-  if (method === "POST" && retry) return retryCard(ctx, retry[1], retry[2]);
+  if (method === "POST" && retry) {return retryCard(ctx, retry[1], retry[2]);}
   const grants = path.match(/^\/api\/v1\/bots\/([^/]+)\/site-grants$/);
-  if (method === "GET" && grants) return listSiteGrants(ctx, grants[1]);
+  if (method === "GET" && grants) {return listSiteGrants(ctx, grants[1]);}
   const grant = path.match(/^\/api\/v1\/bots\/([^/]+)\/site-grants\/([^/]+)$/);
-  if (method === "DELETE" && grant) return revokeSiteGrant(ctx, grant[1], grant[2]);
+  if (method === "DELETE" && grant) {return revokeSiteGrant(ctx, grant[1], grant[2]);}
   return null;
 };

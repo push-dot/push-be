@@ -7,7 +7,7 @@ export interface SearchFields {
 }
 
 function compact(value: string): string {
-  return value.replace(/\s+/g, "");
+  return value.replaceAll(/\s+/g, "");
 }
 
 /** Choseong and jamo columns filled the way feature-spec 0.1 describes. */
@@ -29,7 +29,7 @@ export interface QueryForms {
 }
 
 /** Makes `s` literal for LIKE/ILIKE ... ESCAPE '\': the user's `%` and `_` stay characters, not wildcards. */
-export const likeEscape = (s: string): string => s.replace(/[\\%_]/g, (c) => "\\" + c);
+export const likeEscape = (s: string): string => s.replaceAll(/[\\%_]/g, (c) => "\\" + c);
 
 export const likeContains = (s: string): string => "%" + likeEscape(s) + "%";
 

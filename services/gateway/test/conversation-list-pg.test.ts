@@ -11,16 +11,17 @@ import {
   LAST_MSG_LATERAL,
   personalOwnerPc,
 } from "../src/middleware/ratelimit.ts";
+import type { Row as DbRow } from "../src/types.ts";
 import { legacyConversationListSelect } from "./conversation-list-legacy.ts";
 
 const URL_ = process.env.BILLING_PG_URL;
-type Pg = { query: (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> };
+type Pg = { query: (text: string, params?: Array<unknown>) => Promise<{ rows: Array<DbRow> }> };
 
 let pg: Pg | undefined;
 let rollback: (() => Promise<void>) | undefined;
 
 before(async () => {
-  if (!URL_) return;
+  if (!URL_) {return;}
   const { livePg } = await import("../../core-api/test/parity/pg.ts");
   const live = await livePg(URL_, 3);
   pg = live;
@@ -39,16 +40,16 @@ type Row = {
   last_message_preview: string;
 };
 
-const pick = (rows: Record<string, unknown>[]): Row[] =>
+const pick = (rows: Array<DbRow>): Array<Row> =>
   rows.map((r) => ({
     id: String(r.id),
     status: String(r.status ?? "DONE"),
-    last_line: r.last_line == null || r.last_line === "" ? null : String(r.last_line),
-    queue_position: r.queue_position == null ? null : Number(r.queue_position),
+    last_line: (r.last_line === null || r.last_line === undefined) || r.last_line === "" ? null : String(r.last_line),
+    queue_position: (r.queue_position === null || r.queue_position === undefined) ? null : Number(r.queue_position),
     last_message_preview: String(r.last_message_preview ?? ""),
   }));
 
-const assertParity = (legacy: Row[], next: Row[]): void => {
+const assertParity = (legacy: Array<Row>, next: Array<Row>): void => {
   assert.equal(legacy.length, next.length);
   assert.deepEqual(
     legacy.map((r) => ({ ...r, id: "[order]" })),
@@ -77,7 +78,7 @@ const legacyListSqlPageForLive = (): string => "WITH live AS (SELECT $1::uuid AS
   );
 
 test("list enrichment matches legacy on Postgres (personal, employer, LIST page CTE)", async (t) => {
-  if (!pg) return t.skip("set BILLING_PG_URL to a migrated Postgres");
+  if (!pg) {return t.skip("set BILLING_PG_URL to a migrated Postgres");}
   const db = pg;
   const user = crypto.randomUUID();
   const company = crypto.randomUUID();

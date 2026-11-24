@@ -3,22 +3,25 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
-import { botsPg, type BotsPg, type Person } from "../test-support/bots-pg.ts";
+import { errorInfo } from '../src/db.ts';
+import { botsPg } from '../test-support/bots-pg.ts';
+import type { BotsPg, Person } from '../test-support/bots-pg.ts';
 
 const URL_ = process.env.BILLING_PG_URL;
 const SKIP = "set BILLING_PG_URL to a migrated Postgres";
 
 let db: BotsPg | undefined;
-before(async () => { if (URL_) db = await botsPg(URL_); });
+before(async () => { if (URL_) {db = await botsPg(URL_);} });
 after(async () => { await db?.close(); });
 
 const sentence = (): string => `지우면 남지 않아야 하는 문장 ${crypto.randomUUID()}`;
 
 /** One finished turn in the bot's thread, with `text` in every column the services write chat text to. */
+const run = (sql: string, params: Array<unknown>) => db!.pg.query(sql, params);
+
 const seedTurn = async (user: Person, botId: string, text: string): Promise<{ thread: string; operation: string }> => {
   const [thread, job, notifyJob, operation, userMessage, assistantMessage] = Array.from({ length: 6 }, () => crypto.randomUUID());
   const quoted = JSON.stringify({ text });
-  const run = (sql: string, params: unknown[]) => db!.pg.query(sql, params);
   await run(
     "INSERT INTO conversations (id, user_id, title, bot_id, resume_state) VALUES ($1::uuid, $2::uuid, $3, $4::uuid, $5::jsonb)",
     [thread, user.id, text.slice(0, 40), botId, quoted]);
@@ -56,13 +59,13 @@ const seedTurn = async (user: Person, botId: string, text: string): Promise<{ th
 };
 
 /** Every table of the schema that has a row containing `text`. It names no table, so a new copy of chat text is found. */
-const tablesHolding = async (text: string): Promise<string[]> => {
+const tablesHolding = async (text: string): Promise<Array<string>> => {
   const tables = await db!.pg.query(
     "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name");
-  const holding: string[] = [];
+  const holding: Array<string> = [];
   for (const { table_name: table } of tables.rows) {
     const hit = await db!.pg.query(`SELECT 1 FROM "${String(table)}" t WHERE t::text LIKE $1 LIMIT 1`, [`%${text}%`]);
-    if (hit.rows.length > 0) holding.push(String(table));
+    if (hit.rows.length > 0) {holding.push(String(table));}
   }
   return holding;
 };
@@ -73,7 +76,7 @@ const usageRows = async (operation: string): Promise<number> => Number((await db
   "SELECT count(*)::int AS n FROM ai_usage u JOIN operations o ON o.id = u.operation_id WHERE o.id = $1::uuid", [operation])).rows[0].n);
 
 test("DELETE /bots/{id} leaves no row that holds a sentence of the chat", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const [erased, kept] = [sentence(), sentence()];
   const bot = await db.call(user, "POST", "/bots", { postingId: await db.posting("모아페이") });
@@ -95,7 +98,7 @@ test("DELETE /bots/{id} leaves no row that holds a sentence of the chat", async 
 });
 
 test("DELETE /bots/{id}/transcript erases the Push Bot's chat and keeps the bot", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const erased = sentence();
   const push = await db.call(user, "PATCH", "/bots/push", { expectedRevision: 1, notificationsMuted: true });
@@ -117,7 +120,7 @@ test("DELETE /bots/{id}/transcript erases the Push Bot's chat and keeps the bot"
 const FOREIGN_KEY_VIOLATION = "23503";
 
 test("a first send that races the delete of its bot leaves no thread and no message", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const { pg, call } = db;
   const user = await db.person("ULTRA");
   const firstSend = (run: BotsPg["pg"]["query"], botId: string) => async (): Promise<void> => {
@@ -137,15 +140,15 @@ test("a first send that races the delete of its bot leaves no thread and no mess
       "INSERT INTO bots (id, user_id, kind, company_name, display_name) VALUES ($1::uuid, $2::uuid, 'company', $1::uuid::text, 'race')",
       [botId, user.id]);
     const send = n % 2 === 0 ? firstSend(pg.query, botId) : () => pg.transaction!((q) => firstSend(q, botId)());
-    const sent = () => send().catch((err: { code?: string }) => {
-      if (err.code !== FOREIGN_KEY_VIOLATION) throw err;
+    const sent = () => send().catch((error: unknown) => {
+      if (errorInfo(error).code !== FOREIGN_KEY_VIOLATION) {throw error;}
     });
     const sendFirst = n % 4 < 2 ? sent() : undefined;
     const removing = call(user, "DELETE", `/bots/${botId}`);
     await (sendFirst ?? sent());
     assert.equal((await removing).status, 204);
   };
-  for (let n = 0; n < 96; n += 8) await Promise.all(Array.from({ length: 8 }, (_, i) => round(n + i)));
+  for (let n = 0; n < 96; n += 8) {await Promise.all(Array.from({ length: 8 }, (_, i) => round(n + i)));}
 
   const left = await pg.query(
     `SELECT (SELECT count(*)::int FROM bots WHERE user_id = $1::uuid AND kind = 'company') AS bots,

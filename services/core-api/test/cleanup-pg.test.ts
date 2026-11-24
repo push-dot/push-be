@@ -2,19 +2,20 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
-import { botsPg, type BotsPg } from "../test-support/bots-pg.ts";
+import { botsPg } from '../test-support/bots-pg.ts';
+import type { BotsPg } from '../test-support/bots-pg.ts';
 
 const URL_ = process.env.BILLING_PG_URL;
 const SKIP = "set BILLING_PG_URL to a migrated Postgres";
 
 let db: BotsPg | undefined;
-before(async () => { if (URL_) db = await botsPg(URL_); });
+before(async () => { if (URL_) {db = await botsPg(URL_);} });
 after(async () => { await db?.close(); });
 
-const sql = async (text: string, params: unknown[] = []) => (await db!.pg.query(text, params)).rows;
+const sql = async (text: string, params: Array<unknown> = []) => (await db!.pg.query(text, params)).rows;
 
 test("DELETE /me/links/{id} answers 204 on a repeat, and a live link is not restored", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const id = crypto.randomUUID();
   await sql("INSERT INTO user_links (id, user_id, kind, url, title) VALUES ($1, $2, 'portfolio', 'https://example.com/a', 'a')", [id, user.id]);
@@ -28,7 +29,7 @@ test("DELETE /me/links/{id} answers 204 on a repeat, and a live link is not rest
 });
 
 test("DELETE /sources deletes an unreferenced resume and leaves its profile pointing at nothing", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const id = crypto.randomUUID();
   await sql(

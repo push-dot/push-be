@@ -2,8 +2,26 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { postJson, recorder } from "../test-support/recorder.ts";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import type { JsonObject } from "../src/json.ts";
+import type { QueryResult, Row } from "../src/db.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
+
+// Test data comes from JSON bodies and rows; the round trip types it without an assertion.
+const viaJson = <T>(value: unknown): T => {
+  const out: T = JSON.parse(JSON.stringify(value) ?? "null");
+  return out;
+};
+
+const readJson = async <T>(res: Response): Promise<T> => {
+  const body: T = await res.json();
+  return body;
+};
+const parseJson = <T>(text: string): T => {
+  const value: T = JSON.parse(text);
+  return value;
+};
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const COMPANY = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -15,7 +33,7 @@ const APPLICANT = "99999999-9999-4999-8999-999999999999";
 const JOB = "abababab-abab-4bab-8bab-abababababab";
 const NOW = "2026-10-21T00:00:00.000Z";
 
-type Call = { sql: string; params: unknown[] };
+type Call = { sql: string; params: Array<unknown> };
 type Err = { error: { code: string; details: { currentRevision?: unknown } } };
 
 const env = (): CoreEnv => ({ APP_ENV: "production", MANAGED_AI: "1" });
@@ -33,22 +51,22 @@ const tokenRow = (employer: boolean, plan = "FREE") => ({
   is_employer: employer,
 });
 
-const authed = (seen: Call[], employer: boolean, extra: Deps["query"], plan = "FREE"): Deps["query"] => async (sql, params = []) => {
+const authed = (seen: Array<Call>, employer: boolean, extra: Deps["query"], plan = "FREE"): Deps["query"] => async (sql, params = []) => {
   seen.push({ sql, params });
-  if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-  if (sql.includes("access_tokens")) return { rows: [tokenRow(employer, plan)], rowCount: 1 };
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+  if (sql.includes("access_tokens")) {return { rows: [tokenRow(employer, plan)], rowCount: 1 };}
   if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {
     return { rows: [{ id: "11111111-1111-4111-8111-111111111111" }], rowCount: 1 };
   }
-  if (sql.includes("idempotency_keys")) return { rows: [], rowCount: 0 };
+  if (sql.includes("idempotency_keys")) {return { rows: [], rowCount: 0 };}
   if (sql.includes("is_employer") && sql.includes("FROM users") && !sql.includes("access_tokens")) {
     return { rows: [{ is_employer: employer, display_name: "Ada" }], rowCount: 1 };
   }
-  if (sql.includes("INSERT INTO ai_jobs")) return { rows: [{ id: params[0], queue: params[2] }], rowCount: 1 };
+  if (sql.includes("INSERT INTO ai_jobs")) {return { rows: [{ id: String(params[0]), queue: String(params[2]) }], rowCount: 1 };}
   return extra(sql, params);
 };
 
-const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
+const empty: QueryResult = { rows: [], rowCount: 0 };
 
 const post = (path: string, body: unknown, key: string): Request => new Request("https://core.example" + path, {
   method: "POST",
@@ -79,18 +97,18 @@ const postingBody = {
 const verified = { id: COMPANY, name: "Acme", verified_at: NOW };
 
 const companyQuery = async (sql: string) => {
-  if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [verified], rowCount: 1 };
+  if (sql.includes("company_members") && !sql.includes("access_tokens")) {return { rows: [verified], rowCount: 1 };}
   return empty;
 };
 
-const codeOf = async (res: Response) => (await res.json() as Err).error.code;
+const codeOf = async (res: Response) => (await readJson<Err>(res)).error.code;
 
 test("unverified or non-member create is forbidden and does not insert company_user_id", async () => {
   resetLimits();
-  const unverifiedSeen: Call[] = [];
+  const unverifiedSeen: Array<Call> = [];
   const unverified = authed(unverifiedSeen, true, async (sql) => {
     if (sql.includes("company_members") && !sql.includes("access_tokens")) {
-      if (sql.includes("verified_at IS NOT NULL")) return empty;
+      if (sql.includes("verified_at IS NOT NULL")) {return empty;}
       return { rows: [{ id: COMPANY, name: "Acme", verified_at: null }], rowCount: 1 };
     }
     return empty;
@@ -102,9 +120,9 @@ test("unverified or non-member create is forbidden and does not insert company_u
   assert.equal(unverifiedSeen.some((call) => call.sql.includes("INSERT INTO job_postings")), false);
 
   resetLimits();
-  const outsiderSeen: Call[] = [];
+  const outsiderSeen: Array<Call> = [];
   const outsider = authed(outsiderSeen, true, async (sql) => {
-    if (sql.includes("company_members") && !sql.includes("access_tokens")) return empty;
+    if (sql.includes("company_members") && !sql.includes("access_tokens")) {return empty;}
     return empty;
   });
   const missing = await handle(post("/api/v1/postings", postingBody, "11111111-1111-4111-8111-111111111112"), env(), deps(outsider));
@@ -116,14 +134,14 @@ test("unverified or non-member create is forbidden and does not insert company_u
 
 test("verified create inserts company_id and defaults the company name", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(
     post("/api/v1/postings", postingBody, "22222222-2222-4222-8222-222222222222"),
     env(),
     deps(authed(seen, true, companyQuery)),
   );
   assert.equal(res.status, 201);
-  const body = await res.json() as { data: { company: string; revision: number; preferred: string[]; closedAt: string | null; status: string } };
+  const body = await readJson<{ data: { company: string; revision: number; preferred: Array<string>; closedAt: string | null; status: string } }>(res);
   assert.equal(body.data.company, "Acme");
   assert.equal(body.data.revision, 1);
   assert.deepEqual(body.data.preferred, []);
@@ -141,17 +159,17 @@ test("verified create inserts company_id and defaults the company name", async (
 
 test("a stale posting revision is 409 with the current revision", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(patch(`/api/v1/postings/${POSTING}`, {
     title: "Changed",
     expectedRevision: 1,
   }), env(), deps(authed(seen, true, async (sql) => {
-    if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [verified], rowCount: 1 };
-    if (sql.includes("job_postings")) return { rows: [{ id: POSTING, revision: 4, company_id: COMPANY, closed_at: null }], rowCount: 1 };
+    if (sql.includes("company_members") && !sql.includes("access_tokens")) {return { rows: [verified], rowCount: 1 };}
+    if (sql.includes("job_postings")) {return { rows: [{ id: POSTING, revision: 4, company_id: COMPANY, closed_at: null }], rowCount: 1 };}
     return empty;
   })));
   assert.equal(res.status, 409);
-  const body = await res.json() as Err;
+  const body = await readJson<Err>(res);
   assert.equal(body.error.code, "REVISION_CONFLICT");
   assert.equal(typeof body.error.details.currentRevision, "number");
   assert.equal(body.error.details.currentRevision, 4);
@@ -160,12 +178,12 @@ test("a stale posting revision is 409 with the current revision", async () => {
 
 test("close sets closed_at and bumps revision", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(
     post(`/api/v1/postings/${POSTING}/close`, { expectedRevision: 2 }, "33333333-3333-4333-8333-333333333333"),
     env(),
     deps(authed(seen, true, async (sql, params = []) => {
-      if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [verified], rowCount: 1 };
+      if (sql.includes("company_members") && !sql.includes("access_tokens")) {return { rows: [verified], rowCount: 1 };}
       if (sql.includes("UPDATE") && sql.includes("job_postings")) {
         assert.equal(params.includes(2), true);
         return { rows: [{ id: POSTING, revision: 3, closed_at: NOW, company: "Acme", title: "Backend" }], rowCount: 1 };
@@ -177,7 +195,7 @@ test("close sets closed_at and bumps revision", async () => {
     })),
   );
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { revision: number; closedAt: string | null } };
+  const body = await readJson<{ data: { revision: number; closedAt: string | null } }>(res);
   assert.equal(body.data.revision, 3);
   assert.equal(body.data.closedAt, "2026-10-21T00:00:00Z");
   const update = seen.find((call) => call.sql.includes("UPDATE") && call.sql.includes("job_postings"));
@@ -190,15 +208,15 @@ test("close sets closed_at and bumps revision", async () => {
 
 test("closing another company's posting is 404 and an already closed posting is 409", async () => {
   resetLimits();
-  const otherSeen: Call[] = [];
+  const otherSeen: Array<Call> = [];
   const other = await handle(
     post(`/api/v1/postings/${POSTING}/close`, { expectedRevision: 1 }, "33333333-3333-4333-8333-333333333334"),
     env(),
     deps(authed(otherSeen, true, async (sql, params = []) => {
-      if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [verified], rowCount: 1 };
-      if (sql.includes("UPDATE")) return { rows: [{ id: POSTING, revision: 2, closed_at: NOW }], rowCount: 1 };
+      if (sql.includes("company_members") && !sql.includes("access_tokens")) {return { rows: [verified], rowCount: 1 };}
+      if (sql.includes("UPDATE")) {return { rows: [{ id: POSTING, revision: 2, closed_at: NOW }], rowCount: 1 };}
       if (sql.includes("job_postings")) {
-        if (params.includes(COMPANY)) return empty;
+        if (params.includes(COMPANY)) {return empty;}
         return { rows: [{ id: POSTING, revision: 1, closed_at: null, company_id: OTHER }], rowCount: 1 };
       }
       return empty;
@@ -208,29 +226,29 @@ test("closing another company's posting is 404 and an already closed posting is 
   assert.equal(otherSeen.some((call) => call.sql.includes("UPDATE") && call.sql.includes("job_postings")), false);
 
   resetLimits();
-  const closedSeen: Call[] = [];
+  const closedSeen: Array<Call> = [];
   const closed = await handle(
     post(`/api/v1/postings/${POSTING}/close`, { expectedRevision: 5 }, "33333333-3333-4333-8333-333333333335"),
     env(),
     deps(authed(closedSeen, true, async (sql) => {
-      if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [verified], rowCount: 1 };
-      if (sql.includes("UPDATE")) return { rows: [{ id: POSTING, revision: 6, closed_at: NOW, company: "Acme" }], rowCount: 1 };
-      if (sql.includes("job_postings")) return { rows: [{ id: POSTING, revision: 5, closed_at: NOW, company_id: COMPANY }], rowCount: 1 };
+      if (sql.includes("company_members") && !sql.includes("access_tokens")) {return { rows: [verified], rowCount: 1 };}
+      if (sql.includes("UPDATE")) {return { rows: [{ id: POSTING, revision: 6, closed_at: NOW, company: "Acme" }], rowCount: 1 };}
+      if (sql.includes("job_postings")) {return { rows: [{ id: POSTING, revision: 5, closed_at: NOW, company_id: COMPANY }], rowCount: 1 };}
       return empty;
     })),
   );
   assert.equal(closed.status, 409);
-  const body = await closed.json() as Err;
+  const body = await readJson<Err>(closed);
   assert.equal(body.error.code, "REVISION_CONFLICT");
   assert.equal(body.error.details.currentRevision, 5);
 });
 
 test("public list and detail hide closed postings and the company list keeps them", async () => {
   resetLimits();
-  const guestSeen: Call[] = [];
+  const guestSeen: Array<Call> = [];
   const guestQuery: Deps["query"] = async (sql, params = []) => {
     guestSeen.push({ sql, params });
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     return empty;
   };
   const list = await handle(new Request("https://core.example/api/v1/postings"), env(), deps(guestQuery));
@@ -246,13 +264,13 @@ test("public list and detail hide closed postings and the company list keeps the
   assert.match(detailSql.sql, /closed_at IS NULL/);
 
   resetLimits();
-  const mineSeen: Call[] = [];
+  const mineSeen: Array<Call> = [];
   const mine = await handle(
     new Request("https://core.example/api/v1/companies/me/postings", { headers: { authorization: "Bearer secret-token" } }),
     env(),
     deps(authed(mineSeen, true, async (sql) => {
-      if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [{ company_id: COMPANY, id: COMPANY }], rowCount: 1 };
-      if (sql.includes("count(*)")) return { rows: [{ total: 1 }], rowCount: 1 };
+      if (sql.includes("company_members") && !sql.includes("access_tokens")) {return { rows: [{ company_id: COMPANY, id: COMPANY }], rowCount: 1 };}
+      if (sql.includes("count(*)")) {return { rows: [{ total: 1 }], rowCount: 1 };}
       return empty;
     })),
   );
@@ -264,7 +282,7 @@ test("public list and detail hide closed postings and the company list keeps the
   assert.equal(mineSql.params.includes(COMPANY), true);
 
   resetLimits();
-  const noneSeen: Call[] = [];
+  const noneSeen: Array<Call> = [];
   const none = await handle(
     new Request("https://core.example/api/v1/companies/me/postings", { headers: { authorization: "Bearer secret-token" } }),
     env(),
@@ -277,7 +295,7 @@ test("public list and detail hide closed postings and the company list keeps the
 
 test("apply snapshots document json and a second apply does not snapshot again", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   let applied = false;
   const query = authed(seen, false, async (sql) => {
     if (sql.includes("job_postings") && sql.includes("closed_at IS NULL") && !sql.includes("INSERT")) {
@@ -290,16 +308,16 @@ test("apply snapshots document json and a second apply does not snapshot again",
     if (sql.includes("document_versions") || (sql.includes("FROM documents") && sql.includes("content"))) {
       return { rows: [{ id: DOC, title: "Resume", content: { summary: "hi" } }], rowCount: 1 };
     }
-    if (sql.includes("FROM documents")) return { rows: [{ id: DOC, title: "Resume" }], rowCount: 1 };
+    if (sql.includes("FROM documents")) {return { rows: [{ id: DOC, title: "Resume" }], rowCount: 1 };}
     if (sql.includes("applications") && sql.includes("source_posting_id") && !sql.includes("INSERT")) {
-      if (!applied) return empty;
+      if (!applied) {return empty;}
       return { rows: [{ id: APP, revision: 1, job_id: JOB, company: "Acme", title: "Backend", stage: "APPLIED", notes: "", applied_at: NOW, next_action_at: null, imported: false, created_at: NOW, updated_at: NOW }], rowCount: 1 };
     }
     if (sql.includes("FROM job_postings")) {
       return { rows: [{ company: "Acme", title: "Backend", description: "Build APIs", requirements: [], deadline: null }], rowCount: 1 };
     }
-    if (sql.includes("INSERT INTO applications")) applied = true;
-    if (sql.includes("INSERT INTO ai_jobs")) return { rows: [{ id: "00000000-0000-4000-8000-000000000099", queue: "q:ingest" }], rowCount: 1 };
+    if (sql.includes("INSERT INTO applications")) {applied = true;}
+    if (sql.includes("INSERT INTO ai_jobs")) {return { rows: [{ id: "00000000-0000-4000-8000-000000000099", queue: "q:ingest" }], rowCount: 1 };}
     return empty;
   });
   const first = await handle(
@@ -308,7 +326,7 @@ test("apply snapshots document json and a second apply does not snapshot again",
     deps(query),
   );
   assert.equal(first.status, 201);
-  const created = await first.json() as { data: { id: string; fitScore: null } };
+  const created = await readJson<{ data: { id: string; fitScore: null } }>(first);
   assert.equal(created.data.fitScore, null);
   const snapshot = seen.find((call) => call.sql.includes("INSERT INTO application_snapshots"));
   assert.ok(snapshot);
@@ -318,7 +336,7 @@ test("apply snapshots document json and a second apply does not snapshot again",
   assert.match(wrote!.sql, /'jobCategory', p\.job_category/);
   assert.match(wrote!.sql, /'tenureYears', p\.tenure_years/);
   assert.match(wrote!.sql, /'capturedAt', \$9::timestamptz/);
-  const snapshots = JSON.parse(String(snapshot.params[13])) as { document_id: string; content: string }[];
+  const snapshots = parseJson<Array<{ document_id: string; content: string }>>(String(snapshot.params[13]));
   assert.deepEqual(snapshots, [{ document_id: DOC, title: "Resume", content: JSON.stringify({ summary: "hi" }) }]);
   const second = await handle(
     post(`/api/v1/postings/${POSTING}/apply`, { documentIds: [DOC] }, "44444444-4444-4444-8444-444444444445"),
@@ -326,21 +344,21 @@ test("apply snapshots document json and a second apply does not snapshot again",
     deps(query),
   );
   assert.equal(second.status, 201);
-  const again = await second.json() as { data: { id: string } };
+  const again = await readJson<{ data: { id: string } }>(second);
   assert.equal(again.data.id, APP);
   assert.equal(seen.filter((call) => call.sql.includes("INSERT INTO application_snapshots")).length, 1);
 });
 
 test("an employer cannot apply", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(
     post(`/api/v1/postings/${POSTING}/apply`, { documentIds: [DOC] }, "55555555-5555-4555-8555-555555555555"),
     env(),
     deps(authed(seen, true, async (sql) => {
-      if (sql.includes("job_postings") && sql.includes("closed_at IS NULL")) return { rows: [{ id: POSTING }], rowCount: 1 };
-      if (sql.includes("FROM documents")) return { rows: [{ id: DOC }], rowCount: 1 };
-      if (sql.includes("FROM job_postings")) return { rows: [{ company: "Acme", title: "Backend", description: "d", requirements: [], deadline: null }], rowCount: 1 };
+      if (sql.includes("job_postings") && sql.includes("closed_at IS NULL")) {return { rows: [{ id: POSTING }], rowCount: 1 };}
+      if (sql.includes("FROM documents")) {return { rows: [{ id: DOC }], rowCount: 1 };}
+      if (sql.includes("FROM job_postings")) {return { rows: [{ company: "Acme", title: "Backend", description: "d", requirements: [], deadline: null }], rowCount: 1 };}
       return empty;
     })),
   );
@@ -376,19 +394,19 @@ const memberPosting = async (sql: string) => {
 
 test("a stage jump to OFFER notifies the applicant", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(patch(`/api/v1/postings/${POSTING}/applicants/${APP}`, { stage: "OFFER" }), env(), deps(authed(seen, true, async (sql) => {
     const member = await memberPosting(sql);
-    if (member) return member;
+    if (member) {return member;}
     if (sql.includes("UPDATE") && sql.includes("applications")) {
       return { rows: [{ ...applicationRow("OFFER"), revision: 2 }], rowCount: 1 };
     }
-    if (sql.includes("applications")) return { rows: [applicationRow("APPLIED")], rowCount: 1 };
-    if (sql.includes("user_settings")) return empty;
+    if (sql.includes("applications")) {return { rows: [applicationRow("APPLIED")], rowCount: 1 };}
+    if (sql.includes("user_settings")) {return empty;}
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { stage: string; revision: number } };
+  const body = await readJson<{ data: { stage: string; revision: number } }>(res);
   assert.equal(body.data.stage, "OFFER");
   assert.equal(body.data.revision, 2);
   const note = seen.find((call) => call.sql.includes("INSERT INTO notifications"));
@@ -405,21 +423,21 @@ test("a stage jump to OFFER notifies the applicant", async () => {
 
 test("employer stage update falls back when stage_entered_at is missing", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const missing = Object.assign(new Error('column "stage_entered_at" of relation "applications" does not exist'), { code: "42703" });
   const res = await handle(patch(`/api/v1/postings/${POSTING}/applicants/${APP}`, { stage: "OFFER" }), env(), deps(authed(seen, true, async (sql) => {
     const member = await memberPosting(sql);
-    if (member) return member;
-    if (sql.includes("UPDATE") && sql.includes("stage_entered_at")) throw missing;
+    if (member) {return member;}
+    if (sql.includes("UPDATE") && sql.includes("stage_entered_at")) {throw missing;}
     if (sql.includes("UPDATE") && sql.includes("applications")) {
       return { rows: [{ ...applicationRow("OFFER"), revision: 2 }], rowCount: 1 };
     }
-    if (sql.includes("applications")) return { rows: [applicationRow("APPLIED")], rowCount: 1 };
-    if (sql.includes("user_settings")) return empty;
+    if (sql.includes("applications")) {return { rows: [applicationRow("APPLIED")], rowCount: 1 };}
+    if (sql.includes("user_settings")) {return empty;}
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { stage: string; revision: number } };
+  const body = await readJson<{ data: { stage: string; revision: number } }>(res);
   assert.equal(body.data.stage, "OFFER");
   assert.equal(body.data.revision, 2);
   const updates = seen.filter((call) => call.sql.includes("UPDATE") && call.sql.includes("applications"));
@@ -431,13 +449,13 @@ test("employer stage update falls back when stage_entered_at is missing", async 
 
 test("application stage notifications respect the settings switch", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(patch(`/api/v1/postings/${POSTING}/applicants/${APP}`, { stage: "OFFER" }), env(), deps(authed(seen, true, async (sql) => {
     const member = await memberPosting(sql);
-    if (member) return member;
-    if (sql.includes("UPDATE") && sql.includes("applications")) return { rows: [applicationRow("OFFER")], rowCount: 1 };
-    if (sql.includes("applications")) return { rows: [applicationRow("APPLIED")], rowCount: 1 };
-    if (sql.includes("user_settings")) return { rows: [{ enabled: false, notify_application_stage: false }], rowCount: 1 };
+    if (member) {return member;}
+    if (sql.includes("UPDATE") && sql.includes("applications")) {return { rows: [applicationRow("OFFER")], rowCount: 1 };}
+    if (sql.includes("applications")) {return { rows: [applicationRow("APPLIED")], rowCount: 1 };}
+    if (sql.includes("user_settings")) {return { rows: [{ enabled: false, notify_application_stage: false }], rowCount: 1 };}
     return empty;
   })));
   assert.equal(res.status, 200);
@@ -446,12 +464,12 @@ test("application stage notifications respect the settings switch", async () => 
 
 test("a terminal applicant stage cannot move to OFFER", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(patch(`/api/v1/postings/${POSTING}/applicants/${APP}`, { stage: "OFFER" }), env(), deps(authed(seen, true, async (sql) => {
     const member = await memberPosting(sql);
-    if (member) return member;
-    if (sql.includes("UPDATE") && sql.includes("applications")) return { rows: [applicationRow("OFFER")], rowCount: 1 };
-    if (sql.includes("applications")) return { rows: [applicationRow("REJECTED")], rowCount: 1 };
+    if (member) {return member;}
+    if (sql.includes("UPDATE") && sql.includes("applications")) {return { rows: [applicationRow("OFFER")], rowCount: 1 };}
+    if (sql.includes("applications")) {return { rows: [applicationRow("REJECTED")], rowCount: 1 };}
     return empty;
   })));
   assert.equal(res.status, 409);
@@ -462,22 +480,22 @@ test("a terminal applicant stage cannot move to OFFER", async () => {
 
 test("applicant detail returns the snapshot documents and fit score", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(
     new Request(`https://core.example/api/v1/postings/${POSTING}/applicants/${APP}`, { headers: { authorization: "Bearer secret-token" } }),
     env(),
     deps(authed(seen, true, async (sql) => {
       const member = await memberPosting(sql);
-      if (member) return member;
+      if (member) {return member;}
       if (sql.includes("application_snapshots")) {
         return { rows: [{ id: DOC, title: "Resume", content: "{\"summary\":\"hi\"}" }], rowCount: 1 };
       }
-      if (sql.includes("applications")) return { rows: [{ ...applicationRow("OFFER"), fit_score: 80 }], rowCount: 1 };
+      if (sql.includes("applications")) {return { rows: [{ ...applicationRow("OFFER"), fit_score: 80 }], rowCount: 1 };}
       return empty;
     })),
   );
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { application: { fitScore: number }; documents: { id: string; title: string; content: string }[] } };
+  const body = await readJson<{ data: { application: { fitScore: number }; documents: Array<{ id: string; title: string; content: string }> } }>(res);
   assert.equal(body.data.application.fitScore, 80);
   assert.deepEqual(body.data.documents, [{ id: DOC, title: "Resume", content: "{\"summary\":\"hi\"}" }]);
   const appSql = seen.find((call) => call.sql.includes("applications") && call.sql.includes("fit_score"));
@@ -503,39 +521,39 @@ const settingsRow = (notify: boolean, days: number | null) => ({
 
 test("settings store notifyApplicationStage and ignore retired retention", async () => {
   resetLimits();
-  const notifySeen: Call[] = [];
+  const notifySeen: Array<Call> = [];
   let notify = true;
-  let days: number | null = 7;
+  const days: number | null = 7;
   const notifyRes = await handle(patch("/api/v1/me/settings", { notifyApplicationStage: false }), env(), deps(authed(notifySeen, false, async (sql, params = []) => {
     if (sql.includes("UPDATE user_settings")) {
       const stage = /notify_application_stage = \$(\d+)/.exec(sql);
-      if (stage) notify = Boolean(params[Number(stage[1]) - 1]);
+      if (stage) {notify = Boolean(params[Number(stage[1]) - 1]);}
       return empty;
     }
-    if (sql.includes("user_settings") || sql.includes("FROM users")) return { rows: [settingsRow(notify, days)], rowCount: 1 };
+    if (sql.includes("user_settings") || sql.includes("FROM users")) {return { rows: [settingsRow(notify, days)], rowCount: 1 };}
     return empty;
   })));
   assert.equal(notifyRes.status, 200);
-  const notifyBody = await notifyRes.json() as { data: { notifyApplicationStage: boolean } };
+  const notifyBody = await readJson<{ data: { notifyApplicationStage: boolean } }>(notifyRes);
   assert.equal(notifyBody.data.notifyApplicationStage, false);
   const update = notifySeen.find((call) => call.sql.includes("UPDATE user_settings"));
   assert.ok(update);
   assert.match(update.sql, /notify_application_stage/);
 
   resetLimits();
-  const daysSeen: Call[] = [];
+  const daysSeen: Array<Call> = [];
   let stored: number | null = 7;
   const daysRes = await handle(patch("/api/v1/me/settings", { chatRetentionDays: null }), env(), deps(authed(daysSeen, false, async (sql, params = []) => {
     if (sql.includes("UPDATE user_settings")) {
       const mark = /chat_retention_days = \$(\d+)/.exec(sql);
-      if (mark) stored = params[Number(mark[1]) - 1] as number | null;
+      if (mark) {stored = viaJson<number | null>(params[Number(mark[1]) - 1]);}
       return empty;
     }
-    if (sql.includes("user_settings") || sql.includes("FROM users")) return { rows: [settingsRow(true, stored)], rowCount: 1 };
+    if (sql.includes("user_settings") || sql.includes("FROM users")) {return { rows: [settingsRow(true, stored)], rowCount: 1 };}
     return empty;
   }, "FREE")));
   assert.equal(daysRes.status, 200);
-  const daysBody = await daysRes.json() as { data: Record<string, unknown> };
+  const daysBody = await readJson<{ data: JsonObject }>(daysRes);
   assert.equal("chatRetentionDays" in daysBody.data, false);
   assert.equal(stored, 7);
   const daysUpdate = daysSeen.find((call) => call.sql.includes("UPDATE user_settings"));
@@ -545,12 +563,12 @@ test("settings store notifyApplicationStage and ignore retired retention", async
 
 test("a post author includes employer and company name", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(
     new Request("https://core.example/api/v1/posts/" + POSTING, { headers: { authorization: "Bearer secret-token" } }),
     env(),
     deps(authed(seen, false, async (sql) => {
-      if (sql.includes("UPDATE posts")) return { rows: [{ id: POSTING }], rowCount: 1 };
+      if (sql.includes("UPDATE posts")) {return { rows: [{ id: POSTING }], rowCount: 1 };}
       if (sql.includes("FROM posts")) {
         return {
           rows: [{
@@ -574,7 +592,7 @@ test("a post author includes employer and company name", async () => {
     })),
   );
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { author: { displayName: string; employer: boolean; companyName: string | null } } };
+  const body = await readJson<{ data: { author: { displayName: string; employer: boolean; companyName: string | null } } }>(res);
   assert.equal(body.data.author.displayName, "Ada");
   assert.equal(body.data.author.employer, true);
   assert.equal(body.data.author.companyName, "Acme");
@@ -585,7 +603,7 @@ test("a post author includes employer and company name", async () => {
 
 test("a company member can read a closed posting and another user cannot", async () => {
   resetLimits();
-  const memberSeen: Call[] = [];
+  const memberSeen: Array<Call> = [];
   const member = await handle(
     new Request(`https://core.example/api/v1/postings/${POSTING}`, { headers: { authorization: "Bearer secret-token" } }),
     env(),
@@ -593,7 +611,7 @@ test("a company member can read a closed posting and another user cannot", async
       if (sql.includes("FROM job_postings") && sql.includes("company_members")) {
         return { rows: [{ id: POSTING }], rowCount: 1 };
       }
-      if (sql.includes("FROM job_postings") && sql.includes("closed_at IS NULL")) return empty;
+      if (sql.includes("FROM job_postings") && sql.includes("closed_at IS NULL")) {return empty;}
       if (sql.includes("FROM job_postings")) {
         return {
           rows: [{
@@ -612,18 +630,18 @@ test("a company member can read a closed posting and another user cannot", async
     })),
   );
   assert.equal(member.status, 200);
-  const body = await member.json() as { data: { description: string; closedAt: string | null } };
+  const body = await readJson<{ data: { description: string; closedAt: string | null } }>(member);
   assert.equal(body.data.description, "Build APIs");
   assert.equal(body.data.closedAt, "2026-10-21T00:00:00Z");
 
   resetLimits();
-  const otherSeen: Call[] = [];
+  const otherSeen: Array<Call> = [];
   const other = await handle(
     new Request(`https://core.example/api/v1/postings/${POSTING}`, { headers: { authorization: "Bearer secret-token" } }),
     env(),
     deps(authed(otherSeen, false, async (sql) => {
-      if (sql.includes("FROM job_postings") && sql.includes("closed_at IS NULL")) return empty;
-      if (sql.includes("company_members")) return empty;
+      if (sql.includes("FROM job_postings") && sql.includes("closed_at IS NULL")) {return empty;}
+      if (sql.includes("company_members")) {return empty;}
       if (sql.includes("FROM job_postings")) {
         return { rows: [{ id: POSTING, description: "Build APIs", closed_at: NOW }], rowCount: 1 };
       }
@@ -636,31 +654,37 @@ test("a company member can read a closed posting and another user cannot", async
 
 test("repeating REJECTED returns the row without a notification", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(patch(`/api/v1/postings/${POSTING}/applicants/${APP}`, { stage: "REJECTED" }), env(), deps(authed(seen, true, async (sql) => {
     const member = await memberPosting(sql);
-    if (member) return member;
-    if (sql.includes("UPDATE") && sql.includes("applications")) return { rows: [{ ...applicationRow("REJECTED"), revision: 2 }], rowCount: 1 };
-    if (sql.includes("applications")) return { rows: [applicationRow("REJECTED")], rowCount: 1 };
+    if (member) {return member;}
+    if (sql.includes("UPDATE") && sql.includes("applications")) {return { rows: [{ ...applicationRow("REJECTED"), revision: 2 }], rowCount: 1 };}
+    if (sql.includes("applications")) {return { rows: [applicationRow("REJECTED")], rowCount: 1 };}
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { stage: string; revision: number } };
+  const body = await readJson<{ data: { stage: string; revision: number } }>(res);
   assert.equal(body.data.stage, "REJECTED");
   assert.equal(body.data.revision, 1);
   assert.equal(seen.some((call) => call.sql.includes("UPDATE") && call.sql.includes("applications")), false);
   assert.equal(seen.some((call) => call.sql.includes("INSERT INTO notifications")), false);
 });
 
+const deferred = () => {
+  let settle: (() => void) | undefined;
+  const promise = new Promise<void>((resolve) => { settle = resolve; });
+  return { promise, resolve: () => { settle?.(); } };
+};
+
+const asksOpen = (sql: string) => /p\.status = 'OPEN'|status = 'OPEN'/.test(sql);
+
 const missingRelation = (code: string, message: string): Error => {
-  const err = new Error(message) as Error & { code: string };
-  err.code = code;
-  return err;
+  return Object.assign(new Error(message), { code });
 };
 
 test("a post still loads before company tables exist", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(
     new Request("https://core.example/api/v1/posts/" + POSTING, { headers: { authorization: "Bearer secret-token" } }),
     env(),
@@ -668,7 +692,7 @@ test("a post still loads before company tables exist", async () => {
       if (sql.includes("company_members") || sql.includes("companies")) {
         throw missingRelation("42P01", "relation \"company_members\" does not exist");
       }
-      if (sql.includes("UPDATE posts")) return { rows: [{ id: POSTING }], rowCount: 1 };
+      if (sql.includes("UPDATE posts")) {return { rows: [{ id: POSTING }], rowCount: 1 };}
       if (sql.includes("FROM posts")) {
         return {
           rows: [{
@@ -692,7 +716,7 @@ test("a post still loads before company tables exist", async () => {
     })),
   );
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { author: { employer: boolean; companyName: string | null } } };
+  const body = await readJson<{ data: { author: { employer: boolean; companyName: string | null } } }>(res);
   assert.equal(body.data.author.employer, false);
   assert.equal(body.data.author.companyName, null);
   assert.equal(seen.some((call) => call.sql.includes("FROM posts") && !call.sql.includes("company_members")), true);
@@ -707,27 +731,27 @@ test("settings still load before notify_application_stage exists", async () => {
       if (sql.includes("notify_application_stage")) {
         throw missingRelation("42703", "column \"notify_application_stage\" does not exist");
       }
-      if (sql.includes("INSERT INTO user_settings")) return empty;
-      if (sql.includes("user_settings")) return { rows: [settingsRow(true, null)], rowCount: 1 };
+      if (sql.includes("INSERT INTO user_settings")) {return empty;}
+      if (sql.includes("user_settings")) {return { rows: [settingsRow(true, null)], rowCount: 1 };}
       return empty;
     })),
   );
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { notifyApplicationStage: boolean } };
+  const body = await readJson<{ data: { notifyApplicationStage: boolean } }>(res);
   assert.equal(body.data.notifyApplicationStage, true);
   assert.equal("chatRetentionDays" in body.data, false);
 });
 
 test("create DRAFT stores status and CLOSED on create is 400", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(
     post("/api/v1/postings", { ...postingBody, status: "DRAFT" }, "66666666-6666-4666-8666-666666666661"),
     env(),
     deps(authed(seen, true, companyQuery)),
   );
   assert.equal(res.status, 201);
-  const body = await res.json() as { data: { status: string; closedAt: string | null } };
+  const body = await readJson<{ data: { status: string; closedAt: string | null } }>(res);
   assert.equal(body.data.status, "DRAFT");
   assert.equal(body.data.closedAt, null);
   const insert = seen.find((call) => call.sql.includes("INSERT INTO job_postings"));
@@ -737,7 +761,7 @@ test("create DRAFT stores status and CLOSED on create is 400", async () => {
   assert.match(insert.sql, /NULL/);
 
   resetLimits();
-  const closedSeen: Call[] = [];
+  const closedSeen: Array<Call> = [];
   const closed = await handle(
     post("/api/v1/postings", { ...postingBody, status: "CLOSED" }, "66666666-6666-4666-8666-666666666662"),
     env(),
@@ -750,7 +774,7 @@ test("create DRAFT stores status and CLOSED on create is 400", async () => {
 
 test("guest list requires open status and does not return a draft", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const draft = {
     id: POSTING,
     company: "Acme",
@@ -760,10 +784,9 @@ test("guest list requires open status and does not return a draft", async () => 
     created_at: NOW,
     revision: 1,
   };
-  const asksOpen = (sql: string) => /p\.status = 'OPEN'|status = 'OPEN'/.test(sql);
   const res = await handle(new Request("https://core.example/api/v1/postings"), env(), deps(async (sql, params = []) => {
     seen.push({ sql, params });
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     if (sql.includes("ORDER BY") && sql.includes("job_postings")) {
       return { rows: asksOpen(sql) ? [] : [draft], rowCount: asksOpen(sql) ? 0 : 1 };
     }
@@ -773,7 +796,7 @@ test("guest list requires open status and does not return a draft", async () => 
     return empty;
   }));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { title?: string }[] };
+  const body = await readJson<{ data: Array<{ title?: string }> }>(res);
   assert.equal(body.data.some((item) => item.title === "Secret draft"), false);
   const listSql = seen.find((call) => call.sql.includes("FROM job_postings") && call.sql.includes("ORDER BY"));
   assert.ok(listSql);
@@ -789,14 +812,14 @@ test("company applicant detail and stage update omit private notes", async () =>
     env(),
     deps(authed([], true, async (sql) => {
       const member = await memberPosting(sql);
-      if (member) return member;
-      if (sql.includes("application_snapshots")) return empty;
-      if (sql.includes("applications")) return { rows: [noted], rowCount: 1 };
+      if (member) {return member;}
+      if (sql.includes("application_snapshots")) {return empty;}
+      if (sql.includes("applications")) {return { rows: [noted], rowCount: 1 };}
       return empty;
     })),
   );
   assert.equal(detail.status, 200);
-  const detailBody = await detail.json() as { data: { application: Record<string, unknown> } };
+  const detailBody = await readJson<{ data: { application: JsonObject } }>(detail);
   assert.equal(Object.hasOwn(detailBody.data.application, "notes"), false);
   assert.equal(detailBody.data.application.stage, "APPLIED");
 
@@ -806,15 +829,15 @@ test("company applicant detail and stage update omit private notes", async () =>
     env(),
     deps(authed([], true, async (sql) => {
       const member = await memberPosting(sql);
-      if (member) return member;
-      if (sql.includes("UPDATE") && sql.includes("applications")) return { rows: [{ ...noted, stage: "SCREENING", revision: 2 }], rowCount: 1 };
-      if (sql.includes("applications")) return { rows: [noted], rowCount: 1 };
-      if (sql.includes("user_settings")) return empty;
+      if (member) {return member;}
+      if (sql.includes("UPDATE") && sql.includes("applications")) {return { rows: [{ ...noted, stage: "SCREENING", revision: 2 }], rowCount: 1 };}
+      if (sql.includes("applications")) {return { rows: [noted], rowCount: 1 };}
+      if (sql.includes("user_settings")) {return empty;}
       return empty;
     })),
   );
   assert.equal(moved.status, 200);
-  const movedBody = await moved.json() as { data: Record<string, unknown> };
+  const movedBody = await readJson<{ data: JsonObject }>(moved);
   assert.equal(Object.hasOwn(movedBody.data, "notes"), false);
   assert.equal(movedBody.data.stage, "SCREENING");
 });
@@ -843,21 +866,21 @@ const hubProfile = {
 };
 
 const profileQuery = (viewerEmail: string): Deps["query"] => async (sql) => {
-  if (sql.includes("SELECT email FROM users")) return { rows: [{ email: viewerEmail }], rowCount: 1 };
-  if (sql.includes("FROM profiles")) return { rows: [hubProfile], rowCount: 1 };
+  if (sql.includes("SELECT email FROM users")) {return { rows: [{ email: viewerEmail }], rowCount: 1 };}
+  if (sql.includes("FROM profiles")) {return { rows: [hubProfile], rowCount: 1 };}
   return empty;
 };
 
 test("same-company viewers still see the profile but not career status", async () => {
   resetLimits();
-  const listSeen: Call[] = [];
+  const listSeen: Array<Call> = [];
   const list = await handle(
     new Request("https://core.example/api/v1/profiles", { headers: { authorization: "Bearer secret-token" } }),
     env(),
     deps(authed(listSeen, false, profileQuery("ada@acme.com"))),
   );
   assert.equal(list.status, 200);
-  const listBody = await list.json() as { data: { headline: string; careerStatus: string | null; careers: unknown[] }[] };
+  const listBody = await readJson<{ data: Array<{ headline: string; careerStatus: string | null; careers: Array<unknown> }> }>(list);
   assert.equal(listBody.data.length, 1);
   assert.equal(listBody.data[0].headline, "Backend");
   assert.equal(listBody.data[0].careers.length, 1);
@@ -867,7 +890,7 @@ test("same-company viewers still see the profile but not career status", async (
   assert.doesNotMatch(listSql.sql, /NOT \(\s*COALESCE\(s\.hide_from_current_company/);
 
   resetLimits();
-  const statusSeen: Call[] = [];
+  const statusSeen: Array<Call> = [];
   const filtered = await handle(
     new Request("https://core.example/api/v1/profiles?status=seeking", { headers: { authorization: "Bearer secret-token" } }),
     env(),
@@ -885,7 +908,7 @@ test("same-company viewers still see the profile but not career status", async (
     deps(authed([], false, profileQuery("ada@acme.com"))),
   );
   assert.equal(search.status, 200);
-  const searchBody = await search.json() as { data: { careerStatus: string | null; headline: string }[] };
+  const searchBody = await readJson<{ data: Array<{ careerStatus: string | null; headline: string }> }>(search);
   assert.equal(searchBody.data[0].headline, "Backend");
   assert.equal(searchBody.data[0].careerStatus, null);
 
@@ -896,7 +919,7 @@ test("same-company viewers still see the profile but not career status", async (
     deps(authed([], false, profileQuery("ada@acme.com"))),
   );
   assert.equal(detail.status, 200);
-  const detailBody = await detail.json() as { data: { careerStatus: string | null; headline: string; skills: string[] } };
+  const detailBody = await readJson<{ data: { careerStatus: string | null; headline: string; skills: Array<string> } }>(detail);
   assert.equal(detailBody.data.headline, "Backend");
   assert.deepEqual(detailBody.data.skills, ["ts"]);
   assert.equal(detailBody.data.careerStatus, null);
@@ -908,7 +931,7 @@ test("same-company viewers still see the profile but not career status", async (
     deps(authed([], false, profileQuery("ada@beta.com"))),
   );
   assert.equal(otherCompany.status, 200);
-  const otherBody = await otherCompany.json() as { data: { careerStatus: string | null } };
+  const otherBody = await readJson<{ data: { careerStatus: string | null } }>(otherCompany);
   assert.equal(otherBody.data.careerStatus, "seeking");
 
   resetLimits();
@@ -916,24 +939,24 @@ test("same-company viewers still see the profile but not career status", async (
     new Request(`https://core.example/api/v1/profiles/${OTHER}`, { headers: { authorization: "Bearer secret-token" } }),
     env(),
     deps(authed([], false, async (sql) => {
-      if (sql.includes("SELECT email FROM users")) return { rows: [{ email: "ada@gmail.com" }], rowCount: 1 };
-      if (sql.includes("FROM profiles")) return { rows: [{ ...hubProfile, email_domain: "gmail.com" }], rowCount: 1 };
+      if (sql.includes("SELECT email FROM users")) {return { rows: [{ email: "ada@gmail.com" }], rowCount: 1 };}
+      if (sql.includes("FROM profiles")) {return { rows: [{ ...hubProfile, email_domain: "gmail.com" }], rowCount: 1 };}
       return empty;
     })),
   );
   assert.equal(gmail.status, 200);
-  const gmailBody = await gmail.json() as { data: { careerStatus: string | null } };
+  const gmailBody = await readJson<{ data: { careerStatus: string | null } }>(gmail);
   assert.equal(gmailBody.data.careerStatus, "seeking");
 });
 
 test("company list status=DRAFT filters drafts and includes applicantCount", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(
     new Request("https://core.example/api/v1/companies/me/postings?status=DRAFT", { headers: { authorization: "Bearer secret-token" } }),
     env(),
     deps(authed(seen, true, async (sql) => {
-      if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [{ company_id: COMPANY }], rowCount: 1 };
+      if (sql.includes("company_members") && !sql.includes("access_tokens")) {return { rows: [{ company_id: COMPANY }], rowCount: 1 };}
       if (sql.includes("ORDER BY") && sql.includes("job_postings")) {
         return {
           rows: [{
@@ -949,12 +972,12 @@ test("company list status=DRAFT filters drafts and includes applicantCount", asy
           rowCount: 1,
         };
       }
-      if (sql.includes("count(*)")) return { rows: [{ total: 1 }], rowCount: 1 };
+      if (sql.includes("count(*)")) {return { rows: [{ total: 1 }], rowCount: 1 };}
       return empty;
     })),
   );
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { status: string; applicantCount: number }[] };
+  const body = await readJson<{ data: Array<{ status: string; applicantCount: number }> }>(res);
   assert.equal(body.data[0].status, "DRAFT");
   assert.equal(body.data[0].applicantCount, 4);
   const listSql = seen.find((call) => call.sql.includes("FROM job_postings") && call.sql.includes("ORDER BY"));
@@ -967,7 +990,7 @@ test("company list status=DRAFT filters drafts and includes applicantCount", asy
     new Request("https://core.example/api/v1/companies/me/postings?status=NOPE", { headers: { authorization: "Bearer secret-token" } }),
     env(),
     deps(authed([], true, async (sql) => {
-      if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [{ company_id: COMPANY }], rowCount: 1 };
+      if (sql.includes("company_members") && !sql.includes("access_tokens")) {return { rows: [{ company_id: COMPANY }], rowCount: 1 };}
       return empty;
     })),
   );
@@ -981,8 +1004,8 @@ test("member detail includes applicantCount and a non-member detail does not", a
     new Request(`https://core.example/api/v1/postings/${POSTING}`, { headers: { authorization: "Bearer secret-token" } }),
     env(),
     deps(authed([], true, async (sql) => {
-      if (sql.includes("company_members") && sql.includes("job_postings")) return { rows: [{ id: POSTING }], rowCount: 1 };
-      if (/p\.status = 'OPEN'|status = 'OPEN'/.test(sql)) return empty;
+      if (sql.includes("company_members") && sql.includes("job_postings")) {return { rows: [{ id: POSTING }], rowCount: 1 };}
+      if (/p\.status = 'OPEN'|status = 'OPEN'/.test(sql)) {return empty;}
       if (sql.includes("FROM job_postings")) {
         return {
           rows: [{
@@ -1003,7 +1026,7 @@ test("member detail includes applicantCount and a non-member detail does not", a
     })),
   );
   assert.equal(member.status, 200);
-  const memberBody = await member.json() as { data: { status: string; applicantCount: number; description: string } };
+  const memberBody = await readJson<{ data: { status: string; applicantCount: number; description: string } }>(member);
   assert.equal(memberBody.data.status, "DRAFT");
   assert.equal(memberBody.data.applicantCount, 2);
   assert.equal(memberBody.data.description, "Hidden");
@@ -1013,7 +1036,7 @@ test("member detail includes applicantCount and a non-member detail does not", a
     new Request(`https://core.example/api/v1/postings/${POSTING}`, { headers: { authorization: "Bearer secret-token" } }),
     env(),
     deps(authed([], false, async (sql) => {
-      if (sql.includes("company_members") && !sql.includes("access_tokens")) return empty;
+      if (sql.includes("company_members") && !sql.includes("access_tokens")) {return empty;}
       if (sql.includes("FROM job_postings") && sql.includes("closed_at IS NULL")) {
         return {
           rows: [{
@@ -1034,14 +1057,14 @@ test("member detail includes applicantCount and a non-member detail does not", a
     })),
   );
   assert.equal(outsider.status, 200);
-  const outsiderBody = await outsider.json() as { data: { applicantCount?: number; description: string } };
+  const outsiderBody = await readJson<{ data: { applicantCount?: number; description: string } }>(outsider);
   assert.equal(outsiderBody.data.description, "Build APIs");
   assert.equal(outsiderBody.data.applicantCount, 9);
 
   resetLimits();
   const guest = await handle(new Request(`https://core.example/api/v1/postings/${POSTING}`), env(), deps(async (sql) => {
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (/p\.status = 'OPEN'|status = 'OPEN'/.test(sql)) return empty;
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (/p\.status = 'OPEN'|status = 'OPEN'/.test(sql)) {return empty;}
     if (sql.includes("job_postings")) {
       return { rows: [{ id: POSTING, title: "Secret draft", status: "DRAFT", description: "Hidden", closed_at: null }], rowCount: 1 };
     }
@@ -1052,12 +1075,12 @@ test("member detail includes applicantCount and a non-member detail does not", a
 
 test("patch may set DRAFT and must not set CLOSED", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(patch(`/api/v1/postings/${POSTING}`, {
     status: "DRAFT",
     expectedRevision: 1,
   }), env(), deps(authed(seen, true, async (sql, params = []) => {
-    if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [verified], rowCount: 1 };
+    if (sql.includes("company_members") && !sql.includes("access_tokens")) {return { rows: [verified], rowCount: 1 };}
     if (sql.includes("UPDATE") && sql.includes("job_postings")) {
       assert.equal(params.includes("DRAFT"), true);
       return { rows: [{ id: POSTING, revision: 2, status: "DRAFT", company: "Acme", title: "Backend", closed_at: null }], rowCount: 1 };
@@ -1085,7 +1108,7 @@ test("patch may set DRAFT and must not set CLOSED", async () => {
     return empty;
   })));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { status: string; revision: number } };
+  const body = await readJson<{ data: { status: string; revision: number } }>(res);
   assert.equal(body.data.status, "DRAFT");
   assert.equal(body.data.revision, 2);
   const update = seen.find((call) => call.sql.includes("UPDATE") && call.sql.includes("job_postings"));
@@ -1093,7 +1116,7 @@ test("patch may set DRAFT and must not set CLOSED", async () => {
   assert.match(update.sql, /status/);
 
   resetLimits();
-  const closedSeen: Call[] = [];
+  const closedSeen: Array<Call> = [];
   const closed = await handle(patch(`/api/v1/postings/${POSTING}`, {
     status: "CLOSED",
     expectedRevision: 1,
@@ -1109,7 +1132,7 @@ test("applicant counts return the five stage keys", async () => {
     new Request(`https://core.example/api/v1/postings/${POSTING}/applicant-counts`, { headers: { authorization: "Bearer secret-token" } }),
     env(),
     deps(authed([], true, async (sql) => {
-      if (sql.includes("company_members") && sql.includes("job_postings")) return { rows: [{ id: POSTING }], rowCount: 1 };
+      if (sql.includes("company_members") && sql.includes("job_postings")) {return { rows: [{ id: POSTING }], rowCount: 1 };}
       if (sql.includes("AS applied")) {
         return { rows: [{ applied: 1, screening: 2, interview: 3, offer: 4, rejected: 5 }], rowCount: 1 };
       }
@@ -1117,7 +1140,7 @@ test("applicant counts return the five stage keys", async () => {
     })),
   );
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { total: number; applied: number; screening: number; interview: number; offer: number; rejected: number } };
+  const body = await readJson<{ data: { total: number; applied: number; screening: number; interview: number; offer: number; rejected: number } }>(res);
   assert.deepEqual(body.data, { total: 15, applied: 1, screening: 2, interview: 3, offer: 4, rejected: 5 });
 
   resetLimits();
@@ -1131,27 +1154,27 @@ test("applicant counts return the five stage keys", async () => {
 
 test("facets return every career id and category including zeros", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(new Request(
     "https://core.example/api/v1/postings/facets?q=kotlin&skills=Kotlin&careerYears=10%2B&category=dev&location="
       + encodeURIComponent("서울")
       + "&employmentType=full_time",
   ), env(), deps(async (sql, params = []) => {
     seen.push({ sql, params });
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("career_0")) return { rows: [{ career_0: 2, career_7_9: 1 }], rowCount: 1 };
-    if (sql.includes("GROUP BY p.job_category")) return { rows: [{ id: "dev", count: 3 }], rowCount: 1 };
-    if (sql.includes("GROUP BY p.location")) return { rows: [{ id: "서울 강남구", count: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("career_0")) {return { rows: [{ career_0: 2, career_7_9: 1 }], rowCount: 1 };}
+    if (sql.includes("GROUP BY p.job_category")) {return { rows: [{ id: "dev", count: 3 }], rowCount: 1 };}
+    if (sql.includes("GROUP BY p.location")) {return { rows: [{ id: "서울 강남구", count: 1 }], rowCount: 1 };}
     return empty;
   }));
   assert.equal(res.status, 200);
-  const body = await res.json() as {
+  const body = await readJson<{
     data: {
-      career: { id: string; count: number }[];
-      category: { id: string; count: number }[];
-      location: { id: string; count: number }[];
+      career: Array<{ id: string; count: number }>;
+      category: Array<{ id: string; count: number }>;
+      location: Array<{ id: string; count: number }>;
     };
-  };
+  }>(res);
   assert.deepEqual(body.data.career, [
     { id: "0", count: 2 },
     { id: "1-3", count: 0 },
@@ -1192,12 +1215,12 @@ test("facets return every career id and category including zeros", async () => {
 
 test("guest list returns 200 when the status column is missing", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(new Request("https://core.example/api/v1/postings"), env(), deps(async (sql, params = []) => {
     seen.push({ sql, params });
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("status")) throw missingRelation("42703", "column \"status\" of relation \"job_postings\" does not exist");
-    if (sql.includes("job_postings") && sql.includes("count(*)")) return { rows: [{ total: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("status")) {throw missingRelation("42703", "column \"status\" of relation \"job_postings\" does not exist");}
+    if (sql.includes("job_postings") && sql.includes("count(*)")) {return { rows: [{ total: 1 }], rowCount: 1 };}
     if (sql.includes("ORDER BY") && sql.includes("job_postings")) {
       return {
         rows: [{ id: POSTING, company: "Acme", title: "Backend", created_at: NOW, revision: 1, closed_at: null }],
@@ -1207,7 +1230,7 @@ test("guest list returns 200 when the status column is missing", async () => {
     return empty;
   }));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { id: string; status?: string }[] };
+  const body = await readJson<{ data: Array<{ id: string; status?: string }> }>(res);
   assert.equal(body.data.length, 1);
   assert.equal(body.data[0].id, POSTING);
   assert.equal(Object.hasOwn(body.data[0], "status"), false);
@@ -1217,12 +1240,12 @@ test("guest list returns 200 when the status column is missing", async () => {
 
 test("patch cannot publish a closed posting", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(patch(`/api/v1/postings/${POSTING}`, {
     status: "OPEN",
     expectedRevision: 1,
   }), env(), deps(authed(seen, true, async (sql) => {
-    if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [verified], rowCount: 1 };
+    if (sql.includes("company_members") && !sql.includes("access_tokens")) {return { rows: [verified], rowCount: 1 };}
     if (sql.includes("job_postings")) {
       return {
         rows: [{
@@ -1257,17 +1280,17 @@ test("member create patch and close include applicantCount", async () => {
     deps(authed([], true, companyQuery)),
   );
   assert.equal(created.status, 201);
-  const createdBody = await created.json() as { data: { applicantCount: number; status: string } };
+  const createdBody = await readJson<{ data: { applicantCount: number; status: string } }>(created);
   assert.equal(createdBody.data.status, "OPEN");
   assert.equal(createdBody.data.applicantCount, 0);
 
   resetLimits();
-  const patchSeen: Call[] = [];
+  const patchSeen: Array<Call> = [];
   const patched = await handle(patch(`/api/v1/postings/${POSTING}`, {
     title: "Backend",
     expectedRevision: 1,
   }), env(), deps(authed(patchSeen, true, async (sql) => {
-    if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [verified], rowCount: 1 };
+    if (sql.includes("company_members") && !sql.includes("access_tokens")) {return { rows: [verified], rowCount: 1 };}
     if (sql.includes("UPDATE") && sql.includes("job_postings")) {
       return {
         rows: [{
@@ -1304,19 +1327,19 @@ test("member create patch and close include applicantCount", async () => {
     return empty;
   })));
   assert.equal(patched.status, 200);
-  const patchedBody = await patched.json() as { data: { applicantCount: number } };
+  const patchedBody = await readJson<{ data: { applicantCount: number } }>(patched);
   assert.equal(patchedBody.data.applicantCount, 6);
   const update = patchSeen.find((call) => call.sql.includes("UPDATE") && call.sql.includes("job_postings"));
   assert.ok(update);
   assert.match(update.sql, /AS applicant_count/);
 
   resetLimits();
-  const closeSeen: Call[] = [];
+  const closeSeen: Array<Call> = [];
   const closed = await handle(
     post(`/api/v1/postings/${POSTING}/close`, { expectedRevision: 1 }, "33333333-3333-4333-8333-33333333333a"),
     env(),
     deps(authed(closeSeen, true, async (sql) => {
-      if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [verified], rowCount: 1 };
+      if (sql.includes("company_members") && !sql.includes("access_tokens")) {return { rows: [verified], rowCount: 1 };}
       if (sql.includes("UPDATE") && sql.includes("job_postings")) {
         return {
           rows: [{
@@ -1338,7 +1361,7 @@ test("member create patch and close include applicantCount", async () => {
     })),
   );
   assert.equal(closed.status, 200);
-  const closedBody = await closed.json() as { data: { applicantCount: number; status: string } };
+  const closedBody = await readJson<{ data: { applicantCount: number; status: string } }>(closed);
   assert.equal(closedBody.data.applicantCount, 6);
   assert.equal(closedBody.data.status, "CLOSED");
   const closeSql = closeSeen.find((call) => call.sql.includes("UPDATE") && call.sql.includes("job_postings"));
@@ -1352,9 +1375,9 @@ test("company list and closed detail derive status when the column is missing", 
     new Request("https://core.example/api/v1/companies/me/postings", { headers: { authorization: "Bearer secret-token" } }),
     env(),
     deps(authed([], true, async (sql) => {
-      if (sql.includes("company_members") && !sql.includes("access_tokens")) return { rows: [{ company_id: COMPANY }], rowCount: 1 };
-      if (sql.includes("status")) throw missingRelation("42703", "column \"status\" of relation \"job_postings\" does not exist");
-      if (sql.includes("AS total")) return { rows: [{ total: 1 }], rowCount: 1 };
+      if (sql.includes("company_members") && !sql.includes("access_tokens")) {return { rows: [{ company_id: COMPANY }], rowCount: 1 };}
+      if (sql.includes("status")) {throw missingRelation("42703", "column \"status\" of relation \"job_postings\" does not exist");}
+      if (sql.includes("AS total")) {return { rows: [{ total: 1 }], rowCount: 1 };}
       if (sql.includes("ORDER BY") && sql.includes("job_postings")) {
         return {
           rows: [{
@@ -1373,7 +1396,7 @@ test("company list and closed detail derive status when the column is missing", 
     })),
   );
   assert.equal(listed.status, 200);
-  const listedBody = await listed.json() as { data: { status: string; applicantCount: number }[] };
+  const listedBody = await readJson<{ data: Array<{ status: string; applicantCount: number }> }>(listed);
   assert.equal(listedBody.data[0].status, "CLOSED");
   assert.equal(listedBody.data[0].applicantCount, 3);
 
@@ -1382,9 +1405,9 @@ test("company list and closed detail derive status when the column is missing", 
     new Request(`https://core.example/api/v1/postings/${POSTING}`, { headers: { authorization: "Bearer secret-token" } }),
     env(),
     deps(authed([], true, async (sql) => {
-      if (sql.includes("company_members") && sql.includes("job_postings")) return { rows: [{ id: POSTING }], rowCount: 1 };
-      if (sql.includes("status")) throw missingRelation("42703", "column \"status\" of relation \"job_postings\" does not exist");
-      if (sql.includes("closed_at IS NULL")) return empty;
+      if (sql.includes("company_members") && sql.includes("job_postings")) {return { rows: [{ id: POSTING }], rowCount: 1 };}
+      if (sql.includes("status")) {throw missingRelation("42703", "column \"status\" of relation \"job_postings\" does not exist");}
+      if (sql.includes("closed_at IS NULL")) {return empty;}
       if (sql.includes("FROM job_postings")) {
         return {
           rows: [{
@@ -1404,7 +1427,7 @@ test("company list and closed detail derive status when the column is missing", 
     })),
   );
   assert.equal(detail.status, 200);
-  const detailBody = await detail.json() as { data: { status: string; applicantCount: number } };
+  const detailBody = await readJson<{ data: { status: string; applicantCount: number } }>(detail);
   assert.equal(detailBody.data.status, "CLOSED");
   assert.equal(detailBody.data.applicantCount, 1);
 });
@@ -1415,7 +1438,7 @@ test("guest applicant counts are 404", async () => {
     new Request(`https://core.example/api/v1/postings/${POSTING}/applicant-counts`),
     env(),
     deps(async (sql) => {
-      if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+      if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
       return empty;
     }),
   );
@@ -1437,8 +1460,8 @@ const appRow = { id: APP, revision: 1, job_id: E3, company: "Acme", title: "Back
 test("an applicant file with a Korean name downloads with an RFC 5987 filename", async () => {
   const { handle } = await import("../src/handler.ts");
   const { query } = recorder((sql) => {
-    if (sql.includes("JOIN company_members m")) return [{ id: POSTING }];
-    if (sql.includes("FROM application_files f")) return [{ file_name: "이력서 \"최종\".pdf", mime_type: "application/pdf", content: "\\x255044" }];
+    if (sql.includes("JOIN company_members m")) {return [{ id: POSTING }];}
+    if (sql.includes("FROM application_files f")) {return [{ file_name: "이력서 \"최종\".pdf", mime_type: "application/pdf", content: String.raw`\x255044` }];}
     return null;
   });
   const res = await handle(new Request(`https://core.example/api/v1/postings/${POSTING}/applicants/${APP}/files/${FILE}`, {
@@ -1446,7 +1469,7 @@ test("an applicant file with a Korean name downloads with an RFC 5987 filename",
   }), ENV, { query, now: () => NOW });
   assert.equal(res.status, 200);
   const disposition = res.headers.get("content-disposition") ?? "";
-  assert.match(disposition, /^attachment; filename="[\x20-\x7e]*"; filename\*=UTF-8''/);
+  assert.match(disposition, /^attachment; filename="[\u0020-\u007e]*"; filename\*=UTF-8''/);
   assert.ok(disposition.includes(encodeURIComponent("이력서")));
   assert.equal(res.headers.get("x-content-type-options"), "nosniff");
   assert.deepEqual([...new Uint8Array(await res.arrayBuffer())], [0x25, 0x50, 0x44]);
@@ -1457,11 +1480,11 @@ test("apply checks every document and source in one query each and writes in one
   const S1 = "50000000-0000-4000-8000-000000000001";
   const S2 = "50000000-0000-4000-8000-000000000002";
   const { calls, query } = recorder((sql) => {
-    if (sql.includes("FROM job_postings p WHERE p.id = $1")) return [postingRow];
-    if (sql.includes("FROM documents d")) return [E1, E2].map((id) => ({ id, title: "Doc", content: { id } }));
-    if (sql.startsWith("SELECT id FROM sources")) return [{ id: S1 }, { id: S2 }];
-    if (sql.startsWith("WITH job AS")) return [{ id: APP }];
-    if (sql.includes("INSERT INTO ai_jobs")) return [{ id: "00000000-0000-4000-8000-000000000099", queue: "q:ingest" }];
+    if (sql.includes("FROM job_postings p WHERE p.id = $1")) {return [postingRow];}
+    if (sql.includes("FROM documents d")) {return [E1, E2].map((id) => ({ id, title: "Doc", content: { id } }));}
+    if (sql.startsWith("SELECT id FROM sources")) {return [{ id: S1 }, { id: S2 }];}
+    if (sql.startsWith("WITH job AS")) {return [{ id: APP }];}
+    if (sql.includes("INSERT INTO ai_jobs")) {return [{ id: "00000000-0000-4000-8000-000000000099", queue: "q:ingest" }];}
     return null;
   });
   const res = await handle(postJson(`/api/v1/postings/${POSTING}/apply`, { documentIds: [E1, E2], sourceIds: [S1, S2] }, "00000000-0000-4000-8000-000000000008"),
@@ -1477,10 +1500,10 @@ test("apply falls back when stage_entered_at is missing", async () => {
   const { handle } = await import("../src/handler.ts");
   const missing = Object.assign(new Error('column "stage_entered_at" of relation "applications" does not exist'), { code: "42703" });
   const { calls, query } = recorder((sql) => {
-    if (sql.includes("FROM job_postings p WHERE p.id = $1")) return [postingRow];
-    if (sql.startsWith("WITH job AS") && sql.includes("stage_entered_at")) throw missing;
-    if (sql.startsWith("WITH job AS")) return [{ id: APP }];
-    if (sql.includes("INSERT INTO ai_jobs")) return [{ id: "00000000-0000-4000-8000-000000000099", queue: "q:ingest" }];
+    if (sql.includes("FROM job_postings p WHERE p.id = $1")) {return [postingRow];}
+    if (sql.startsWith("WITH job AS") && sql.includes("stage_entered_at")) {throw missing;}
+    if (sql.startsWith("WITH job AS")) {return [{ id: APP }];}
+    if (sql.includes("INSERT INTO ai_jobs")) {return [{ id: "00000000-0000-4000-8000-000000000099", queue: "q:ingest" }];}
     return null;
   });
   const res = await handle(postJson(`/api/v1/postings/${POSTING}/apply`, {}, "00000000-0000-4000-8000-00000000000a"),
@@ -1490,7 +1513,7 @@ test("apply falls back when stage_entered_at is missing", async () => {
   assert.equal(writes.length, 2);
   assert.match(writes[0].sql, /stage_entered_at/);
   assert.equal(writes[1].sql.includes("stage_entered_at"), false);
-  const body = await res.json() as { data: { stageEnteredAt: Record<string, string> } };
+  const body = await readJson<{ data: { stageEnteredAt: Record<string, string> } }>(res);
   assert.equal(body.data.stageEnteredAt.APPLIED, "2026-10-21T00:00:00Z");
 });
 
@@ -1498,10 +1521,10 @@ test("apply keeps stage_entered_at when only applicant_snapshot is missing", asy
   const { handle } = await import("../src/handler.ts");
   const missing = Object.assign(new Error('column "applicant_snapshot" of relation "applications" does not exist'), { code: "42703" });
   const { calls, query } = recorder((sql) => {
-    if (sql.includes("FROM job_postings p WHERE p.id = $1")) return [postingRow];
-    if (sql.startsWith("WITH job AS") && sql.includes("applicant_snapshot")) throw missing;
-    if (sql.startsWith("WITH job AS")) return [{ id: APP }];
-    if (sql.includes("INSERT INTO ai_jobs")) return [{ id: "00000000-0000-4000-8000-000000000099", queue: "q:ingest" }];
+    if (sql.includes("FROM job_postings p WHERE p.id = $1")) {return [postingRow];}
+    if (sql.startsWith("WITH job AS") && sql.includes("applicant_snapshot")) {throw missing;}
+    if (sql.startsWith("WITH job AS")) {return [{ id: APP }];}
+    if (sql.includes("INSERT INTO ai_jobs")) {return [{ id: "00000000-0000-4000-8000-000000000099", queue: "q:ingest" }];}
     return null;
   });
   const res = await handle(postJson(`/api/v1/postings/${POSTING}/apply`, {}, "00000000-0000-4000-8000-00000000000b"),
@@ -1518,14 +1541,14 @@ test("apply answers with the winning application when a simultaneous apply hits 
   const { handle } = await import("../src/handler.ts");
   let lookups = 0;
   const { query } = recorder((sql) => {
-    if (sql.includes("FROM job_postings p WHERE p.id = $1")) return [postingRow];
-    if (sql.startsWith("WITH job AS")) throw Object.assign(new Error("duplicate key value violates unique constraint"), { code: "23505" });
-    if (sql.includes("FROM applications a JOIN jobs j")) return lookups++ === 0 ? [] : [appRow];
+    if (sql.includes("FROM job_postings p WHERE p.id = $1")) {return [postingRow];}
+    if (sql.startsWith("WITH job AS")) {throw Object.assign(new Error("duplicate key value violates unique constraint"), { code: "23505" });}
+    if (sql.includes("FROM applications a JOIN jobs j")) {return lookups++ === 0 ? [] : [appRow];}
     return null;
   });
   const res = await handle(postJson(`/api/v1/postings/${POSTING}/apply`, {}, "00000000-0000-4000-8000-000000000009"), ENV, { query, now: () => NOW });
   assert.equal(res.status, 201);
-  assert.equal(((await res.json()) as { data: { id: string } }).data.id, APP);
+  assert.equal(((await readJson<{ data: { id: string } }>(res))).data.id, APP);
 });
 
 test("posting facets run their five counts in parallel", async () => {
@@ -1533,13 +1556,10 @@ test("posting facets run their five counts in parallel", async () => {
   let inFlight = 0;
   let peak = 0;
   let started = 0;
-  let release = () => {};
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const { promise: gate, resolve: release } = deferred();
   const fallback = setTimeout(release, 200);
   const query: Deps["query"] = async (sql) => {
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     inFlight += 1;
     started += 1;
     peak = Math.max(peak, inFlight);
@@ -1565,24 +1585,24 @@ test("posting facets run their five counts in parallel", async () => {
 
 test("a viewer on a free-mail address is still hidden from a candidate who hides from the viewer's company", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const sameCompany = { ...hubProfile, email_domain: "other.com", same_company_as_viewer: true };
-  const list = (row: Record<string, unknown>, calls: Call[]) => handle(
+  const list = (row: Row, calls: Array<Call>) => handle(
     new Request("https://core.example/api/v1/profiles", { headers: { authorization: "Bearer secret-token" } }),
     env(),
     deps(authed(calls, false, async (sql) => {
-      if (sql.includes("SELECT email FROM users")) return { rows: [{ email: "ada@gmail.com" }], rowCount: 1 };
-      if (sql.includes("FROM profiles")) return { rows: [row], rowCount: 1 };
+      if (sql.includes("SELECT email FROM users")) {return { rows: [{ email: "ada@gmail.com" }], rowCount: 1 };}
+      if (sql.includes("FROM profiles")) {return { rows: [row], rowCount: 1 };}
       return empty;
     })),
   );
-  const hidden = await (await list(sameCompany, seen)).json() as { data: { careerStatus: string | null }[] };
+  const hidden = await readJson<{ data: Array<{ careerStatus: string | null }> }>(await list(sameCompany, seen));
   assert.equal(hidden.data[0].careerStatus, null);
   const sql = seen.find((call) => call.sql.includes("same_company_as_viewer"))!.sql;
   assert.match(sql, /company_members vm JOIN companies vc/);
   assert.match(sql, /career ->> 'endedOn' IS NULL/);
 
   resetLimits();
-  const shown = await (await list({ ...sameCompany, same_company_as_viewer: false }, [])).json() as { data: { careerStatus: string | null }[] };
+  const shown = await readJson<{ data: Array<{ careerStatus: string | null }> }>(await list({ ...sameCompany, same_company_as_viewer: false }, []));
   assert.equal(shown.data[0].careerStatus, "seeking");
 });

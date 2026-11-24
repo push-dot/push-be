@@ -1,5 +1,6 @@
 import { HttpError, sha256Hex } from "../http.ts";
 import { one, query } from "../db.ts";
+import type { JsonObject } from "../json.ts";
 import type { Ctx } from "../types.ts";
 import { completePersonalSocial } from "./auth.ts";
 import { readObject } from "./recruiting-shared.ts";
@@ -15,7 +16,15 @@ const SECRET_S = 300;
 
 type Jwk = JsonWebKey & { kid?: string };
 
-let jwksCache: { at: number; keys: Jwk[] } | null = null;
+const isJsonObject = (value: unknown): value is JsonObject => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Parses `text` as JSON (throws on a syntax error); anything but an object reads as empty. */
+const parseObject = (text: string): JsonObject => {
+  const parsed: unknown = JSON.parse(text);
+  return isJsonObject(parsed) ? parsed : {};
+};
+
+let jwksCache: { at: number; keys: Array<Jwk> } | null = null;
 
 export const resetAppleJwks = (): void => {
   jwksCache = null;
@@ -29,27 +38,27 @@ const copyBytes = (bytes: Uint8Array): ArrayBuffer => {
 
 const bytesToB64url = (bytes: Uint8Array): string => {
   let bin = "";
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  for (const b of bytes) {bin += String.fromCharCode(b);}
+  return btoa(bin).replaceAll('+', "-").replaceAll('/', "_").replaceAll(/=+$/g, "");
 };
 
 const b64urlToBytes = (value: string): Uint8Array => {
   const pad = value.length % 4 === 0 ? "" : "=".repeat(4 - (value.length % 4));
-  const bin = atob(value.replace(/-/g, "+").replace(/_/g, "/") + pad);
+  const bin = atob(value.replaceAll('-', "+").replaceAll('_', "/") + pad);
   const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  for (let i = 0; i < bin.length; i++) {out[i] = bin.charCodeAt(i);}
   return out;
 };
 
 const pemToDer = (pem: string): ArrayBuffer => {
-  const body = pem.replace(/\\n/g, "\n").replace(/-----[^-]+-----/g, "").replace(/\s/g, "");
+  const body = pem.replaceAll(String.raw`\n`, "\n").replaceAll(/-----[^-]+-----/g, "").replaceAll(/\s/g, "");
   const bin = atob(body);
   const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  for (let i = 0; i < bin.length; i++) {out[i] = bin.charCodeAt(i);}
   return copyBytes(out);
 };
 
-const signEs256 = async (pem: string, kid: string, payload: Record<string, unknown>): Promise<string> => {
+const signEs256 = async (pem: string, kid: string, payload: JsonObject): Promise<string> => {
   const key = await crypto.subtle.importKey("pkcs8", pemToDer(pem), { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
   const header = bytesToB64url(new TextEncoder().encode(JSON.stringify({ alg: "ES256", kid })));
   const body = bytesToB64url(new TextEncoder().encode(JSON.stringify(payload)));
@@ -58,13 +67,13 @@ const signEs256 = async (pem: string, kid: string, payload: Record<string, unkno
   return `${input}.${bytesToB64url(sig)}`;
 };
 
-const requireText = (body: Record<string, unknown>, key: string): string => {
+const requireText = (body: JsonObject, key: string): string => {
   const value = body[key];
-  if (typeof value !== "string" || !value.trim()) throw new HttpError(400, "VALIDATION_ERROR", "required", { field: key });
+  if (typeof value !== "string" || !value.trim()) {throw new HttpError(400, "VALIDATION_ERROR", "required", { field: key });}
   return value.trim();
 };
 
-const appleEnv = (ctx: Ctx): { clientId: string; teamId: string; keyId: string; privateKey: string } => {
+const appleEnv = (ctx: Ctx) => {
   const clientId = ctx.env.APPLE_CLIENT_ID || "";
   const teamId = ctx.env.APPLE_TEAM_ID || "";
   const keyId = ctx.env.APPLE_KEY_ID || "";
@@ -75,20 +84,25 @@ const appleEnv = (ctx: Ctx): { clientId: string; teamId: string; keyId: string; 
   return { clientId, teamId, keyId, privateKey };
 };
 
-const loadJwks = async (ctx: Ctx): Promise<Jwk[]> => {
-  if (jwksCache && ctx.now.getTime() - jwksCache.at < 3_600_000) return jwksCache.keys;
+const loadJwks = async (ctx: Ctx): Promise<Array<Jwk>> => {
+  if (jwksCache && ctx.now.getTime() - jwksCache.at < 3_600_000) {return jwksCache.keys;}
   const fetchImpl = ctx.deps.fetch ?? fetch;
-  let body: { keys?: Jwk[] };
+  let body: JsonObject;
   try {
     const res = await fetchImpl(APPLE_KEYS);
-    if (!res.ok) throw new Error("status");
-    body = await res.json() as { keys?: Jwk[] };
+    if (!res.ok) {throw new Error("status");}
+    const parsed: unknown = await res.json();
+    body = isJsonObject(parsed) ? parsed : {};
   } catch {
     throw new HttpError(502, "PROVIDER_ERROR", "apple jwks fetch failed");
   }
-  if (!body.keys?.length) throw new HttpError(502, "PROVIDER_ERROR", "apple jwks fetch failed");
-  jwksCache = { at: ctx.now.getTime(), keys: body.keys };
-  return body.keys;
+  const keys: Array<Jwk> = [];
+  if (Array.isArray(body.keys)) {
+    for (const key of body.keys) {if (isJsonObject(key)) {keys.push(key);}}
+  }
+  if (!keys.length) {throw new HttpError(502, "PROVIDER_ERROR", "apple jwks fetch failed");}
+  jwksCache = { at: ctx.now.getTime(), keys };
+  return keys;
 };
 
 const verifyIdentity = async (
@@ -101,16 +115,16 @@ const verifyIdentity = async (
   if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) {
     throw new HttpError(401, "UNAUTHENTICATED", "invalid identity token");
   }
-  let header: { alg?: string; kid?: string };
+  let header: JsonObject;
   try {
-    header = JSON.parse(new TextDecoder().decode(b64urlToBytes(parts[0]))) as { alg?: string; kid?: string };
+    header = parseObject(new TextDecoder().decode(b64urlToBytes(parts[0])));
   } catch {
     throw new HttpError(401, "UNAUTHENTICATED", "invalid identity token");
   }
-  if (header.alg !== "ES256" || !header.kid) throw new HttpError(401, "UNAUTHENTICATED", "invalid identity token");
+  if (header.alg !== "ES256" || !header.kid) {throw new HttpError(401, "UNAUTHENTICATED", "invalid identity token");}
   const jwk = (await loadJwks(ctx)).find((key) => key.kid === header.kid);
-  if (!jwk) throw new HttpError(401, "UNAUTHENTICATED", "invalid identity token");
-  let ok = false;
+  if (!jwk) {throw new HttpError(401, "UNAUTHENTICATED", "invalid identity token");}
+  let ok: boolean;
   try {
     const key = await crypto.subtle.importKey("jwk", jwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
     ok = await crypto.subtle.verify(
@@ -119,49 +133,50 @@ const verifyIdentity = async (
       copyBytes(b64urlToBytes(parts[2])),
       new TextEncoder().encode(`${parts[0]}.${parts[1]}`),
     );
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
+  } catch (error) {
+    if (error instanceof HttpError) {throw error;}
     throw new HttpError(401, "UNAUTHENTICATED", "invalid identity token");
   }
-  if (!ok) throw new HttpError(401, "UNAUTHENTICATED", "invalid identity token");
-  let claims: Record<string, unknown>;
+  if (!ok) {throw new HttpError(401, "UNAUTHENTICATED", "invalid identity token");}
+  let claims: JsonObject;
   try {
-    claims = JSON.parse(new TextDecoder().decode(b64urlToBytes(parts[1]))) as Record<string, unknown>;
+    claims = parseObject(new TextDecoder().decode(b64urlToBytes(parts[1])));
   } catch {
     throw new HttpError(401, "UNAUTHENTICATED", "invalid identity token");
   }
-  if (claims.iss !== APPLE_ISS) throw new HttpError(401, "UNAUTHENTICATED", "invalid identity token");
+  if (claims.iss !== APPLE_ISS) {throw new HttpError(401, "UNAUTHENTICATED", "invalid identity token");}
   const aud = claims.aud;
   const audOk = aud === audience || (Array.isArray(aud) && aud.includes(audience));
-  if (!audOk) throw new HttpError(401, "UNAUTHENTICATED", "invalid identity token");
+  if (!audOk) {throw new HttpError(401, "UNAUTHENTICATED", "invalid identity token");}
   const exp = Number(claims.exp);
   if (!Number.isFinite(exp) || exp * 1000 + SKEW_MS < ctx.now.getTime()) {
     throw new HttpError(401, "TOKEN_EXPIRED", "identity token expired");
   }
-  if (nonce != null) {
+  if ((nonce !== null && nonce !== undefined)) {
     const claim = typeof claims.nonce === "string" ? claims.nonce.toLowerCase() : "";
-    if (claim !== await sha256Hex(nonce)) throw new HttpError(401, "UNAUTHENTICATED", "nonce mismatch");
+    if (claim !== await sha256Hex(nonce)) {throw new HttpError(401, "UNAUTHENTICATED", "nonce mismatch");}
   }
   const sub = typeof claims.sub === "string" ? claims.sub : "";
-  if (!sub) throw new HttpError(401, "UNAUTHENTICATED", "invalid identity token");
+  if (!sub) {throw new HttpError(401, "UNAUTHENTICATED", "invalid identity token");}
   const email = typeof claims.email === "string" && claims.email.trim() ? claims.email.trim().toLowerCase() : null;
   const emailVerified = claims.email_verified === true || claims.email_verified === "true";
   return { sub, email, emailVerified };
 };
 
 const nameFrom = (raw: string | null): string => {
-  if (!raw) return "";
+  if (!raw) {return "";}
   try {
-    const body = JSON.parse(raw) as { name?: { firstName?: string; lastName?: string } };
-    const first = body.name?.firstName;
-    const last = body.name?.lastName;
+    const { name } = parseObject(raw);
+    const person: JsonObject = typeof name === "object" && name !== null && !Array.isArray(name) ? name : {};
+    const first = person.firstName;
+    const last = person.lastName;
     return [first, last].filter((part) => typeof part === "string" && part.trim()).join(" ").trim();
   } catch {
     return "";
   }
 };
 
-const clientSecret = async (ctx: Ctx, cfg: { clientId: string; teamId: string; keyId: string; privateKey: string }): Promise<string> => {
+const clientSecret = async (ctx: Ctx, cfg: ReturnType<typeof appleEnv>): Promise<string> => {
   const iat = Math.floor(ctx.now.getTime() / 1000);
   try {
     return await signEs256(cfg.privateKey, cfg.keyId, {
@@ -181,15 +196,15 @@ export const appleCallback = async (ctx: Ctx): Promise<Response> => {
   const form = new URLSearchParams(await ctx.request.text());
   const code = form.get("code") || "";
   const state = form.get("state") || "";
-  if (!code || !state) throw new HttpError(401, "UNAUTHENTICATED", "invalid state");
+  if (!code || !state) {throw new HttpError(401, "UNAUTHENTICATED", "invalid state");}
   const rec = await one(ctx.deps.query,
     "DELETE FROM oauth_states WHERE state = $1 RETURNING state, provider, code_challenge, redirect_uri, final_uri, expires_at, account_type",
     [state]);
-  if (!rec || String(rec.provider) !== "apple") throw new HttpError(401, "UNAUTHENTICATED", "invalid state");
-  if (ctx.now.getTime() > Date.parse(String(rec.expires_at))) throw new HttpError(401, "UNAUTHENTICATED", "state expired");
+  if (!rec || String(rec.provider) !== "apple") {throw new HttpError(401, "UNAUTHENTICATED", "invalid state");}
+  if (ctx.now.getTime() > Date.parse(String(rec.expires_at))) {throw new HttpError(401, "UNAUTHENTICATED", "state expired");}
   const secret = await clientSecret(ctx, cfg);
   const fetchImpl = ctx.deps.fetch ?? fetch;
-  let idToken = "";
+  let idToken: string;
   try {
     const body = new URLSearchParams({
       client_id: cfg.clientId,
@@ -203,16 +218,17 @@ export const appleCallback = async (ctx: Ctx): Promise<Response> => {
       headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
       body,
     });
-    const tokenBody = await tokenRes.json() as { id_token?: string };
-    if (!tokenRes.ok || !tokenBody.id_token) throw new Error("token");
-    idToken = tokenBody.id_token;
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
+    const tokenBody: unknown = await tokenRes.json();
+    const token = isJsonObject(tokenBody) ? tokenBody.id_token : undefined;
+    if (!tokenRes.ok || typeof token !== "string" || !token) {throw new Error("token");}
+    idToken = token;
+  } catch (error) {
+    if (error instanceof HttpError) {throw error;}
     throw new HttpError(502, "PROVIDER_ERROR", "provider token exchange failed");
   }
   const identity = await verifyIdentity(ctx, idToken, cfg.clientId, null);
   const display = nameFrom(form.get("user")) || identity.email || "user";
-  const codeValue = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+  const codeValue = crypto.randomUUID().replaceAll('-', "") + crypto.randomUUID().replaceAll('-', "");
   const expires = new Date(ctx.now.getTime() + 60_000).toISOString();
   await query(ctx.deps.query,
     "INSERT INTO exchange_codes (code, user_id, code_challenge, expires_at, used_at, created_at, provider, provider_subject, email, email_verified, display_name, account_type) VALUES ($1,$2,$3,$4,NULL,$5,$6,$7,$8,$9,$10,$11)",
@@ -226,7 +242,7 @@ export const appleCallback = async (ctx: Ctx): Promise<Response> => {
 
 export const appleNative = async (ctx: Ctx): Promise<Response> => {
   const bundleId = ctx.env.APPLE_BUNDLE_ID || "";
-  if (!bundleId) throw new HttpError(503, "NOT_CONFIGURED", "oauth provider apple is not configured");
+  if (!bundleId) {throw new HttpError(503, "NOT_CONFIGURED", "oauth provider apple is not configured");}
   const body = await readObject(ctx.request);
   const identityToken = requireText(body, "identityToken");
   const nonce = requireText(body, "nonce");
@@ -235,7 +251,7 @@ export const appleNative = async (ctx: Ctx): Promise<Response> => {
   const fresh = await one(ctx.deps.query,
     "INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ($1, $2::timestamptz) ON CONFLICT (dedupe_key) DO NOTHING RETURNING dedupe_key",
     ["apple-native:" + await sha256Hex(identityToken), ctx.now.toISOString()]);
-  if (!fresh) throw new HttpError(401, "UNAUTHENTICATED", "identity token already used");
+  if (!fresh) {throw new HttpError(401, "UNAUTHENTICATED", "identity token already used");}
   return completePersonalSocial(ctx, {
     provider: "apple",
     provider_subject: identity.sub,
@@ -276,7 +292,7 @@ export const revokeAppleGrant = async (ctx: Ctx, code: string): Promise<void> =>
 };
 
 export const dispatchAppleAuth = async (ctx: Ctx, path: string): Promise<Response | null> => {
-  if (ctx.request.method === "POST" && path === CALLBACK_PATH) return appleCallback(ctx);
-  if (ctx.request.method === "POST" && path === NATIVE_PATH) return appleNative(ctx);
+  if (ctx.request.method === "POST" && path === CALLBACK_PATH) {return appleCallback(ctx);}
+  if (ctx.request.method === "POST" && path === NATIVE_PATH) {return appleNative(ctx);}
   return null;
 };
