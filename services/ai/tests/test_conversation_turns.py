@@ -27,6 +27,10 @@ def _row(id_, type_, payload, job=JOB_A):
     return {"id": id_, "job_id": job, "type": type_, "payload": payload}
 
 
+def _data(event) -> dict:
+    return event["messages"][-1]["updateDataModel"]["value"]
+
+
 def test_turn_events_merge_tokens_and_drop_progress_rows():
     rows = [
         _row(1, "status", {"text": "대기 중"}),
@@ -36,24 +40,18 @@ def test_turn_events_merge_tokens_and_drop_progress_rows():
         _row(5, "file", {"name": "final.md", "mime": "text/markdown"}),
         _row(6, "done", {"operation": None}),
     ]
-    assert turn_events(rows, {}) == [
-        {"type": "todo", "id": "analyze", "items": [], "seq": 2},
-        {"type": "token", "text": "다 됐어요", "seq": 3},
-    ]
+    todo, token = turn_events(rows, {})
+    assert (todo["type"], todo["kind"], todo["surfaceId"], todo["seq"]) == (
+        "a2ui", "todo", f"todo:analyze:{JOB_A}", 2)
+    assert token == {"type": "token", "text": "다 됐어요", "seq": 3}
 
 
-def test_turn_events_read_text_payload_and_attach_card_resolution():
-    rows = [_row(7, "choice", json.dumps({"id": CARD, "options": []}))]
+def test_turn_events_read_text_payload_and_bake_the_card_resolution():
+    rows = [_row(7, "choice", json.dumps({"id": CARD, "options": [{"id": "ready", "label": "네"}]}))]
     resolved = {CARD: {"status": "APPROVED", "optionId": "ready"}}
-    assert turn_events(rows, resolved) == [
-        {
-            "type": "choice",
-            "id": CARD,
-            "options": [],
-            "seq": 7,
-            "resolution": {"status": "APPROVED", "optionId": "ready"},
-        }
-    ]
+    (card,) = turn_events(rows, resolved)
+    assert (card["type"], card["kind"], card["surfaceId"], card["seq"]) == ("a2ui", "choice", CARD, 7)
+    assert _data(card) == {"open": False, "picked": ["ready"], "selected": {"q": []}}
 
 
 class _Mem:
@@ -155,12 +153,13 @@ def test_turns_lists_newest_first_with_cards_and_answers():
         "userMessageId": None,
         "assistantMessageId": str(assistant_message_id(JOB_B)),
         "answer": {"approvalId": CARD, "optionId": "ready"},
-        "events": [{"type": "todo", "id": "analyze", "items": [], "seq": 3}],
+        "events": [turn_events([db_row := _row(3, "todo", {"id": "analyze", "items": []}, job=JOB_B)], {})[0]],
     }
+    assert newest["events"][0]["surfaceId"] == f"todo:analyze:{db_row['job_id']}"
     assert oldest["userMessageId"] == str(user_message_id(JOB_A))
     assert oldest["assistantMessageId"] is None
     assert oldest["answer"] is None
-    assert oldest["events"][0]["resolution"] == {"status": "APPROVED", "optionId": "ready"}
+    assert _data(oldest["events"][0])["picked"] == ["ready"]
 
 
 def test_turns_page_has_cursor_when_more_jobs_exist():
@@ -183,14 +182,21 @@ def test_turns_multi_select_answer_keeps_every_option():
     ]
     res = _client(db, USER_ID).get(f"/api/v1/conversations/{CONV_ID}/turns")
     card = res.json()["data"][1]["events"][0]
-    assert card["resolution"] == {
-        "status": "APPROVED",
-        "optionId": "resume",
-        "optionIds": ["resume", "cover_letter"],
-    }
+    assert _data(card)["picked"] == ["resume", "cover_letter"]
 
 
 def test_turns_of_another_users_conversation_is_404():
     res = _client(_db(), OTHER_ID).get(f"/api/v1/conversations/{CONV_ID}/turns")
     assert res.status_code == 404
     assert res.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_turns_send_cards_in_the_a2ui_version_the_request_names():
+    def versions(headers):
+        res = _client(_db(), USER_ID).get(f"/api/v1/conversations/{CONV_ID}/turns", headers=headers)
+        return {m["version"] for turn in res.json()["data"] for e in turn["events"] for m in e.get("messages", [])}
+
+    assert versions({}) == {"v0.9.1"}
+    assert versions({"A2UI-Version": "v0.9.1"}) == {"v0.9.1"}
+    assert versions({"A2UI-Version": "1.0"}) == {"1.0"}
+    assert versions({"A2UI-Version": "nope"}) == {"v0.9.1"}

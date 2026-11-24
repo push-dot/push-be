@@ -1,0 +1,90 @@
+{
+  "type": "a2ui",
+  "kind": "choice",
+  "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+  "messages": [
+    {
+      "version": "v0.9.1",
+      "createSurface": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "catalogId": "https://push.app/a2ui/catalogs/push/v1/catalog.json"
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateComponents": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "components": [
+          {
+            "id": "root",
+            "component": "PushChoice",
+            "questions": [
+              {
+                "id": "template",
+                "choices": [
+                  {
+                    "id": "CLASSIC",
+                    "label": "클래식",
+                    "recommended": true
+                  },
+                  {
+                    "id": "MODERN",
+                    "label": "모던"
+                  },
+                  {
+                    "id": "COMPACT",
+                    "label": "컴팩트"
+                  },
+                  {
+                    "id": "ATS",
+                    "label": "ATS"
+                  }
+                ]
+              }
+            ],
+            "answer": "submit",
+            "submit": {
+              "label": "만들기",
+              "labels": {
+                "CLASSIC": "클래식으로 만들기",
+                "MODERN": "모던으로 만들기"
+              }
+            },
+            "secondary": {
+              "id": "cancel",
+              "label": "닫기"
+            },
+            "open": {
+              "path": "/open"
+            },
+            "picked": {
+              "path": "/picked"
+            },
+            "selected": {
+              "path": "/selected"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateDataModel": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "path": "/",
+        "value": {
+          "open": true,
+          "picked": [],
+          "selected": {
+            "template": [
+              "CLASSIC"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "seq": 1,
+  "at": "2026-11-23T00:00:00.000000Z",
+  "turn": "00000000-0000-4000-8000-00000000a001"
+}

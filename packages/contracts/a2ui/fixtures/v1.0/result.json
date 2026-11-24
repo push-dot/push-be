@@ -1,0 +1,80 @@
+{
+  "type": "a2ui",
+  "kind": "result",
+  "surfaceId": "00000000-0000-4000-8000-0000000051d0",
+  "messages": [
+    {
+      "version": "1.0",
+      "createSurface": {
+        "surfaceId": "00000000-0000-4000-8000-0000000051d0",
+        "catalogId": "https://push.app/a2ui/catalogs/push/v1/catalog.json"
+      }
+    },
+    {
+      "version": "1.0",
+      "updateComponents": {
+        "surfaceId": "00000000-0000-4000-8000-0000000051d0",
+        "components": [
+          {
+            "id": "root",
+            "component": "Column",
+            "children": [
+              "summary",
+              "bullet0",
+              "bullet1",
+              "document"
+            ]
+          },
+          {
+            "id": "summary",
+            "component": "Text",
+            "text": "다 됐어요! 적합도를 6.9 → 8.3으로 올렸어요."
+          },
+          {
+            "id": "bullet0",
+            "component": "Text",
+            "text": "• 경력 문장에 Kafka를 넣었어요"
+          },
+          {
+            "id": "bullet1",
+            "component": "Text",
+            "text": "• 성과를 숫자로 보여 줬어요"
+          },
+          {
+            "id": "document",
+            "component": "PushDocument",
+            "status": "done",
+            "title": "이력서를 저장했어요",
+            "name": "이력서_모아페이_백엔드.pdf",
+            "meta": "A4 2쪽 · 120KB",
+            "documentId": "00000000-0000-4000-8000-00000000d0c1",
+            "share": true,
+            "actions": [
+              {
+                "id": "apply",
+                "label": "모아페이에 바로 지원하기"
+              },
+              {
+                "id": "convert",
+                "label": "프로필로 전환",
+                "method": "POST",
+                "path": "/api/v1/documents/00000000-0000-4000-8000-00000000d0c1/profile"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "version": "1.0",
+      "updateDataModel": {
+        "surfaceId": "00000000-0000-4000-8000-0000000051d0",
+        "path": "/",
+        "value": {}
+      }
+    }
+  ],
+  "seq": 1,
+  "at": "2026-11-23T00:00:00.000000Z",
+  "turn": "00000000-0000-4000-8000-00000000a001"
+}
