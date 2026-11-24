@@ -6,6 +6,7 @@ import { HttpError, asBool, data, randomToken, sha256Hex } from "../http.ts";
 import type { JsonObject } from "../json.ts";
 import { ts } from "../page.ts";
 import type { Ctx, UserRow } from "../types.ts";
+import { revokeAppleGrant } from "./apple-auth.ts";
 import { cancelSubscriptions } from "./billing.ts";
 import { readObject } from "./recruiting-shared.ts";
 
@@ -502,8 +503,20 @@ export async function deleteAccount(ctx: Ctx): Promise<Response> {
     await query(ctx.deps.query, "UPDATE companies SET deletion_requested_at = $2 WHERE id = $1", [String(membership?.company_id), ctx.now.toISOString()]);
   }
   await revokeAll(ctx, ctx.user.id);
+  const appleCode = await appleCodeFrom(ctx.request);
+  // Best effort: the account is already marked for deletion, so a failed Apple call must not undo it.
+  if (appleCode) {await revokeAppleGrant(ctx, appleCode).catch((error: unknown) => console.error(`auth: apple revoke failed for ${ctx.user.id}`, error instanceof Error ? error.message : error));}
   return new Response(null, { status: 204, headers: { "x-request-id": ctx.rid } });
 }
+
+const appleCodeFrom = async (request: Request): Promise<string> => {
+  try {
+    const body: unknown = JSON.parse(await request.text() || "{}");
+    return textOf(asRecord(body).appleAuthorizationCode).trim();
+  } catch {
+    return "";
+  }
+};
 
 export async function me(ctx: Ctx): Promise<Response> {
   return data(200, {
