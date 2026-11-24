@@ -276,19 +276,22 @@ export const revokeAppleGrant = async (ctx: Ctx, code: string): Promise<void> =>
   const teamId = ctx.env.APPLE_TEAM_ID || "";
   const keyId = ctx.env.APPLE_KEY_ID || "";
   const privateKey = ctx.env.APPLE_PRIVATE_KEY || "";
-  if (!clientId || !teamId || !keyId || !privateKey) throw new HttpError(503, "NOT_CONFIGURED", "apple revoke is not configured");
+  if (!clientId || !teamId || !keyId || !privateKey) {throw new HttpError(503, "NOT_CONFIGURED", "apple revoke is not configured");}
   const secret = await clientSecret(ctx, { clientId, teamId, keyId, privateKey });
   const tokenRes = await postForm(ctx, APPLE_TOKEN, { client_id: clientId, client_secret: secret, code, grant_type: "authorization_code" });
-  const tokens = await tokenRes.json().catch(() => ({})) as { refresh_token?: string; access_token?: string };
-  const token = tokens.refresh_token || tokens.access_token || "";
-  if (!tokenRes.ok || !token) throw new HttpError(502, "PROVIDER_ERROR", "apple code exchange failed");
+  const parsed: unknown = await tokenRes.json().catch(() => ({}));
+  const tokens = isJsonObject(parsed) ? parsed : {};
+  const refreshToken = typeof tokens.refresh_token === "string" ? tokens.refresh_token : "";
+  const accessToken = typeof tokens.access_token === "string" ? tokens.access_token : "";
+  const token = refreshToken || accessToken;
+  if (!tokenRes.ok || !token) {throw new HttpError(502, "PROVIDER_ERROR", "apple code exchange failed");}
   const res = await postForm(ctx, APPLE_REVOKE, {
     client_id: clientId,
     client_secret: secret,
     token,
-    token_type_hint: tokens.refresh_token ? "refresh_token" : "access_token",
+    token_type_hint: refreshToken ? "refresh_token" : "access_token",
   });
-  if (!res.ok) throw new HttpError(502, "PROVIDER_ERROR", "apple revoke failed");
+  if (!res.ok) {throw new HttpError(502, "PROVIDER_ERROR", "apple revoke failed");}
 };
 
 export const dispatchAppleAuth = async (ctx: Ctx, path: string): Promise<Response | null> => {
