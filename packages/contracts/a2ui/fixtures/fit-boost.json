@@ -1,0 +1,42 @@
+{
+  "type": "a2ui",
+  "kind": "fit",
+  "surfaceId": "00000000-0000-4000-8000-0000000051d0",
+  "messages": [
+    {
+      "version": "v0.9.1",
+      "createSurface": {
+        "surfaceId": "00000000-0000-4000-8000-0000000051d0",
+        "catalogId": "https://push.app/a2ui/catalogs/push/v1/catalog.json"
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateComponents": {
+        "surfaceId": "00000000-0000-4000-8000-0000000051d0",
+        "components": [
+          {
+            "id": "root",
+            "component": "PushFit",
+            "score": "8.3",
+            "sentence": "적합도를 6.9 → 8.3으로 올렸어요. (+1.4)",
+            "rounds": [
+              "경력 · 모아페이: 성과를 숫자로 보여 줬어요"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateDataModel": {
+        "surfaceId": "00000000-0000-4000-8000-0000000051d0",
+        "path": "/",
+        "value": {}
+      }
+    }
+  ],
+  "seq": 1,
+  "at": "2026-11-23T00:00:00.000000Z",
+  "turn": "00000000-0000-4000-8000-00000000a001"
+}

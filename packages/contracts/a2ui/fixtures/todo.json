@@ -1,0 +1,55 @@
+{
+  "type": "a2ui",
+  "kind": "todo",
+  "surfaceId": "todo:analyze:00000000-0000-4000-8000-00000000a001",
+  "messages": [
+    {
+      "version": "v0.9.1",
+      "createSurface": {
+        "surfaceId": "todo:analyze:00000000-0000-4000-8000-00000000a001",
+        "catalogId": "https://push.app/a2ui/catalogs/push/v1/catalog.json"
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateComponents": {
+        "surfaceId": "todo:analyze:00000000-0000-4000-8000-00000000a001",
+        "components": [
+          {
+            "id": "root",
+            "component": "PushTodo",
+            "items": {
+              "path": "/items"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateDataModel": {
+        "surfaceId": "todo:analyze:00000000-0000-4000-8000-00000000a001",
+        "path": "/",
+        "value": {
+          "items": [
+            {
+              "text": "이력서 읽기",
+              "state": "done"
+            },
+            {
+              "text": "공고 분석",
+              "state": "running"
+            },
+            {
+              "text": "적합도 계산 (새로 추가)",
+              "state": "waiting"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "seq": 1,
+  "at": "2026-11-23T00:00:00.000000Z",
+  "turn": "00000000-0000-4000-8000-00000000a001"
+}

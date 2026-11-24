@@ -3,7 +3,7 @@ import {
   get, post, ref, obj, closed, arr, str, int, bool, uuid, dateTime, enumOf,
   body, ok, sse, pathParam, query,
 } from "./shared.ts";
-import { PERSONAL_INTENTS, aiOptions, chatEvents, messageText, stamped, statusPhases } from "./conversations.ts";
+import { PERSONAL_INTENTS, a2uiVersionHeader, aiOptions, chatEvents, messageText, stamped, statusPhases } from "./conversations.ts";
 
 const id = pathParam("id", { type: "string", description: "A bot id, or the literal push for the caller's Push Bot." });
 
@@ -58,7 +58,7 @@ export const routes: Array<Route> = [
     tag: "bots",
     summary: "Send a message to a bot and stream the reply",
     description: "Creates the bot's thread on the first send; two sends at once share one thread. 403 CONSENT_REQUIRED without reference-data consent or with allowAiReadMyFiles off, before a thread exists. 409 ATTACHMENT_GONE with details.kind and details.id when an attached material is gone, archived, or not the caller's. 400 for more than 10 attachments or an unknown body key. 402 INSUFFICIENT_CREDITS and 429 QUEUE_BUSY as on a conversation send. 404 for an unknown bot, and for a bot deleted while the send was under way: no row of that send stays. A result that is not 202 from core is returned as is. " + botStreamDescription,
-    params: [id],
+    params: [id, a2uiVersionHeader],
     body: body(ref("BotSendBody")),
     responses: { 200: sse(botEvents, "Bot reply stream") },
   }),
@@ -70,6 +70,7 @@ export const routes: Array<Route> = [
       id,
       query("after", { type: "integer", minimum: 0 }, "Resume after this seq; the Last-Event-ID header is used when absent"),
       { name: "Last-Event-ID", in: "header", required: false, schema: str },
+      a2uiVersionHeader,
     ],
     responses: { 200: sse(botEvents, "Bot reply stream"), 204: { description: "Nothing runs" } },
   }),
