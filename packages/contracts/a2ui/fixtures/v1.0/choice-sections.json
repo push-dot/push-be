@@ -1,0 +1,137 @@
+{
+  "type": "a2ui",
+  "kind": "choice",
+  "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+  "messages": [
+    {
+      "version": "1.0",
+      "createSurface": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "catalogId": "https://push.app/a2ui/catalogs/push/v1/catalog.json"
+      }
+    },
+    {
+      "version": "1.0",
+      "updateComponents": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "components": [
+          {
+            "id": "root",
+            "component": "PushChoice",
+            "questions": [
+              {
+                "id": "targets",
+                "choices": [
+                  {
+                    "id": "resume",
+                    "label": "이력서"
+                  },
+                  {
+                    "id": "portfolio",
+                    "label": "포트폴리오"
+                  },
+                  {
+                    "id": "cover_letter",
+                    "label": "자기소개서"
+                  }
+                ],
+                "title": "어떤 산출물을 만들까요?",
+                "multiple": true
+              },
+              {
+                "id": "materials",
+                "choices": [
+                  {
+                    "id": "m_file",
+                    "label": "이력서.pdf",
+                    "desc": "올린 파일"
+                  },
+                  {
+                    "id": "m_github",
+                    "label": "https://github.com/push",
+                    "desc": "내 링크"
+                  }
+                ],
+                "title": "가져올 자료를 골라 주세요",
+                "multiple": true
+              },
+              {
+                "id": "tone",
+                "choices": [
+                  {
+                    "id": "preserve",
+                    "label": "원래 말투로"
+                  },
+                  {
+                    "id": "professional",
+                    "label": "전문적으로"
+                  },
+                  {
+                    "id": "confident",
+                    "label": "자신 있게"
+                  },
+                  {
+                    "id": "concise",
+                    "label": "짧게"
+                  },
+                  {
+                    "id": "technical",
+                    "label": "기술 중심으로"
+                  },
+                  {
+                    "id": "collaborative",
+                    "label": "협업 중심으로"
+                  }
+                ],
+                "title": "어떤 말투로 쓸까요?"
+              }
+            ],
+            "answer": "submit",
+            "submit": {
+              "label": "이 말투로 쓰기"
+            },
+            "secondary": {
+              "id": "cancel",
+              "label": "닫기"
+            },
+            "open": {
+              "@path": "/open"
+            },
+            "picked": {
+              "@path": "/picked"
+            },
+            "selected": {
+              "@path": "/selected"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "version": "1.0",
+      "updateDataModel": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "path": "/",
+        "value": {
+          "open": true,
+          "picked": [],
+          "selected": {
+            "targets": [
+              "resume"
+            ],
+            "materials": [
+              "m_file",
+              "m_github"
+            ],
+            "tone": [
+              "preserve"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "seq": 1,
+  "at": "2026-11-23T00:00:00.000000Z",
+  "turn": "00000000-0000-4000-8000-00000000a001"
+}

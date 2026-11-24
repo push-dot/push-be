@@ -493,7 +493,11 @@ async def test_queue_turn_stores_a_graph_result_for_the_stream_and_replay():
 
     ctx = _JobCtx()
     await jobs.run_queue_turn(SimpleNamespace(graph=Graph()), ctx, cancelled)
-    assert ctx.events == [("result", {key: value for key, value in card.items() if key != "type"})]
+    ((kind, stored),) = ctx.events
+    legacy = {key: value for key, value in card.items() if key != "type"}
+    assert kind == "result"
+    assert {key: stored[key] for key in legacy} == legacy
+    assert stored["a2ui"]["1.0"]["surfaceId"] == stored["a2ui"]["v0.9.1"]["surfaceId"] == stored["sid"]
 
 
 async def test_queue_turn_stores_status_and_notice_frames_whole():

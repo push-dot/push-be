@@ -49,7 +49,7 @@ async def run_queue_turn(svc, ctx, cancelled) -> dict:
                 if mode == "custom" and isinstance(chunk, dict):
                     if "token" in chunk:
                         await ctx.emit("token", {"text": chunk["token"]})
-                    elif (live := _live_event(chunk)) is not None:
+                    elif (live := _live_event(chunk, job["id"])) is not None:
                         await ctx.emit(*live)
                 elif final:
                     operation = to_jsonable(chunk["operation"])

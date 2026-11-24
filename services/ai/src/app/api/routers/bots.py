@@ -4,6 +4,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from app.api.deps import current_user, page_request, param_id
+from app.domain.a2ui import version_of
 from app.domain.chat_turns import bot_card, bot_turn, bot_turn_events, card_ids
 from app.domain.errors import not_found
 from app.domain.pagination import Cursor
@@ -35,13 +36,14 @@ async def bot_transcript(id: str, request: Request):
     rows = await store.events(job_ids)
     cards = {str(card["id"]): bot_card(card) for card in await store.cards(thread, card_ids(rows))}
     messages = await store.turn_messages(thread, job_ids)
+    version = version_of(request.headers.get("a2ui-version"))
     rows_of: dict = {}
     for row in rows:
         rows_of.setdefault(row["job_id"], []).append(row)
     turns = [
         bot_turn(
             job,
-            bot_turn_events(rows_of.get(job["id"], []), cards, job["status"] in _ACTIVE),
+            bot_turn_events(rows_of.get(job["id"], []), cards, job["status"] in _ACTIVE, version),
             messages.get(user_message_id(job["id"])),
             messages.get(assistant_message_id(job["id"])),
         )
