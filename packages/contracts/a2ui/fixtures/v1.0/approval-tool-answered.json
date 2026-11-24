@@ -1,0 +1,90 @@
+{
+  "type": "a2ui",
+  "kind": "approval",
+  "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+  "messages": [
+    {
+      "version": "1.0",
+      "createSurface": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "catalogId": "https://push.app/a2ui/catalogs/push/v1/catalog.json"
+      }
+    },
+    {
+      "version": "1.0",
+      "updateComponents": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "components": [
+          {
+            "id": "root",
+            "component": "Column",
+            "children": [
+              "title",
+              "row0",
+              "choice"
+            ]
+          },
+          {
+            "id": "title",
+            "component": "Text",
+            "text": "지원 단계를 바꿔요"
+          },
+          {
+            "id": "row0",
+            "component": "Text",
+            "text": "김푸시 · 서류 → 면접"
+          },
+          {
+            "id": "choice",
+            "component": "PushChoice",
+            "form": "buttons",
+            "questions": [
+              {
+                "id": "q",
+                "choices": [
+                  {
+                    "id": "reject",
+                    "label": "닫기"
+                  },
+                  {
+                    "id": "approve",
+                    "label": "실행"
+                  }
+                ]
+              }
+            ],
+            "answer": "pick",
+            "open": {
+              "@path": "/open"
+            },
+            "picked": {
+              "@path": "/picked"
+            },
+            "selected": {
+              "@path": "/selected"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "version": "1.0",
+      "updateDataModel": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "path": "/",
+        "value": {
+          "open": false,
+          "picked": [
+            "approve"
+          ],
+          "selected": {
+            "q": []
+          }
+        }
+      }
+    }
+  ],
+  "seq": 1,
+  "at": "2026-11-23T00:00:00.000000Z",
+  "turn": "00000000-0000-4000-8000-00000000a001"
+}

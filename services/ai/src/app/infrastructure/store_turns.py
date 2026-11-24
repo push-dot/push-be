@@ -18,9 +18,9 @@ _EVENTS = (
 )
 
 _CARDS = (
-    "SELECT a.id, a.option_id, a.created_at AS opened_at, a.expires_at, "
+    "SELECT a.id, a.option_id, a.created_at AS opened_at, "
     "CASE WHEN a.status = 'PENDING' AND a.expires_at <= now() THEN 'EXPIRED' "
-    "ELSE a.status END AS status, approval_retryable(a) AS retryable, "
+    "ELSE a.status END AS status, "
     "(SELECT j.payload->'resume'->'optionIds' FROM chat_jobs j "
     "WHERE j.conversation_id = $1 AND j.payload->'resume'->>'approvalId' = a.id::text "
     "ORDER BY j.created_at DESC LIMIT 1) AS option_ids "

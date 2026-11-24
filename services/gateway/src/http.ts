@@ -19,7 +19,7 @@ const ALLOWED_ORIGINS = new Set([
 ]);
 const ALLOWED_HEADERS = new Set([
   "origin", "content-type", "accept", "authorization",
-  "idempotency-key", "x-request-id", "x-csrf",
+  "idempotency-key", "x-request-id", "x-csrf", "a2ui-version",
 ]);
 
 export const USER_CACHE_CONTROL = "private, no-cache";

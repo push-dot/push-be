@@ -574,6 +574,7 @@ const jobEvents = async (request: Request, jobId: string, start: number, env: Fr
   const release = openStream(await sha256Hex(request.headers.get("authorization") || ""));
   if (!release) {return errorResponse(429, "RATE_LIMITED", "too many open streams", rid);}
   let after = start;
+  const version = a2uiVersion(request);
   const polls = Math.max(1, Number(env.SSE_MAX_POLLS || "20") || 20);
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => { setTimeout(r, ms); }));
   const encoder = new TextEncoder();
@@ -595,8 +596,8 @@ const jobEvents = async (request: Request, jobId: string, start: number, env: Fr
           for (const row of rows) {
             after = Number(row.id);
             const payload = payloadOf(row);
-            if (hidden(row.type, payload, bot)) {continue;}
-            send(sseFrame(row, payload, jobId));
+            if (hidden(row.type, payload, bot, version)) {continue;}
+            send(sseFrame(row, payload, jobId, version));
             if (row.type === "done" || row.type === "error" || row.type === "cancelled") {
               terminal = true;
               break;
@@ -643,10 +644,24 @@ const objectOf = (value: unknown): Row => {
 
 const payloadOf = (row: Row): Row => objectOf(row.payload);
 
+// The card rows the AI service stores with their A2UI surface under `a2ui`, one per version
+// (services/ai/src/app/domain/a2ui.py `surfaces`).
+const CARD_KINDS = new Set(["approval", "choice", "plan", "paper", "todo", "diff", "fit", "result"]);
+
+/** The A2UI version a request names with A2UI-Version: 1.0, else v0.9.1 (also when absent or unknown). */
+const a2uiVersion = (request: Request): string => (request.headers.get("a2ui-version")?.trim() === "1.0" ? "1.0" : "v0.9.1");
+
+const surfaceOf = (p: Row, version: string): Row | undefined => {
+  const surface = objectOf(objectOf(p.a2ui)[version]);
+  return Array.isArray(surface.messages) ? surface : undefined;
+};
+
 // A bot stream promises a phase on every status. A row without one was stored
 // before phases, or by a run of the AI service that does not write them yet.
-const hidden = (type: unknown, p: Row, bot: boolean): boolean => {
+// A card row without a surface is one no client draws, such as a gate the server answered itself.
+const hidden = (type: unknown, p: Row, bot: boolean, version: string): boolean => {
   if (type === "status") {return bot && (p.phase === null || p.phase === undefined);}
+  if (typeof type === "string" && CARD_KINDS.has(type)) {return surfaceOf(p, version) === undefined;}
   if (type !== "file") {return false;}
   const name = String(p.name ?? p.fileName ?? "");
   const mime = String(p.mime ?? p.mimeType ?? "");
@@ -655,7 +670,7 @@ const hidden = (type: unknown, p: Row, bot: boolean): boolean => {
 
 const STATUS_FIELDS = ["phase", "since", "ahead", "for", "cardId"];
 
-const frameOf = (row: Row, p: Row) => {
+const frameOf = (row: Row, p: Row, version: string) => {
   if (row.type === "token") {return { type: "token", text: String(p.text ?? "") };}
   if (row.type === "status") {
     const fields = STATUS_FIELDS.flatMap((field): Array<[string, DbValue]> => (p[field] !== null && p[field] !== undefined ? [[field, p[field]]] : []));
@@ -664,12 +679,16 @@ const frameOf = (row: Row, p: Row) => {
   if (row.type === "error") {return { type: "error", error: p.error ?? {} };}
   if (row.type === "done") {return p.awaiting ? { type: "done", operation: p.operation ?? null, awaiting: p.awaiting } : { type: "done", operation: p.operation ?? null };}
   if (row.type === "cancelled") {return { type: "cancelled", resumable: p.resumable === true };}
+  const surface = surfaceOf(p, version);
+  if (surface && typeof row.type === "string" && CARD_KINDS.has(row.type)) {
+    return { type: "a2ui", kind: row.type, surfaceId: surface.surfaceId ?? null, messages: surface.messages };
+  }
   return { type: row.type, ...p };
 };
 
 /** `turn` is the job id: opaque to a client and equal for every frame of one run. */
-const sseFrame = (row: Row, p: Row, turn: string): string => {
+const sseFrame = (row: Row, p: Row, turn: string, version: string): string => {
   const seq = Number(row.id);
-  const body = { ...frameOf(row, p), seq, at: formatJsonTimestamp(row.created_at), turn };
+  const body = { ...frameOf(row, p, version), seq, at: formatJsonTimestamp(row.created_at), turn };
   return `id: ${seq}\ndata: ${pyJson(body)}\n\n`;
 };

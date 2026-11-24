@@ -597,14 +597,14 @@ test("a finished job is delivered on the first poll and the stream stops", async
       const events: Rows = [
         { id: 1, type: "status", payload: { text: "대기 중" } },
         { id: 2, type: "token", payload: { text: "질문" } },
-        { id: 3, type: "choice", payload: { id: "c1", gate: "intake", options: [] } },
+        { id: 3, type: "choice", payload: { id: "c1", gate: "intake", options: [], a2ui: { "v0.9.1": { surfaceId: "c1", messages: [] } } } },
         { id: 4, type: "done", payload: { awaiting: "choice" } },
       ];
       return events;
     }),
   }), async () => {}));
   const frames = framesOf(await res.text());
-  assert.deepEqual(frames.map((frame) => frame.type), ["status", "token", "choice", "done"]);
+  assert.deepEqual(frames.map((frame) => frame.type), ["status", "token", "a2ui", "done"]);
   assert.equal(frames[3]?.awaiting, "choice");
   assert.equal(reads, 1);
 });

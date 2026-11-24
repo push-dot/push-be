@@ -1,0 +1,45 @@
+{
+  "type": "a2ui",
+  "kind": "paper",
+  "surfaceId": "paper:draft-resume-v1:00000000-0000-4000-8000-00000000a001",
+  "messages": [
+    {
+      "version": "v0.9.1",
+      "createSurface": {
+        "surfaceId": "paper:draft-resume-v1:00000000-0000-4000-8000-00000000a001",
+        "catalogId": "https://push.app/a2ui/catalogs/push/v1/catalog.json"
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateComponents": {
+        "surfaceId": "paper:draft-resume-v1:00000000-0000-4000-8000-00000000a001",
+        "components": [
+          {
+            "id": "root",
+            "component": "PushDocument",
+            "status": "writing",
+            "title": "이력서 초안 v1",
+            "name": "김푸시",
+            "meta": "쓰는 중",
+            "lines": [
+              "• 결제 서버 트래픽을 3배로 늘렸어요",
+              "• Kafka로 정산을 옮겼어요"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateDataModel": {
+        "surfaceId": "paper:draft-resume-v1:00000000-0000-4000-8000-00000000a001",
+        "path": "/",
+        "value": {}
+      }
+    }
+  ],
+  "seq": 1,
+  "at": "2026-11-23T00:00:00.000000Z",
+  "turn": "00000000-0000-4000-8000-00000000a001"
+}
