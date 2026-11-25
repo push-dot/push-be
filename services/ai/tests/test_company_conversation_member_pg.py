@@ -66,3 +66,39 @@ async def test_the_author_who_left_no_longer_reaches_the_company_conversation(db
     finally:
         await db.q().execute("DELETE FROM conversations WHERE id = $1", conversation)
         await db.q().execute("DELETE FROM companies WHERE id = $1", company)
+
+
+async def test_a_company_share_link_dies_when_its_author_leaves_and_members_can_turn_it_off(db):
+    from datetime import UTC, datetime, timedelta
+
+    author, teammate, outsider, rival = (
+        await _user(db), await _user(db), await _user(db), await _user(db))
+    company, other_company, conversation = uuid4(), uuid4(), uuid4()
+    await db.q().execute("INSERT INTO companies (id, name) VALUES ($1, '모아페이')", company)
+    await db.q().execute("INSERT INTO companies (id, name) VALUES ($1, '다른회사')", other_company)
+    for user, owner in ((author, company), (teammate, company), (rival, other_company)):
+        await db.q().execute(
+            "INSERT INTO company_members (company_id, user_id, role) VALUES ($1, $2, 'MEMBER')",
+            owner, user)
+    await db.q().execute(
+        "INSERT INTO conversations (id, user_id, title, company_id) VALUES ($1, $2, '채용', $3)",
+        conversation, author, company)
+    store = ConversationStore(db)
+    now = datetime.now(UTC)
+    try:
+        await store.put_share(conversation, "hash-1", now, now + timedelta(days=30))
+        assert (await store.share_by_hash("hash-1", now))["conversation_id"] == conversation
+
+        # DELETE /share is allowed to whoever store.get lets in.
+        assert (await store.get(teammate, conversation)).id == conversation
+        for stranger in (outsider, rival):
+            with pytest.raises(NotFoundError):
+                await store.get(stranger, conversation)
+
+        await db.q().execute(
+            "DELETE FROM company_members WHERE company_id = $1 AND user_id = $2", company, author)
+        assert await store.share_by_hash("hash-1", now) is None, "the link dies with the author"
+    finally:
+        await db.q().execute("DELETE FROM conversations WHERE id = $1", conversation)
+        await db.q().execute("DELETE FROM companies WHERE id = ANY($1::uuid[])",
+                             [company, other_company])

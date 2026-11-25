@@ -171,7 +171,10 @@ class ConversationStore(Store):
             "SELECT s.conversation_id, s.shared_at, c.title "
             "FROM conversation_shares s "
             "JOIN conversations c ON c.id = s.conversation_id "
-            "WHERE s.token_hash = $1 AND s.expires_at > $2",
+            "WHERE s.token_hash = $1 AND s.expires_at > $2 "
+            # Only the author shares; a company thread's link dies when they leave the company.
+            "AND (c.company_id IS NULL OR EXISTS (SELECT 1 FROM company_members m "
+            "WHERE m.company_id = c.company_id AND m.user_id = c.user_id))",
             token_hash, now)
 
     async def list_share_messages(self, conversation_id: UUID, shared_at: datetime):
