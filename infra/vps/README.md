@@ -76,7 +76,7 @@ CI가 하는 일:
 
 1. VPS: 저장소 tar를 `/opt/push-be/releases/<sha>`에 풀고, 위 값으로 `/opt/push-be/.env`(0600, `deploy` 소유)를 새로 쓴 뒤 `check-compose`를 통과하면 `docker compose up -d --build`를 실행한다. 값은 로그에 찍지 않는다. 작은따옴표나 줄바꿈이 든 값은 거부한다. 최근 릴리스 3개만 남긴다.
 2. Worker: `wrangler secret bulk`로 `push-be`와 `push-be-core`에만 시크릿을 쓴다. 다른 기존 시크릿은 그대로 둔다. OAuth 클라이언트 ID와 Stripe 가격 ID는 비밀이 아니지만 `wrangler deploy`가 지우지 않도록 시크릿으로 넣는다. `push-be-python`은 배포하지 않고 시크릿도 넣지 않는다. `AI_SHARED_SECRET`은 VPS·코어·게이트웨이가 같이 쓴다. 게이트웨이가 Python으로 넘길 때 `x-push-ai-secret`에 넣는다.
-3. `https://<AI_HOST>/healthz`(push-bot)와 `https://<DISPATCH_HOST>/healthz`가 200을 줄 때까지 6분 동안 기다린다. `AGENT_HOST`가 있으면 `https://<AGENT_HOST>/healthz`(push-agent)도 기다린다.
+3. `https://<AI_HOST>/healthz`(push-bot)와 `https://<DISPATCH_HOST>/healthz`가 200을 줄 때까지 6분 동안 기다린다. `AGENT_HOST`가 있으면 `https://<AGENT_HOST>/healthz`(push-agent)도 기다린다. 그다음 `push-deploy ps`가 `push-agent` 컨테이너를 `(healthy)`로 보여 줄 때까지 6분 동안 기다린다(`bin/service-healthy`). push-agent는 `AGENT_HOST`가 없으면 공개 주소가 없는데 core는 기업 턴을 항상 `q:agent*`에 넣으므로, 컨테이너가 뜨지 않으면 배포가 실패한다.
 4. Worker 배포에 `--var AI_ORIGIN:https://<AI_HOST>`를 넘긴다. `AGENT_HOST`가 있으면 `--var AGENT_ORIGIN:https://<AGENT_HOST>`도 넘긴다.
 
 ## Neon 연결과 DB 풀

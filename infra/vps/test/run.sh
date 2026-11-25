@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-scripts=(harden.sh bin/check-compose bin/push-firewall bin/push-watchdog bin/push-deploy test/run.sh test/real-logrotate.sh)
+scripts=(harden.sh bin/check-compose bin/push-firewall bin/push-watchdog bin/push-deploy bin/service-healthy test/run.sh test/real-logrotate.sh)
 for s in "${scripts[@]}"; do bash -n "$s"; done
 if command -v shellcheck >/dev/null; then
   shellcheck -x "${scripts[@]}"

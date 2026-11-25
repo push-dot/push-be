@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Reads the table `docker compose ps` prints (`push-deploy ps` on the VPS) on stdin and succeeds only
+# when the named service's container is up and healthy. The deploy job runs it on the CI runner, so a
+# service with no public host is still checked. A container that exited has no row.
+# Usage: ssh deploy@vps ps | service-healthy push-agent
+set -euo pipefail
+
+service="${1:?usage: service-healthy <service>}"
+# The service name is one whole column; the container name and the image only contain it.
+rows="$(awk -v service="$service" '{ for (i = 1; i <= NF; i++) if ($i == service) { print; next } }')"
+if [ -z "$rows" ]; then
+  echo "service-healthy: no running container for $service" >&2
+  exit 1
+fi
+if grep -qv '(healthy)' <<<"$rows"; then
+  echo "service-healthy: $service is not healthy: $rows" >&2
+  exit 1
+fi
+echo "service-healthy: $service ok"
