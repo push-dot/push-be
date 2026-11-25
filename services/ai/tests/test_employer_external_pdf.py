@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.harness.employer.flows import Matches, build_flows
-from app.harness.employer.schemas import Flag, Match, ReviewReport
+from push_agent.harness.flows import Matches, build_flows
+from push_agent.harness.schemas import Flag, Match, ReviewReport
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "app"
 MIGRATIONS = Path(__file__).resolve().parents[3] / "db" / "migrations"

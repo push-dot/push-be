@@ -7,7 +7,7 @@ from fakeredis.aioredis import FakeRedis
 from app.domain.errors import DomainError
 from app.queue.streams import StreamQueue
 from app.queue.worker import JobContext, JobFailed
-from app.workers.ai_worker_main import ai_handlers
+from push_bot.worker import handlers as ai_handlers
 from app.workers.handlers.chat import chat
 from app.workers.handlers.document import make_document
 from app.workers.handlers.fit import make_fit
@@ -166,10 +166,13 @@ async def test_document_bad_body_fails_with_validation_error():
     assert err.value.error["code"] == "VALIDATION_ERROR"
 
 
-def test_employer_ai_runs_through_the_chat_handler():
+def test_employer_ai_runs_through_the_chat_handler_on_push_agent_only():
+    from push_agent.worker import handlers as agent_handlers
+
+    assert agent_handlers(SimpleNamespace(), lambda: None) == {"employer_ai": chat}
     handlers = ai_handlers(SimpleNamespace(documents=Documents()), lambda: FitQuery())
-    assert handlers["employer_ai"] is chat
-    assert set(handlers) == {"chat", "employer_ai", "document", "fit"}
+    assert handlers["chat"] is chat
+    assert set(handlers) == {"chat", "document", "fit"}
 
 
 def test_fit_worker_opens_usage_through_the_service_gate(monkeypatch):

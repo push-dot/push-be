@@ -457,7 +457,7 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
     + REJECT_WAITING + ", ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT job.id, 'status', $5::jsonb FROM job RETURNING job_id) SELECT job.id FROM job JOIN ev ON ev.job_id = job.id LEFT JOIN msg ON true",
     [ctx.user.id, conversationId, jobId, JSON.stringify(payload), JSON.stringify({ text: "대기 중" }), messageId, body.text]);
   if (!inserted) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
-  await scheduleChatJob(ctx, jobId);
+  await scheduleChatJob(ctx, jobId, (owned.company_id === null || owned.company_id === undefined) ? undefined : String(owned.company_id));
   const now = ts(ctx.now);
   return data(202, {
     id: jobId,

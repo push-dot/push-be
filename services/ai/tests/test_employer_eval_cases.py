@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.domain.fair_hiring import banned_in_interview, banned_in_posting
-from app.harness.employer.schemas import PostingDraft
+from push_agent.domain.fair_hiring import banned_in_interview, banned_in_posting
+from push_agent.harness.schemas import PostingDraft
 
 CASES = json.loads(
     (Path(__file__).resolve().parents[1] / "eval" / "employer" / "cases.json").read_text(

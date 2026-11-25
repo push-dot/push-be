@@ -1,6 +1,6 @@
 """Copy files from VPS disk into Postgres before core serves them.
 
-    docker compose exec ai-worker python scripts/migrate_blobs_to_db.py
+    docker compose exec push-bot python scripts/migrate_blobs_to_db.py
 
 Run once on the VPS, after migration 0024 and before the gateway sends
 source and image routes to core. Sources whose path is not db://... get

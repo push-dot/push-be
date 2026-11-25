@@ -58,13 +58,13 @@ export const enqueueResumeJob = async (ctx: Ctx, job: ResumeJob): Promise<string
   const conversation = await one(ctx.deps.query, CONVERSATION, [job.conversationId, job.userId]);
   if (!conversation) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   const payload = { ...carried(conversation.last), text: "", ...job.payload };
+  const companyId = (conversation.company_id === null || conversation.company_id === undefined) ? undefined : String(conversation.company_id);
   if ((ctx.env.QUEUE_BACKEND || "").trim().toLowerCase() !== "redis") {
     const jobId = crypto.randomUUID();
     await one(ctx.deps.query, LEGACY_INSERT, [jobId, job.userId, job.conversationId, JSON.stringify(payload), WAITING]);
-    await scheduleChatJob(ctx, jobId);
+    await scheduleChatJob(ctx, jobId, companyId);
     return jobId;
   }
-  const companyId = (conversation.company_id === null || conversation.company_id === undefined) ? undefined : String(conversation.company_id);
   const { jobId, queue } = await enqueueJob(ctx.deps.query, {
     type: companyId ? "employer_ai" : "chat",
     userId: job.userId,

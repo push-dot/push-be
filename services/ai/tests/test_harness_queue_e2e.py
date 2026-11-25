@@ -10,7 +10,7 @@ from fakeredis.aioredis import FakeRedis
 from app.harness.core_client import CoreClient
 from app.harness.jobs import run_queue_turn
 from app.harness.runtime import HarnessRuntime
-from app.workers.ai_worker_main import AI_WORKER_QUEUES
+from push_bot.worker import QUEUES as AI_WORKER_QUEUES
 from app.workers.handlers.chat import chat, configure_harness
 from tests.harness_fakes import CONV, USER, Rows, ScriptedLC, managed_ai, service
 from tests.test_queue_worker import MemoryJobs, queued, worker

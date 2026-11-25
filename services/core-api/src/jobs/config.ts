@@ -2,7 +2,7 @@ import { HttpError } from "../http.ts";
 
 export type JobType = "chat" | "employer_ai" | "document" | "fit" | "ingest" | "notify";
 
-export type QueueName = "q:chat:priority" | "q:chat" | "q:document" | "q:ingest" | "q:notify" | "q:dead";
+export type QueueName = "q:chat:priority" | "q:chat" | "q:agent:priority" | "q:agent" | "q:document" | "q:ingest" | "q:notify" | "q:dead";
 
 export type Plan = "FREE" | "BASIC" | "PRO" | "ULTRA";
 
@@ -72,6 +72,8 @@ export const queueFor = (type: JobType, plan: Plan, audience: Audience): QueueNa
   if (type === "document" || type === "fit") {return "q:document";}
   const priority = (audience === "EMPLOYER" && (plan === "PRO" || plan === "ULTRA"))
     || (audience === "PERSONAL" && plan === "ULTRA");
+  // push-agent consumes q:agent*, push-bot q:chat*: an employer turn never waits behind consumer chat.
+  if (type === "employer_ai") {return priority ? "q:agent:priority" : "q:agent";}
   return priority ? "q:chat:priority" : "q:chat";
 };
 

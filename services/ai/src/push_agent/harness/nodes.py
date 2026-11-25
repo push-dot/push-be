@@ -16,10 +16,10 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
-from app.domain.employer_baseline import baseline_lines
-from app.domain.fair_hiring import banned_in_interview, banned_in_posting, verdicts_in
-from app.harness.employer.recruit_prompts import node_prompt
-from app.harness.employer.schemas import (
+from push_agent.domain.employer_baseline import baseline_lines
+from push_agent.domain.fair_hiring import banned_in_interview, banned_in_posting, verdicts_in
+from push_agent.harness.recruit_prompts import node_prompt
+from push_agent.harness.schemas import (
     CompanyProfile,
     Flag,
     InterviewKit,

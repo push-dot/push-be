@@ -309,7 +309,7 @@ async def test_employer_basic_pro_and_ultra_pick_different_levers(monkeypatch):
     from app.config import Config
     from app.domain.employer_chat import bind_employer_plan, reset_employer_plan
     from app.domain.plan_levers import levers_for
-    from app.harness.employer import tools as employer
+    from push_agent.harness import tools as employer
 
     seen = []
 
@@ -335,7 +335,7 @@ async def test_employer_basic_pro_and_ultra_pick_different_levers(monkeypatch):
 
 async def test_employer_fit_rejects_another_companys_posting(monkeypatch):
     from app.domain.employer_chat import bind_employer_plan, reset_employer_plan
-    from app.harness.employer import tools as employer
+    from push_agent.harness import tools as employer
 
     seen = []
 

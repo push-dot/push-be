@@ -342,7 +342,11 @@ def ai_env(env, monkeypatch):
     async def serve_api(a, worker):
         calls.append(("serve_api", a, worker))
 
-    monkeypatch.setattr(app.main, "app", fake_app)
+    import push_agent.main
+    import push_bot.main
+
+    monkeypatch.setattr(push_bot.main, "app", fake_app)
+    monkeypatch.setattr(push_agent.main, "app", fake_app)
     monkeypatch.setattr(app.main, "ensure_ready", ensure_ready)
     monkeypatch.setattr(ai_worker_main, "build_chat", build_chat)
     monkeypatch.setattr(ai_worker_main, "serve_api", serve_api)
@@ -353,15 +357,17 @@ def ai_env(env, monkeypatch):
     return env
 
 
-async def test_ai_worker_boots_app_then_runs_chat_and_document_queues(ai_env):
-    await ai_worker_main.main()
+async def test_bot_worker_boots_app_then_runs_chat_and_document_queues(ai_env):
+    import push_bot.worker
+
+    await push_bot.worker.main()
     w, calls = ai_env["worker"], ai_env["calls"]
     assert calls[:2] == [("ready", ai_env["app"]), ("build_chat", ai_env["svc"])]
     assert (w.group, w.consumer, w.concurrency) == ("ai", "ai-worker", 4)
-    assert w.queues == ["q:chat:priority", "q:chat", "q:document"] == ai_worker_main.AI_WORKER_QUEUES
+    assert w.queues == ["q:chat:priority", "q:chat", "q:document"] == push_bot.worker.QUEUES
     assert w.kwargs["fair_queue"] == "q:document"
-    assert set(w.handlers) == {"chat", "employer_ai", "document", "fit"}
-    assert w.handlers["chat"] is w.handlers["employer_ai"] is chat_mod.chat
+    assert set(w.handlers) == {"chat", "document", "fit"}
+    assert w.handlers["chat"] is chat_mod.chat
     assert isinstance(w.db, QueueJobs) and w.db.store is ai_env["svc"].jobs
     assert not any(c[0] == "serve_api" for c in calls)
     await w.kwargs["settle"](w.db, JOB)
@@ -370,17 +376,44 @@ async def test_ai_worker_boots_app_then_runs_chat_and_document_queues(ai_env):
     assert ai_env["redis"].closed
 
 
+async def test_agent_worker_runs_only_employer_turns_on_its_own_queues(ai_env):
+    import push_agent.worker
+
+    await push_agent.worker.main()
+    w, calls = ai_env["worker"], ai_env["calls"]
+    assert calls[:2] == [("ready", ai_env["app"]), ("build_chat", ai_env["svc"])]
+    assert (w.group, w.consumer, w.concurrency) == ("agent", "agent-worker", 4)
+    assert w.queues == ["q:agent:priority", "q:agent"] == push_agent.worker.QUEUES
+    assert w.kwargs["fair_queue"] is None
+    assert w.handlers == {"employer_ai": chat_mod.chat}
+    assert not set(w.queues) & set(__import__("push_bot.worker").worker.QUEUES)
+    assert isinstance(w.db, QueueJobs) and w.db.store is ai_env["svc"].jobs
+    assert ai_env["redis"].closed
+
+
+async def test_worker_group_and_consumer_come_from_the_environment(ai_env, monkeypatch):
+    import push_agent.worker
+
+    monkeypatch.setenv("QUEUE_GROUP", "agent-blue")
+    monkeypatch.setenv("QUEUE_CONSUMER", "agent-2")
+    await push_agent.worker.main()
+    w = ai_env["worker"]
+    assert (w.group, w.consumer) == ("agent-blue", "agent-2")
+
+
 async def test_ai_worker_serves_api_when_asked_and_closes_redis_on_crash(ai_env, monkeypatch):
+    import push_bot.worker
+
     monkeypatch.setenv("SERVE_API", "1")
     monkeypatch.setenv("QUEUE_CONCURRENCY", "2")
-    await ai_worker_main.main()
+    await push_bot.worker.main()
     w = ai_env["worker"]
     assert ("serve_api", ai_env["app"], w) in ai_env["calls"]
     assert w.concurrency == 2
     FakeWorker.fail = RuntimeError("boom")
     ai_env["redis"].closed = False
     with pytest.raises(RuntimeError):
-        await ai_worker_main.main()
+        await push_bot.worker.main()
     assert ai_env["redis"].closed
 
 

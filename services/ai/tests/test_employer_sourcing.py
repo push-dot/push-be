@@ -5,8 +5,8 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import START, StateGraph
 from langgraph.types import Command
 
-from app.harness.employer.flows import Person, Shortlist, build_flows
-from app.harness.employer.schemas import OfferDraft
+from push_agent.harness.flows import Person, Shortlist, build_flows
+from push_agent.harness.schemas import OfferDraft
 
 
 def _graph(calls, messages, drafted: list | None = None):
@@ -217,7 +217,7 @@ async def test_one_failing_offer_draft_leaves_the_other_and_names_the_skipped_pe
     ("결제 API 4년", {"headline": "결제 API 3년"}, False),
 ])
 def test_a_shortlist_reason_must_come_from_the_profile_values(reason, profile, grounded):
-    from app.harness.employer.flows import _grounded
+    from push_agent.harness.flows import _grounded
 
     assert _grounded(reason, profile) is grounded
 

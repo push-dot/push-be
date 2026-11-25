@@ -46,23 +46,6 @@ def apply_employer_turn(ai, plan: str | None, intent: str | None, config: object
     return ai
 
 
-def posting_system_prompt() -> str:
-    return (
-        "공고 초안은 다음 펜스 안에 JSON으로만 쓴다.\n"
-        "```posting-draft\n"
-        "{\n"
-        '  "title": "",\n'
-        '  "description": "",\n'
-        '  "requirements": [],\n'
-        '  "preferred": [],\n'
-        '  "workConditions": {}\n'
-        "}\n"
-        "```\n"
-        "title은 공고 제목, description은 하는 일, requirements는 자격 요건, "
-        "preferred는 우대 사항, workConditions는 근무 조건이다."
-    )
-
-
 def bind_employer_plan(plan: str | None) -> Token:
     stored = "" if plan is None or str(plan).strip() == "" else str(plan)
     return _plan.set(stored)

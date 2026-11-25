@@ -1,14 +1,25 @@
-# Dynamic config. Host names come from the proxy container's AI_HOST and DISPATCH_HOST
-# through Traefik's Go templating, so this file holds no deployment values.
+# Dynamic config. Host names come from the proxy container's AI_HOST (push-bot), AGENT_HOST
+# (push-agent) and DISPATCH_HOST through Traefik's Go templating, so this file holds no
+# deployment values.
 http:
   routers:
-    ai:
+    bot:
       rule: 'Host(`{{ env "AI_HOST" }}`)'
       entryPoints: [websecure]
-      service: ai
+      service: bot
       middlewares: [security-headers, rate-limit]
       tls:
         certResolver: le
+    # Only when the proxy has a host for it; without one push-agent is reached by its queue alone.
+{{- if env "AGENT_HOST" }}
+    agent:
+      rule: 'Host(`{{ env "AGENT_HOST" }}`)'
+      entryPoints: [websecure]
+      service: agent
+      middlewares: [security-headers, rate-limit]
+      tls:
+        certResolver: le
+{{- end }}
     dispatch:
       rule: 'Host(`{{ env "DISPATCH_HOST" }}`)'
       entryPoints: [websecure]
@@ -18,10 +29,10 @@ http:
         certResolver: le
     # Test server (compose.staging.yaml). Only when the proxy has the staging hosts.
 {{- if env "STAGING_AI_HOST" }}
-    staging-ai:
+    staging-bot:
       rule: 'Host(`{{ env "STAGING_AI_HOST" }}`)'
       entryPoints: [websecure]
-      service: staging-ai
+      service: staging-bot
       middlewares: [security-headers, rate-limit]
       tls:
         certResolver: le
@@ -33,20 +44,37 @@ http:
       tls:
         certResolver: le
 {{- end }}
+{{- if env "STAGING_AGENT_HOST" }}
+    staging-agent:
+      rule: 'Host(`{{ env "STAGING_AGENT_HOST" }}`)'
+      entryPoints: [websecure]
+      service: staging-agent
+      middlewares: [security-headers, rate-limit]
+      tls:
+        certResolver: le
+{{- end }}
 
   services:
-    staging-ai:
+    staging-bot:
       loadBalancer:
         servers:
-          - url: http://staging-ai-worker:8080
+          - url: http://staging-push-bot:8080
+    staging-agent:
+      loadBalancer:
+        servers:
+          - url: http://staging-push-agent:8080
     staging-dispatch:
       loadBalancer:
         servers:
           - url: http://staging-dispatcher:8091
-    ai:
+    bot:
       loadBalancer:
         servers:
-          - url: http://ai-worker:8080
+          - url: http://push-bot:8080
+    agent:
+      loadBalancer:
+        servers:
+          - url: http://push-agent:8080
     dispatch:
       loadBalancer:
         servers:

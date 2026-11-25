@@ -14,13 +14,19 @@ ALERT_S = 60
 PROMOTE_S = 15
 PAUSE_PREFIX = "pause:"
 
+# push-bot's worker is group "ai" (q:chat*, q:document); push-agent's is "agent" (q:agent*).
 QUEUE_GROUPS = {
     "q:chat:priority": "ai",
     "q:chat": "ai",
+    "q:agent:priority": "agent",
+    "q:agent": "agent",
     "q:document": "ai",
     "q:ingest": "ingest",
     "q:notify": "notify",
 }
+
+# The stream each turn type is consumed from. A worker that gets the other service's turn sends it there.
+TURN_QUEUES = {"chat": "q:chat", "employer_ai": "q:agent"}
 
 _HEARTBEAT_DEFAULTS = {
     "chat": ("HEARTBEAT_LIMIT_CHAT_S", 120),
@@ -44,6 +50,8 @@ _DEADLINE_DEFAULTS = {
 _VISIBILITY_DEFAULTS = {
     "q:chat:priority": ("VISIBILITY_Q_CHAT_PRIORITY_S", 60),
     "q:chat": ("VISIBILITY_Q_CHAT_S", 60),
+    "q:agent:priority": ("VISIBILITY_Q_AGENT_PRIORITY_S", 60),
+    "q:agent": ("VISIBILITY_Q_AGENT_S", 60),
     "q:document": ("VISIBILITY_Q_DOCUMENT_S", 120),
     "q:ingest": ("VISIBILITY_Q_INGEST_S", 180),
     "q:notify": ("VISIBILITY_Q_NOTIFY_S", 30),

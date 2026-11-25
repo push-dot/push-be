@@ -6,8 +6,8 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 from app.domain.employer_chat import bind_employer_plan, reset_employer_plan
-from app.harness.employer.flows import RoleOption, RoleOptions
-from app.harness.employer.schemas import CompanyProfile, PostingDraft, PostingReview, RoleSpec
+from push_agent.harness.flows import RoleOption, RoleOptions
+from push_agent.harness.schemas import CompanyProfile, PostingDraft, PostingReview, RoleSpec
 from app.harness.graph import build_harness_graph, turn_model
 from app.harness.registry import REGISTRY
 
@@ -147,7 +147,7 @@ def test_entry_tools_are_registered():
 
 
 def test_employer_start_reads_intent_and_conversation():
-    from app.harness.runtime import employer_start
+    from push_agent.harness.spec import employer_start
 
     conv = {"posting_id": "p1", "application_id": "a1"}
     assert employer_start({"intent": "posting"}, conv) == {
@@ -164,9 +164,9 @@ import asyncio  # noqa: E402
 
 from langgraph.graph import START, StateGraph  # noqa: E402
 
-from app.harness.employer import flows as flows_module  # noqa: E402
-from app.harness.employer.flows import Matches, build_flows  # noqa: E402
-from app.harness.employer.schemas import Flag, Match, ReviewReport  # noqa: E402
+from push_agent.harness import flows as flows_module  # noqa: E402
+from push_agent.harness.flows import Matches, build_flows  # noqa: E402
+from push_agent.harness.schemas import Flag, Match, ReviewReport  # noqa: E402
 from tests.kstyle_fakes import RoleModel  # noqa: E402
 
 DOCS = "회사 A에서 주문 API를 3년 운영했어요. 장애 대응 문서를 직접 만들었어요."
@@ -338,7 +338,7 @@ async def test_review_cutting_a_named_requirement_asks_once_in_the_confirm_title
 
 
 async def test_interview_kit_keeps_only_questions_tied_to_a_flag():
-    from app.harness.employer.schemas import InterviewKit, InterviewQuestion
+    from push_agent.harness.schemas import InterviewKit, InterviewQuestion
 
     class KitStore(ReviewStore):
         saved = None
@@ -478,7 +478,7 @@ class _KitStore(ReviewStore):
 
 
 async def _kit(flags: list[dict], from_flags: list[str | None]):
-    from app.harness.employer.schemas import InterviewKit, InterviewQuestion
+    from push_agent.harness.schemas import InterviewKit, InterviewQuestion
 
     calls = []
 
@@ -524,7 +524,7 @@ async def test_kit_without_check_flags_makes_no_model_call():
 
 
 def test_a_skill_left_only_in_the_title_reads_as_cut_not_moved():
-    from app.harness.employer.flows import _cut_asks
+    from push_agent.harness.flows import _cut_asks
 
     before = PostingDraft(title="Kotlin 백엔드", requirements=["Kotlin 3년 이상", "Python"])
     after = PostingDraft(title="Kotlin 백엔드", requirements=["Python"])

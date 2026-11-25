@@ -501,7 +501,7 @@ def _billing_call(case, monkeypatch):
     from types import SimpleNamespace
     from uuid import uuid4
 
-    from app.harness.employer import tools as employer
+    from push_agent.harness import tools as employer
     from app.harness.personal import tools as personal
 
     seen = {}

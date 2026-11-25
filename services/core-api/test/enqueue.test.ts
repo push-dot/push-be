@@ -48,7 +48,7 @@ test("enqueue reserves credits, writes job and outbox in one transaction", async
   assert.equal(queueFor("chat", "FREE", "PERSONAL"), "q:chat");
 });
 
-test("enqueue routes employer PRO to q:chat:priority", async () => {
+test("enqueue routes employer PRO to q:agent:priority", async () => {
   const calls: Array<string> = [];
   const out = await enqueueJob(funded(calls, estimateMicro("employer_ai", "PRO")), {
     type: "employer_ai",
@@ -57,8 +57,20 @@ test("enqueue routes employer PRO to q:chat:priority", async () => {
     plan: "PRO",
     payload: {},
   });
-  assert.equal(out.queue, "q:chat:priority");
-  assert.equal(queueFor("employer_ai", "PRO", "EMPLOYER"), "q:chat:priority");
+  assert.equal(out.queue, "q:agent:priority");
+  assert.equal(queueFor("employer_ai", "PRO", "EMPLOYER"), "q:agent:priority");
+});
+
+test("employer turns go to the push-agent queues and consumer chat stays on the push-bot queues", () => {
+  assert.equal(queueFor("employer_ai", "FREE", "EMPLOYER"), "q:agent");
+  assert.equal(queueFor("employer_ai", "BASIC", "EMPLOYER"), "q:agent");
+  assert.equal(queueFor("employer_ai", "ULTRA", "EMPLOYER"), "q:agent:priority");
+  assert.equal(queueFor("chat", "PRO", "PERSONAL"), "q:chat");
+  assert.equal(queueFor("chat", "ULTRA", "PERSONAL"), "q:chat:priority");
+  for (const plan of ["FREE", "BASIC", "PRO", "ULTRA"] as const) {
+    assert.equal(queueFor("document", plan, "PERSONAL"), "q:document");
+    assert.equal(queueFor("fit", plan, "PERSONAL"), "q:document");
+  }
 });
 
 test("enqueue rejects when reservation exceeds balance with 402 INSUFFICIENT_CREDITS", async () => {

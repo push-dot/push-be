@@ -1,13 +1,14 @@
 # Test server ("staging"): the AI stack for push-be-staging, deployed from develop by
 # `push-deploy staging ...` as compose project push-ai-staging next to the production
-# project push-ai. It has its own Redis and data volume and points at the Neon branch
-# in /opt/push-be-staging/.env. It has no proxy and no embed: the production Traefik
-# routes STAGING_AI_HOST / STAGING_DISPATCH_HOST here over push-ai_staging-edge
-# (traefik/dynamic.yml), and ai-worker/ingest use the production TEI embed over
-# push-ai_embed-shared (embed only). Redis and the workers sit on this project's own
-# internal network; nothing here joins push-ai_edge or push-ai_push-internal, so staging
-# cannot reach production's ai-worker, dispatcher or Redis. The staging- prefix keeps
-# Traefik's service names distinct.
+# project push-ai. Like production it runs two AI services: staging-push-bot (the consumer
+# Bot) and staging-push-agent (the enterprise agent). It has its own Redis and data volume
+# and points at the Neon branch in /opt/push-be-staging/.env. It has no proxy and no embed:
+# the production Traefik routes STAGING_AI_HOST / STAGING_AGENT_HOST / STAGING_DISPATCH_HOST
+# here over push-ai_staging-edge (traefik/dynamic.yml), and the workers use the production
+# TEI embed over push-ai_embed-shared (embed only). Redis and the workers sit on this
+# project's own internal network; nothing here joins push-ai_edge or push-ai_push-internal,
+# so staging cannot reach production's push-bot, push-agent, dispatcher or Redis. The
+# staging- prefix keeps Traefik's service names distinct.
 # Every plan runs on Sonnet 5.5 here, and APP_ENV=development turns on DEV_AUTH_TOKEN.
 
 x-hardened: &hardened
@@ -18,17 +19,31 @@ x-hardened: &hardened
   cap_drop:
     - ALL
 
-x-ai-image: &ai-image
+x-bot-image: &bot-image
   <<: *hardened
   build:
     context: ../../services/ai
     dockerfile: Dockerfile
-  image: push-ai:staging
+    target: push-bot
+  image: push-bot:staging
   user: "10001:10001"
   pids_limit: 256
   tmpfs:
     - /tmp:size=128m,mode=1777
     - /home/app:size=32m,uid=10001,gid=10001,mode=0700
+
+x-agent-image: &agent-image
+  <<: *hardened
+  build:
+    context: ../../services/ai
+    dockerfile: Dockerfile
+    target: push-agent
+  image: push-agent:staging
+  user: "10001:10001"
+  pids_limit: 128
+  tmpfs:
+    - /tmp:size=32m,mode=1777
+    - /home/app:size=8m,uid=10001,gid=10001,mode=0700
 
 x-queue-env: &queue-env
   APP_ENV: development
@@ -66,7 +81,7 @@ x-ai-env: &ai-env
 
 services:
   staging-dispatcher:
-    <<: *ai-image
+    <<: *bot-image
     command: ["python", "-m", "app.workers.dispatcher_main"]
     mem_limit: 128m
     pids_limit: 64
@@ -98,9 +113,9 @@ services:
       timeout: 5s
       retries: 3
 
-  staging-ai-worker:
-    <<: *ai-image
-    command: ["python", "-m", "app.workers.ai_worker_main"]
+  staging-push-bot:
+    <<: *bot-image
+    command: ["python", "-m", "push_bot.worker"]
     mem_limit: 768m
     shm_size: 64m
     environment:
@@ -117,6 +132,30 @@ services:
     depends_on:
       - staging-redis
     networks:
+      staging-edge:
+        # The production proxy routes STAGING_AI_HOST. Until production is redeployed with the new
+        # traefik/dynamic.yml it still looks for the old name, so this service answers to it too.
+        aliases: [staging-ai-worker]
+      internal:
+      embed-shared:
+    expose:
+      - "8080"
+
+  staging-push-agent:
+    <<: *agent-image
+    command: ["python", "-m", "push_agent.worker"]
+    mem_limit: 256m
+    environment:
+      <<: *ai-env
+      SERVE_API: "1"
+      QUEUE_GROUP: agent
+      QUEUE_CONSUMER: agent-worker
+      QUEUE_CONCURRENCY: "2"
+    volumes:
+      - staging-ai-data:/data:ro
+    depends_on:
+      - staging-redis
+    networks:
       - staging-edge
       - internal
       - embed-shared
@@ -124,7 +163,7 @@ services:
       - "8080"
 
   staging-ingest-worker:
-    <<: *ai-image
+    <<: *bot-image
     healthcheck:
       disable: true
     command: ["python", "-m", "app.workers.ingest_worker_main"]
@@ -142,7 +181,7 @@ services:
       - embed-shared
 
   staging-notify-worker:
-    <<: *ai-image
+    <<: *bot-image
     healthcheck:
       disable: true
     command: ["python", "-m", "app.workers.notify_worker_main"]
@@ -193,7 +232,7 @@ volumes:
 
 # staging-edge and embed-shared are created by the production project (push-ai); deploy
 # production first. The internal network belongs to this project: Redis and the workers
-# here cannot see production's Redis, ai-worker or dispatcher.
+# here cannot see production's Redis, push-bot, push-agent or dispatcher.
 networks:
   internal:
     driver: bridge

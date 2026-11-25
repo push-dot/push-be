@@ -236,7 +236,7 @@ async def test_draft_posting_tool_event_has_draft():
 
 
 def test_employer_fit_ids_must_be_uuids():
-    from app.harness.employer.tools import FitArgs
+    from push_agent.harness.tools import FitArgs
     assert FitArgs.model_validate({"posting_id": "", "document_id": ""}).posting_id is None
     with pytest.raises(ValidationError):
         FitArgs.model_validate({"document_id": "not-a-uuid"})

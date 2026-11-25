@@ -710,7 +710,7 @@ class _ReviewStore:
 
 
 async def test_a_review_reply_said_before_its_gate_is_stored_once_on_that_turn(monkeypatch):
-    from app.harness.employer import flows as flows_module
+    from push_agent.harness import flows as flows_module
 
     monkeypatch.setattr(flows_module, "EmployerStore", lambda _db: _ReviewStore())
     svc, runtime = _employer({

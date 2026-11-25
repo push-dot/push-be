@@ -1,12 +1,14 @@
 # Local stack. Postgres matches the laptop port used by .env.example (5434).
-# The AI service is uvicorn, the shape that will later run on a VPS.
-# Migrations are mounted at /db so app.db.migrations_dir() finds them.
+# The AI side is two uvicorn services from one Dockerfile: push-bot (the consumer Bot, :8080) and
+# push-agent (the enterprise agent, :8081). With no Redis each runs its in-process chat worker and
+# claims only its own conversations: push-bot the personal ones, push-agent a company's.
+# Migrations are mounted at /db so app.db.migrations_dir() finds them; push-bot applies them.
 #
 # The gateway Worker speaks Neon HTTP, not this Postgres wire protocol, so
 # it is not a compose service. Run it with:
 #   cd services/gateway && npx wrangler dev
 # Routes the gateway does not handle still go to the Python Worker through
-# the API service binding. Hit the uvicorn process on :8080 for those.
+# the API service binding. Hit push-bot's uvicorn process on :8080 for those.
 
 services:
   postgres:
@@ -25,9 +27,10 @@ services:
       timeout: 3s
       retries: 10
 
-  ai:
+  push-bot:
     build:
       context: ../services/ai
+      target: push-bot
     environment:
       DATABASE_URL: postgres://push:push@postgres:5432/push?sslmode=disable
       DB_DRIVER: asyncpg
@@ -41,6 +44,23 @@ services:
       - ../db:/db:ro
     depends_on:
       postgres:
+        condition: service_healthy
+
+  push-agent:
+    build:
+      context: ../services/ai
+      target: push-agent
+    environment:
+      DATABASE_URL: postgres://push:push@postgres:5432/push?sslmode=disable
+      DB_DRIVER: asyncpg
+      PG_TRANSPORT: tcp
+      RUN_MIGRATIONS: "0"
+      APP_ENV: development
+      PYTHONPATH: /app/src
+    ports:
+      - "8081:8080"
+    depends_on:
+      push-bot:
         condition: service_healthy
 
 volumes:

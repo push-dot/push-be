@@ -6,8 +6,10 @@ import type { SmsSender } from "./sms/sender.ts";
 
 export interface CoreEnv {
   DATABASE_URL?: string;
-  /** HTTPS origin of the AI service. The postgres chat wake returns 500 when this is empty. */
+  /** HTTPS origin of push-bot. The postgres chat wake returns 500 when this is empty. */
   AI_ORIGIN?: string;
+  /** HTTPS origin of push-agent. The postgres chat wake of a company conversation goes here; empty falls back to AI_ORIGIN. */
+  AGENT_ORIGIN?: string;
   /** postgres keeps the chat_jobs insert. redis uses enqueueJob. */
   QUEUE_BACKEND?: string;
   DISPATCH_ORIGIN?: string;

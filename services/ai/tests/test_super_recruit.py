@@ -4,8 +4,8 @@ import re
 
 import pytest
 
-from app.domain import fair_hiring
-from app.harness.employer import recruit_prompts as rp
+from push_agent.domain import fair_hiring
+from push_agent.harness import recruit_prompts as rp
 
 SKILLS = {
     "company-researcher",

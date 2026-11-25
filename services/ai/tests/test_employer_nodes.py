@@ -4,10 +4,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.domain.employer_baseline import baseline_lines, baseline_stats
+from push_agent.domain.employer_baseline import baseline_lines, baseline_stats
 from app.framework.untrusted import as_data
-from app.harness.employer import nodes
-from app.harness.employer.schemas import (
+from push_agent.harness import nodes
+from push_agent.harness.schemas import (
     CompanyProfile,
     Fact,
     Flag,
@@ -241,7 +241,7 @@ class _FakeStructured:
 
 
 async def test_structured_generate_validates_dict_output():
-    from app.harness.employer.llm import structured_generate
+    from push_agent.harness.llm import structured_generate
 
     model = _FakeStructured(
         {"name": "모아페이", "facts": [{"text": "a", "sourceUrl": "https://x"}]}
@@ -262,7 +262,7 @@ async def test_flag_quote_with_different_whitespace_still_verifies():
 
 
 def test_met_without_a_quote_from_the_documents_is_lowered():
-    from app.harness.employer.schemas import Match
+    from push_agent.harness.schemas import Match
 
     matches = [
         Match(requirement="지연 개선", status="MET", evidence="p99 지연을  420ms에서 180ms로"),

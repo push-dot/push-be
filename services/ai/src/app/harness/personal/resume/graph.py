@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import json
 import logging
 import re
@@ -22,6 +21,7 @@ from app.domain.posting_text import posting_terms
 from app.framework.models import _content
 from app.framework.untrusted import DATA_RULE, as_data
 from app.harness.approvals import insert_chat_approval
+from app.harness.binding import bound_core
 from app.harness.graph import _CAP, turn_model
 from app.harness.kstyle.ask import ask_once, ask_options, ask_title, needs_ask
 from app.harness.kstyle.final import Final, late_lines, render
@@ -107,8 +107,6 @@ from app.harness.tools import (
     emit,
     to_structured_tool,
 )
-
-bound_core: contextvars.ContextVar = contextvars.ContextVar("resume_core", default=None)
 
 _ORDER = (
     "mode_select",

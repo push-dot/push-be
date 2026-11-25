@@ -57,6 +57,11 @@ class HarnessSpec:
     id: str
     prompt: str
     tools: list[ToolSpec]
+    # build_graph(agent, tools, after_agent, checkpointer, *, db, core, tools_by_name): the service's own
+    # graph around the shared agent and tools nodes. None builds the default one.
+    build_graph: Callable[..., Any] | None = None
+    # start_flow(payload, conversation) -> the flow this turn opens, or None for plain chat.
+    start_flow: Callable[[dict, dict], dict | None] | None = None
 
 
 @dataclass(frozen=True)

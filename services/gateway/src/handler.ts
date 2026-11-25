@@ -2,7 +2,7 @@
  * Gateway request pipeline.
  *
  * index.ts is the Worker entry. This module dispatches the routes the
- * gateway answers itself and forwards AI routes to AI_ORIGIN.
+ * gateway answers itself and forwards AI routes to AI_ORIGIN (push-bot) or AGENT_ORIGIN (push-agent).
  */
 
 import type { Deps, FrontEnv } from "./types.ts";
@@ -10,7 +10,7 @@ import { errorResponse, fieldError, parseUuid, preflight, requestIdOf, withCors 
 import { authMe } from "./routes/auth.ts";
 import { health } from "./routes/health.ts";
 import {
-  getConversation, isBotThread, listConversations, listMessages, streamActive, streamBotActive, streamBotCancel,
+  aiOriginFor, getConversation, isBotThread, listConversations, listMessages, streamActive, streamBotActive, streamBotCancel,
   streamCancel, streamMessage,
 } from "./routes/conversations.ts";
 import { aiModels, jobSites } from "./routes/catalog.ts";
@@ -62,8 +62,9 @@ async function route(request: Request, env: FrontEnv, deps: Deps, url: URL, path
   // rule sits here once. An id this parser cannot read goes no further: the AI service reads other
   // spellings of one id, such as {…} and urn:uuid:…, and the probe below would not see them.
   const named = path.match(/^\/api\/v1\/conversations\/([^/]+)/);
+  let conversationId: string | null = null;
   if (named && named[1] !== "shared") {
-    const conversationId = parseUuid(named[1]);
+    conversationId = parseUuid(named[1]);
     if (!conversationId) {return fieldError("id", "must be a UUID", rid);}
     if (await isBotThread(deps, conversationId)) {return errorResponse(404, "NOT_FOUND", "resource not found", rid);}
   }
@@ -110,7 +111,7 @@ async function route(request: Request, env: FrontEnv, deps: Deps, url: URL, path
   if (owner === "deny") {return errorResponse(404, "NOT_FOUND", "resource not found", rid);}
   const proxied = owner === "core"
     ? await proxy(request, env.CORE, rid, await isInternalCall(request, env))
-    : await proxyPython(request, env, deps, rid);
+    : await proxyPython(request, env, deps, rid, await aiOriginFor(env, deps, conversationId));
   if (proxied.status >= 200 && proxied.status < 300) {
     const method = request.method;
     if (method === "POST" || method === "PATCH" || method === "PUT" || method === "DELETE") {
