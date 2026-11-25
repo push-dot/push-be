@@ -41,12 +41,14 @@ test("any member of the company answers a company card, and the card keeps who d
     [thread, opener.id, company]);
   const card = crypto.randomUUID();
   await rows(
-    `INSERT INTO approvals (id, user_id, kind, target_id, payload_hash, status, conversation_id, title, options, tool_name, job_id)
-     VALUES ($1::uuid, $2::uuid, 'TOOL_ACTION', $1::uuid, 'h', 'PENDING', $3::uuid, '공고를 마감해요', $4::jsonb, 'close_posting', gen_random_uuid())`,
+    `INSERT INTO approvals (id, user_id, kind, target_id, payload_hash, status, conversation_id, title, options, tool_name, job_id, expires_at)
+     VALUES ($1::uuid, $2::uuid, 'TOOL_ACTION', $1::uuid, 'h', 'PENDING', $3::uuid, '공고를 마감해요', $4::jsonb, 'close_posting', gen_random_uuid(),
+             now() - interval '1 minute')`,
     [card, opener.id, thread, JSON.stringify([{ id: "approve" }, { id: "reject" }])]);
 
   assert.equal(await answer(outsider, thread, card, "reject"), 404, "not a member of this company");
-  assert.ok([200, 202].includes(await answer(teammate, thread, card, "reject")), "a teammate answers");
+  // An expired card's 닫기 closes it without queueing a resume, so this checks who may answer only.
+  assert.equal(await answer(teammate, thread, card, "reject"), 200, "a teammate answers");
   const [row] = await rows("SELECT status, decided_by FROM approvals WHERE id = $1::uuid", [card]);
   assert.equal(row.status, "REJECTED");
   assert.equal(row.decided_by, teammate.id);
