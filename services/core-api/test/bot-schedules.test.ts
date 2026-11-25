@@ -81,6 +81,9 @@ const fake = (world: World) => {
     if (sql.startsWith("UPDATE bot_schedules SET last_job_id")) {Object.assign(byId(params[0]) ?? {}, { last_job_id: params[1], last_error: null });}
     if (sql.startsWith("UPDATE bot_schedules SET last_error")) {Object.assign(byId(params[0]) ?? {}, { last_error: params[1] });}
     if (sql.startsWith("DELETE FROM bot_schedules")) {return byId(params[0]) ? [{}] : [];}
+    if (sql.includes("is_employer") && sql.includes("FROM users WHERE id = $1")) {
+      return [{ id: String(params[0]), display_name: "Ada", locale: "ko", plan: "PRO", created_at: "2026-01-01T00:00:00Z", is_employer: false, provider: "email" }];
+    }
     if (sql.startsWith("SELECT 1 AS busy")) {return world.busy?.has(String(params[1])) ? [{ busy: 1 }] : [];}
     if (sql.startsWith("SELECT id FROM conversations WHERE bot_id")) {return [{ id: CONV }];}
     if (sql.includes("FROM conversations c LEFT JOIN companies")) {return [{ id: CONV, company_id: null, company_plan: null, user_plan: "FREE" }];}

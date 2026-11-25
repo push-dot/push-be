@@ -1,6 +1,7 @@
 import { boundTransaction, lockOwner } from "../billing/credits.ts";
 import { one, query } from "../db.ts";
 import type { Row, Transaction } from "../db.ts";
+import { userForActAs } from "../internal-auth.ts";
 import { HttpError, asBool, data, fieldError, noContent, requireUuid } from "../http.ts";
 import type { JsonObject } from "../json.ts";
 import { ts } from "../page.ts";
@@ -164,7 +165,7 @@ const runOne = async (ctx: Ctx, row: Row): Promise<string | null> => {
   if (!claimed) {return null;}
   const owner: Ctx = {
     ...ctx,
-    user: { ...ctx.user, id: String(row.user_id), plan: String(row.plan ?? "FREE") },
+    user: await userForActAs(ctx.deps.query, { userId: String(row.user_id), companyId: null }),
     request: new Request(ctx.request.url, { method: "POST", headers: { "idempotency-key": `schedule:${row.id}:${ts(row.next_run_at)}` } }),
   };
   await requireAgentConsent(owner);
