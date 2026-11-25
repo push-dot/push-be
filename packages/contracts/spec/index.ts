@@ -9,6 +9,7 @@ import { routes as socialRoutes, schemas as socialSchemas } from "./social.ts";
 import { routes as botsRoutes, schemas as botsSchemas } from "./bots.ts";
 import { routes as botApprovalsRoutes, schemas as botApprovalsSchemas } from "./bot-approvals.ts";
 import { routes as botChatRoutes, schemas as botChatSchemas } from "./bot-chat.ts";
+import { routes as botSchedulesRoutes, schemas as botSchedulesSchemas } from "./bot-schedules.ts";
 import { routes as botTranscriptRoutes, schemas as botTranscriptSchemas } from "./bot-transcript.ts";
 import { routes as materialsRoutes, schemas as materialsSchemas } from "./materials.ts";
 import { routes as memoriesRoutes, schemas as memoriesSchemas } from "./memories.ts";
@@ -18,6 +19,7 @@ const areas = [
   { routes: botsRoutes, schemas: botsSchemas },
   { routes: botApprovalsRoutes, schemas: botApprovalsSchemas },
   { routes: botChatRoutes, schemas: botChatSchemas },
+  { routes: botSchedulesRoutes, schemas: botSchedulesSchemas },
   { routes: botTranscriptRoutes, schemas: botTranscriptSchemas },
   { routes: careerRoutes, schemas: careerSchemas },
   { routes: conversationsRoutes, schemas: conversationsSchemas },

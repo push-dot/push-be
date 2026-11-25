@@ -35,6 +35,7 @@ import { dispatchProfiles } from "./routes/profiles.ts";
 import { dispatchSearch } from "./routes/search.ts";
 import { dispatchBotApprovals } from "./routes/bot-approvals.ts";
 import { dispatchBotChat } from "./routes/bot-chat.ts";
+import { dispatchBotSchedules, runBotSchedules } from "./routes/bot-schedules.ts";
 import { dispatchBots } from "./routes/bots.ts";
 import { dispatchMaterials } from "./routes/materials.ts";
 import type { CoreEnv, Ctx, Deps, UserRow } from "./types.ts";
@@ -110,6 +111,9 @@ async function route(request: Request, env: CoreEnv, deps: Deps): Promise<Respon
     }
     if (request.method === "POST" && path === "/api/v1/internal/billing/toss-renew") {
       return await runTossRenewals(base(request, env, deps, rid, url, now, anonymous()));
+    }
+    if (request.method === "POST" && path === "/api/v1/internal/bots/schedules/run") {
+      return await runBotSchedules(base(request, env, deps, rid, url, now, anonymous()));
     }
     const acted = await actAs(request, env, deps.query);
     if (acted) {
@@ -248,6 +252,8 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (botApprovals) {return botApprovals;}
   const botChat = await dispatchBotChat(ctx, path);
   if (botChat) {return botChat;}
+  const botSchedules = await dispatchBotSchedules(ctx, path);
+  if (botSchedules) {return botSchedules;}
   const bots = await dispatchBots(ctx, path);
   if (bots) {return bots;}
   const materials = await dispatchMaterials(ctx, path);

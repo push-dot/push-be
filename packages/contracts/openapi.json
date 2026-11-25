@@ -2114,6 +2114,86 @@
         ],
         "type": "object"
       },
+      "BotSchedule": {
+        "properties": {
+          "botId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "cadence": {
+            "description": "DAILY runs every day, WEEKDAYS Monday to Friday, WEEKLY on weekday only.",
+            "enum": [
+              "DAILY",
+              "WEEKDAYS",
+              "WEEKLY"
+            ],
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "hour": {
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "lastError": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The error code of the last run that could not be sent, such as QUEUE_BUSY, CONSENT_REQUIRED or BOT_BUSY (the bot was running or had an open card). null after a run that was sent."
+          },
+          "lastRunAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nextRunAt": {
+            "description": "The next run. The hourly job sends a due run at about a quarter past its hour.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "weekday": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "botId",
+          "prompt",
+          "cadence",
+          "hour",
+          "weekday",
+          "enabled",
+          "nextRunAt",
+          "lastRunAt",
+          "lastError"
+        ],
+        "type": "object"
+      },
       "BotSearch": {
         "properties": {
           "botTotal": {
@@ -5539,6 +5619,44 @@
         },
         "required": [
           "postingId"
+        ],
+        "type": "object"
+      },
+      "CreateBotScheduleBody": {
+        "additionalProperties": false,
+        "properties": {
+          "cadence": {
+            "description": "DAILY runs every day, WEEKDAYS Monday to Friday, WEEKLY on weekday only.",
+            "enum": [
+              "DAILY",
+              "WEEKDAYS",
+              "WEEKLY"
+            ],
+            "type": "string"
+          },
+          "hour": {
+            "description": "The hour it runs, in Korea time (UTC+9).",
+            "maximum": 23,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "prompt": {
+            "description": "What the bot is asked on each run, as if the user sent it.",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          },
+          "weekday": {
+            "description": "0 Sunday to 6 Saturday, Korea time. Set exactly when cadence is WEEKLY.",
+            "maximum": 6,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "prompt",
+          "cadence",
+          "hour"
         ],
         "type": "object"
       },
@@ -9924,6 +10042,50 @@
         "required": [
           "expectedRevision"
         ],
+        "type": "object"
+      },
+      "UpdateBotScheduleBody": {
+        "additionalProperties": false,
+        "properties": {
+          "cadence": {
+            "description": "DAILY runs every day, WEEKDAYS Monday to Friday, WEEKLY on weekday only.",
+            "enum": [
+              "DAILY",
+              "WEEKDAYS",
+              "WEEKLY"
+            ],
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "hour": {
+            "description": "The hour it runs, in Korea time (UTC+9).",
+            "maximum": 23,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "prompt": {
+            "description": "What the bot is asked on each run, as if the user sent it.",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          },
+          "weekday": {
+            "anyOf": [
+              {
+                "description": "0 Sunday to 6 Saturday, Korea time. Set exactly when cadence is WEEKLY.",
+                "maximum": 6,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
         "type": "object"
       },
       "UpdateUserMemoryBody": {
@@ -14711,6 +14873,210 @@
           }
         },
         "summary": "Mark a bot read",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/bots/{id}/schedules": {
+      "get": {
+        "description": "Oldest first.",
+        "operationId": "getBotsByIdSchedules",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "A bot id, or the literal push for the caller's Push Bot.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/BotSchedule"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "List a bot's schedules",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "core"
+      },
+      "post": {
+        "description": "Each run sends prompt to the bot's thread as the user would, with accessMode ALWAYS_ASK, so every write becomes a card. A run is skipped when the bot is running or has an open card. 400 when weekday is missing for WEEKLY or set for another cadence. 403 CONSENT_REQUIRED without reference-data consent or with allowAiReadMyFiles off. 403 SCHEDULE_LIMIT when the user already has 5 schedules across all bots.",
+        "operationId": "postBotsByIdSchedules",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "A bot id, or the literal push for the caller's Push Bot.",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBotScheduleBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/BotSchedule"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Save a prompt the bot runs on its own",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/bots/{id}/schedules/{scheduleId}": {
+      "delete": {
+        "operationId": "deleteBotsByIdSchedulesByScheduleId",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "A bot id, or the literal push for the caller's Push Bot.",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "scheduleId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Delete a schedule",
+        "tags": [
+          "bots"
+        ],
+        "x-owner": "core"
+      },
+      "patch": {
+        "description": "Omitted keys keep their value. A schedule that leaves WEEKLY drops its weekday. nextRunAt moves when the timing changes or the schedule is enabled again.",
+        "operationId": "patchBotsByIdSchedulesByScheduleId",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "A bot id, or the literal push for the caller's Push Bot.",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "scheduleId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateBotScheduleBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/BotSchedule"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Change or pause a schedule",
         "tags": [
           "bots"
         ],

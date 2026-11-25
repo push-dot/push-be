@@ -39,17 +39,14 @@ export default {
     }
   },
   async scheduled(_event: unknown, env: CoreEnv, ctx: { waitUntil: (promise: Promise<unknown>) => void }): Promise<void> {
-    const request = new Request("https://core.internal/api/v1/internal/notifications/run", {
-      method: "POST",
-      headers: { authorization: `Bearer ${env.INTERNAL_JOB_TOKEN ?? ""}` },
-    });
     const deps = { query: queryOf(env), ...(env.DATABASE_URL ? { transaction: neonTransaction(env.DATABASE_URL) } : undefined) };
-    const renewal = new Request("https://core.internal/api/v1/internal/billing/toss-renew", {
-      method: "POST",
-      headers: { authorization: `Bearer ${env.INTERNAL_JOB_TOKEN ?? ""}` },
-    });
-    ctx.waitUntil(handle(request, env, deps).then(() => undefined, () => undefined));
-    ctx.waitUntil(handle(renewal, env, deps).then(() => undefined, () => undefined));
+    for (const path of ["notifications/run", "billing/toss-renew", "bots/schedules/run"]) {
+      const request = new Request(`https://core.internal/api/v1/internal/${path}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${env.INTERNAL_JOB_TOKEN ?? ""}` },
+      });
+      ctx.waitUntil(handle(request, env, deps).then(() => undefined, () => undefined));
+    }
   },
 };
 
