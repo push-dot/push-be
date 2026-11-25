@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import type { QueryResult } from "../src/db.ts";
 import { handle } from '../src/handler.ts';
+import { watchNotice } from "../src/routes/notification-jobs.ts";
 import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
 import type { Ctx, UserRow } from "../src/types.ts";
@@ -179,6 +180,7 @@ test("the notification job writes one D-3 deadline and one due reminder", async 
     headers: { authorization: "Bearer job-secret" },
   }), env({ INTERNAL_JOB_TOKEN: "job-secret" }), deps(async (sql, params = []) => {
     seen.push({ sql, params });
+    if (sql.includes("FROM bots b")) {return empty;}
     if (sql.includes("FROM bookmarks")) {
       assert.equal(params[0], "2026-10-24");
       return { rows: [{ user_id: OTHER, id: POST, title: "Backend" }], rowCount: 1 };
@@ -296,10 +298,12 @@ test("the notification job claims and filters in two statements, not per row", a
     return empty;
   }));
   assert.equal(res.status, 200);
-  assert.deepEqual((await readJson<{ data: unknown }>(res)).data, { deadlines: 5, reminders: 0 });
+  assert.deepEqual((await readJson<{ data: unknown }>(res)).data, { deadlines: 5, reminders: 0, watched: 0 });
   const picks = seen.filter((call) => call.sql.includes("notification_dedupes"));
-  assert.equal(picks.length, 2);
-  assert.ok(picks.every((call) => call.sql.includes("COALESCE(s.notify_deadline, true)")));
+  assert.equal(picks.length, 3);
+  const [watch, ...deadlines] = [...picks].sort((a) => (a.sql.includes("FROM bots") ? -1 : 1));
+  assert.ok(deadlines.every((call) => call.sql.includes("COALESCE(s.notify_deadline, true)")));
+  assert.ok(watch.sql.includes("COALESCE(s.notify_ai_done, true)"));
   assert.equal(seen.some((call) => call.sql.startsWith("SELECT notify_deadline")), false);
 });
 
@@ -325,4 +329,34 @@ test("push skips users in the deletion grace period", async () => {
   await deliverPush(ctx, USER, "t", "b", {});
   assert.match(seen[0], /JOIN users u ON u\.id = d\.user_id WHERE d\.user_id = \$1 AND u\.deletion_requested_at IS NULL/);
   assert.equal(sent.length, 0);
+});
+
+test("a company bot pushes once when its posting closes or its company opens a new posting", async () => {
+  resetLimits();
+  const pushed: Array<string> = [];
+  const watched = [
+    { user_id: OTHER, display_name: "모아페이", id: "p-closed", title: "백엔드 개발자", change: "closed" },
+    { user_id: OTHER, display_name: "모아페이", id: "p-new", title: "데이터 엔지니어", change: "new" },
+  ];
+  const res = await handle(new Request("https://core.example/api/v1/internal/notifications/run", {
+    method: "POST",
+    headers: { authorization: "Bearer job-secret" },
+  }), env({ INTERNAL_JOB_TOKEN: "job-secret" }), deps(async (sql, params = []) => {
+    if (sql.includes("FROM bots b JOIN job_postings")) {
+      assert.match(sql, /NOT b\.notifications_muted/);
+      assert.match(sql, /ON CONFLICT \(dedupe_key\) DO NOTHING/);
+      return { rows: watched, rowCount: 2 };
+    }
+    if (sql.startsWith("INSERT INTO notifications ")) {pushed.push(JSON.stringify(params));}
+    return empty;
+  }));
+  assert.equal(res.status, 200);
+  assert.deepEqual((await readJson<{ data: unknown }>(res)).data, { deadlines: 0, reminders: 0, watched: 2 });
+  assert.equal(pushed.length, 2);
+  const [closed, opened] = pushed;
+  assert.ok(closed?.includes("공고가 마감됐어요") && closed.includes("p-closed"));
+  assert.ok(opened?.includes("새 공고가 올라왔어요") && opened.includes("p-new"));
+  const [closedRow, newRow] = watched;
+  assert.equal(closedRow && watchNotice(closedRow).pushBody, "백엔드 개발자 공고가 마감됐어요");
+  assert.equal(newRow && watchNotice(newRow).pushBody, "모아페이에 새 공고가 올라왔어요: 데이터 엔지니어");
 });

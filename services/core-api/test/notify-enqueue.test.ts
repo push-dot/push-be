@@ -34,7 +34,7 @@ const recording = (seen: Array<Call>, rows: (sql: string, params: Array<unknown>
     if (sql.includes("FROM conversations")) {
       return { rows: [{ bot_id: null, notifications_muted: null, display_name: null, last_message_preview: null, unread: null, allowed: true }], rowCount: 1 };
     }
-    if (sql.includes("INSERT INTO notification_dedupes") && !sql.includes("FROM bookmarks") && !sql.includes("FROM calendar_events")) {
+    if (sql.includes("INSERT INTO notification_dedupes") && !sql.includes("FROM bookmarks") && !sql.includes("FROM calendar_events") && !sql.includes("FROM bots b")) {
       return { rows: [{ dedupe_key: String(params[0]) }], rowCount: 1 };
     }
     if (sql.includes("user_settings") && !sql.includes("notification_dedupes")) {return { rows: [{ enabled: true }], rowCount: 1 };}
@@ -89,6 +89,7 @@ test("the hourly cron only creates deadline notify jobs", async () => {
   const seen: Array<Call> = [];
   const res = await handle(internal("/api/v1/internal/notifications/run"), env({ DISPATCH_ORIGIN: "" }), {
     query: recording(seen, (sql, params) => {
+      if (sql.includes("FROM bots b")) {return [];}
       if (sql.includes("FROM bookmarks")) {return [{ user_id: USER, id: POSTING, title: "Backend" }];}
       if (sql.includes("FROM calendar_events")) {return [];}
       if (sql.includes("notification_dedupes")) {return [{ dedupe_key: String(params[0]) }];}
@@ -97,7 +98,7 @@ test("the hourly cron only creates deadline notify jobs", async () => {
     now: () => NOW,
   });
   assert.equal(res.status, 200);
-  assert.deepEqual(member(await readJson(res), "data"), { deadlines: 1, reminders: 0 });
+  assert.deepEqual(member(await readJson(res), "data"), { deadlines: 1, reminders: 0, watched: 0 });
   const jobs = seen.filter((call) => call.sql.includes("INSERT INTO ai_jobs"));
   assert.equal(jobs.length, 1);
   assert.equal(JSON.parse(String(jobs[0].params[7])).kind, "DEADLINE");

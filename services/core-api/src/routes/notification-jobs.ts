@@ -1,4 +1,5 @@
 import { one, query } from "../db.ts";
+import type { Row } from "../db.ts";
 import { HttpError, asBool, data, fieldError, requireUuid, sha256Hex } from "../http.ts";
 import { sendNotification } from "../push/notify.ts";
 import type { Notice } from "../push/notify.ts";
@@ -79,6 +80,41 @@ const DUE_REMINDERS = claimed(`SELECT e.user_id, e.id, e.title, 'remind:' || e.i
     FROM calendar_events e LEFT JOIN user_settings s ON s.user_id = e.user_id
     WHERE e.remind_at IS NOT NULL AND e.remind_at <= $1::timestamptz AND e.remind_at > $3::timestamptz AND COALESCE(s.notify_deadline, true)`);
 
+// A company bot watches its posting and its company: a close after the bot was made, and a new open posting
+// of the same company. The dedupe key makes each change one push, so no snapshot of the postings is kept.
+const DUE_WATCH = `WITH due AS (
+    SELECT b.user_id, b.display_name, p.id, p.title, 'closed' AS change, 'watch:closed:' || b.id || ':' || p.id AS dedupe_key
+    FROM bots b JOIN job_postings p ON p.id = b.posting_id
+    WHERE b.kind = 'company' AND b.deleted_at IS NULL AND NOT b.notifications_muted
+      AND p.closed_at > GREATEST(b.created_at, $2::timestamptz)
+    UNION ALL
+    SELECT b.user_id, b.display_name, p.id, p.title, 'new', 'watch:new:' || b.id || ':' || p.id
+    FROM bots b JOIN job_postings src ON src.id = b.posting_id
+    JOIN job_postings p ON p.company_id = COALESCE(b.company_id, src.company_id) AND p.id <> src.id
+    WHERE b.kind = 'company' AND b.deleted_at IS NULL AND NOT b.notifications_muted
+      AND COALESCE(p.status, 'OPEN') = 'OPEN' AND p.closed_at IS NULL AND p.created_at > GREATEST(b.created_at, $2::timestamptz)
+    LIMIT 500
+  ), allowed AS (
+    SELECT due.* FROM due JOIN users u ON u.id = due.user_id AND u.deletion_requested_at IS NULL
+    LEFT JOIN user_settings s ON s.user_id = due.user_id WHERE COALESCE(s.notify_ai_done, true)
+  ), claimed AS (
+    INSERT INTO notification_dedupes (dedupe_key, created_at) SELECT dedupe_key, $1::timestamptz FROM allowed ON CONFLICT (dedupe_key) DO NOTHING RETURNING dedupe_key
+  ) SELECT allowed.user_id, allowed.display_name, allowed.id, allowed.title, allowed.change FROM allowed JOIN claimed USING (dedupe_key)`;
+
+export const watchNotice = (row: Row): Notice => {
+  const title = String(row.title ?? "");
+  const name = String(row.display_name ?? "").trim();
+  const closed = row.change === "closed";
+  return {
+    userId: String(row.user_id),
+    type: "AI_DONE",
+    title: closed ? "공고가 마감됐어요" : "새 공고가 올라왔어요",
+    body: title,
+    pushBody: closed ? `${title} 공고가 마감됐어요` : `${name}에 새 공고가 올라왔어요: ${title}`,
+    target: { kind: "posting", id: String(row.id) },
+  };
+};
+
 const utcDay = (moment: Date, shiftDays: number): string => {
   const day = new Date(Date.UTC(moment.getUTCFullYear(), moment.getUTCMonth(), moment.getUTCDate() + shiftDays));
   return day.toISOString().slice(0, 10);
@@ -125,9 +161,10 @@ export const runNotificationJobs = async (ctx: Ctx): Promise<Response> => {
   const nowIso = ctx.now.toISOString();
   const deadlineDay = utcDay(ctx.now, 3);
   const lookback = new Date(ctx.now.getTime() - 2 * DAY_MS).toISOString();
-  const [due, reminders] = await Promise.all([
+  const [due, reminders, watched] = await Promise.all([
     query(ctx.deps.query, DUE_DEADLINES, [deadlineDay, nowIso]),
     query(ctx.deps.query, DUE_REMINDERS, [nowIso, nowIso, lookback]),
+    query(ctx.deps.query, DUE_WATCH, [nowIso, lookback]),
   ]);
   for (const row of due.rows) {
     const title = String(row.title ?? "");
@@ -136,7 +173,10 @@ export const runNotificationJobs = async (ctx: Ctx): Promise<Response> => {
   for (const row of reminders.rows) {
     await sendNotification(ctx, { userId: String(row.user_id), type: "DEADLINE", title: String(row.title ?? ""), body: "", target: { kind: "calendar", id: String(row.id) } });
   }
-  return data(200, { deadlines: due.rows.length, reminders: reminders.rows.length }, ctx.rid);
+  for (const row of watched.rows) {
+    await sendNotification(ctx, watchNotice(row));
+  }
+  return data(200, { deadlines: due.rows.length, reminders: reminders.rows.length, watched: watched.rows.length }, ctx.rid);
 };
 
 export const dispatchNotificationJobs = async (ctx: Ctx, path: string): Promise<Response | null> => {
