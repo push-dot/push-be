@@ -23,6 +23,7 @@ type Thread = {
   notifications_muted: boolean | null;
   display_name: string | null;
   last_message_preview: string | null;
+  card_title?: string | null;
   unread: boolean | null;
   allowed: boolean;
 };
@@ -244,4 +245,40 @@ test("resume enqueue reads the last chat job, not a newer notify job", async () 
   const payload = payloadOf(seen);
   assert.equal(payload.ai, "kept");
   assert.equal(JSON.stringify(payload).includes(PREVIEW), false);
+});
+
+test("waiting pushes the card title once per job, apart from the done push", async () => {
+  resetLimits();
+  const rec = recording(bot({ card_title: "지원서를 보낼까요?" }));
+  const waiting = await handle(done({ outcome: "waiting" }), env(), { query: rec.query, now: () => NOW, fetch: rec.fetchImpl });
+  const again = await handle(done({ outcome: "waiting" }), env(), { query: rec.query, now: () => NOW, fetch: rec.fetchImpl });
+  const finished = await handle(done({}), env(), { query: rec.query, now: () => NOW, fetch: rec.fetchImpl });
+  assert.equal(typeof await idOf(waiting), "string");
+  assert.equal(await idOf(again), null);
+  assert.equal(typeof await idOf(finished), "string");
+  const payload = payloadOf(rec.seen);
+  assert.equal(payload.title, "확인이 필요해요");
+  assert.equal(payload.body, "지원서를 보낼까요?");
+  assert.equal(payload.pushBody, "Push Bot이 확인을 기다려요");
+});
+
+test("failed pushes even when the thread reads as seen, and never for a web conversation", async () => {
+  resetLimits();
+  const rec = recording(bot({ unread: false }));
+  const res = await handle(done({ outcome: "failed" }), env(), { query: rec.query, now: () => NOW, fetch: rec.fetchImpl });
+  assert.equal(typeof await idOf(res), "string");
+  const payload = payloadOf(rec.seen);
+  assert.equal(payload.title, "작업을 마치지 못했어요");
+  assert.equal(payload.body, "");
+  assert.equal(payload.pushBody, "Push Bot이 작업을 마치지 못했어요");
+  const webRec = recording(web);
+  const webRes = await handle(done({ outcome: "failed" }), env(), { query: webRec.query, now: () => NOW, fetch: webRec.fetchImpl });
+  assert.equal(await idOf(webRes), null);
+});
+
+test("an unknown outcome is a field error", async () => {
+  resetLimits();
+  const rec = recording(bot());
+  const res = await handle(done({ outcome: "maybe" }), env(), { query: rec.query, now: () => NOW, fetch: rec.fetchImpl });
+  assert.equal(res.status, 400);
 });
