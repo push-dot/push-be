@@ -1,6 +1,7 @@
 import type { QueryResult } from "../db.ts";
 import { one, query } from "../db.ts";
 import { HttpError, data, fieldError, requireUuid, uuid5Url } from "../http.ts";
+import type { JsonObject } from "../json.ts";
 import { ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 import { resolveBot } from "./bots.ts";
@@ -104,6 +105,25 @@ const accessModeOf = async (ctx: Ctx, raw: unknown): Promise<string> => {
   return CANONICAL_ACCESS[String(saved?.ai_access_mode ?? "")] ?? "AUTO";
 };
 
+type BotSend = { text: string; materials: Array<Material>; intent: string | null; ai: JsonObject | null; accessMode: string };
+
+/** One message into the bot's thread, as the app sends it or as a schedule runs it (bot-schedules.ts). The caller checked consent. */
+export const sendToBot = async (ctx: Ctx, botId: string, { text, materials, intent, ai, accessMode }: BotSend): Promise<Response> => {
+  await allowChat(ctx, ai);
+  if (ai) {ai.effort = effortFor("PERSONAL", ctx.user.plan);}
+  const payload = {
+    text, context: contextOf(materials), ai, accessMode, access_mode: accessMode, intent, applicationId: null,
+  };
+  try {
+    const thread = await ensureThread(ctx, botId);
+    return await enqueueChatMessage(ctx, thread, payload, text, materials.map(({ kind, id, title }) => ({ kind, id, title })));
+  } catch (error) {
+    // The bot was deleted while this send was under way. Its thread took every row of the send with it.
+    if (typeof error === "object" && error !== null && "code" in error && error.code === FOREIGN_KEY_VIOLATION) {throw notFound();}
+    throw error;
+  }
+};
+
 const postBotMessage = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const bot = await resolveBot(ctx, idRaw);
   await requireAgentConsent(ctx);
@@ -117,22 +137,10 @@ const postBotMessage = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const ai = aiDto(body.ai);
   const accessMode = await accessModeOf(ctx, body.accessMode);
   const materials = await resolveAttachments(ctx, refs);
-  await allowChat(ctx, ai);
-  if (ai) {ai.effort = effortFor("PERSONAL", ctx.user.plan);}
-  const payload = {
-    text, context: contextOf(materials), ai, accessMode, access_mode: accessMode, intent: body.intent ?? null, applicationId: null,
-  };
-  try {
-    const thread = await ensureThread(ctx, String(bot.id));
-    return await enqueueChatMessage(ctx, thread, payload, text, materials.map(({ kind, id, title }) => ({ kind, id, title })));
-  } catch (error) {
-    // The bot was deleted while this send was under way. Its thread took every row of the send with it.
-    if (typeof error === "object" && error !== null && "code" in error && error.code === FOREIGN_KEY_VIOLATION) {throw notFound();}
-    throw error;
-  }
+  return sendToBot(ctx, String(bot.id), { text, materials, intent: typeof body.intent === "string" ? body.intent : null, ai, accessMode });
 };
 
-const hasDataRow = (value: unknown): value is { data: Row } =>
+export const hasDataRow = (value: unknown): value is { data: Row } =>
   typeof value === "object" && value !== null && "data" in value && typeof value.data === "object" && value.data !== null;
 
 const answerBotCard = async (ctx: Ctx, idRaw: string, approvalRaw: string): Promise<Response> => {

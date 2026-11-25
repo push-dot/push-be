@@ -1019,6 +1019,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/bots/{id}/schedules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List a bot's schedules
+         * @description Oldest first.
+         */
+        get: operations["getBotsByIdSchedules"];
+        put?: never;
+        /**
+         * Save a prompt the bot runs on its own
+         * @description Each run sends prompt to the bot's thread as the user would, with accessMode ALWAYS_ASK, so every write becomes a card. A run is skipped when the bot is running or has an open card. 400 when weekday is missing for WEEKLY or set for another cadence. 403 CONSENT_REQUIRED without reference-data consent or with allowAiReadMyFiles off. 403 SCHEDULE_LIMIT when the user already has 5 schedules across all bots.
+         */
+        post: operations["postBotsByIdSchedules"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/{id}/schedules/{scheduleId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete a schedule */
+        delete: operations["deleteBotsByIdSchedulesByScheduleId"];
+        options?: never;
+        head?: never;
+        /**
+         * Change or pause a schedule
+         * @description Omitted keys keep their value. A schedule that leaves WEEKLY drops its weekday. nextRunAt moves when the timing changes or the schedule is enabled again.
+         */
+        patch: operations["patchBotsByIdSchedulesByScheduleId"];
+        trace?: never;
+    };
     "/api/v1/bots/{id}/site-grants": {
         parameters: {
             query?: never;
@@ -4839,6 +4884,29 @@ export interface components {
             /** @enum {string} */
             kind: "push" | "company";
         };
+        BotSchedule: {
+            /** Format: uuid */
+            botId: string;
+            /**
+             * @description DAILY runs every day, WEEKDAYS Monday to Friday, WEEKLY on weekday only.
+             * @enum {string}
+             */
+            cadence: "DAILY" | "WEEKDAYS" | "WEEKLY";
+            enabled: boolean;
+            hour: number;
+            /** Format: uuid */
+            id: string;
+            /** @description The error code of the last run that could not be sent, such as QUEUE_BUSY, CONSENT_REQUIRED or BOT_BUSY (the bot was running or had an open card). null after a run that was sent. */
+            lastError: string | null;
+            lastRunAt: string | null;
+            /**
+             * Format: date-time
+             * @description The next run. The hourly job sends a due run at about a quarter past its hour.
+             */
+            nextRunAt: string;
+            prompt: string;
+            weekday: number | null;
+        };
         BotSearch: {
             botTotal: number;
             bots: (components["schemas"]["Bot"] & {
@@ -5755,6 +5823,19 @@ export interface components {
             displayName?: string;
             /** Format: uuid */
             postingId: string;
+        };
+        CreateBotScheduleBody: {
+            /**
+             * @description DAILY runs every day, WEEKDAYS Monday to Friday, WEEKLY on weekday only.
+             * @enum {string}
+             */
+            cadence: "DAILY" | "WEEKDAYS" | "WEEKLY";
+            /** @description The hour it runs, in Korea time (UTC+9). */
+            hour: number;
+            /** @description What the bot is asked on each run, as if the user sent it. */
+            prompt: string;
+            /** @description 0 Sunday to 6 Saturday, Korea time. Set exactly when cadence is WEEKLY. */
+            weekday?: number;
         };
         Device: {
             /** @enum {string} */
@@ -6828,6 +6909,19 @@ export interface components {
             displayName?: string;
             expectedRevision: number;
             notificationsMuted?: boolean;
+        };
+        UpdateBotScheduleBody: {
+            /**
+             * @description DAILY runs every day, WEEKDAYS Monday to Friday, WEEKLY on weekday only.
+             * @enum {string}
+             */
+            cadence?: "DAILY" | "WEEKDAYS" | "WEEKLY";
+            enabled?: boolean;
+            /** @description The hour it runs, in Korea time (UTC+9). */
+            hour?: number;
+            /** @description What the bot is asked on each run, as if the user sent it. */
+            prompt?: string;
+            weekday?: number | null;
         };
         UpdateUserMemoryBody: {
             /** @description One fact the bots keep about the user, in Korean. Outer spaces are dropped. */
@@ -8769,6 +8863,115 @@ export interface operations {
                             /** Format: date-time */
                             readAt: string;
                         };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getBotsByIdSchedules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BotSchedule"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postBotsByIdSchedules: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateBotScheduleBody"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BotSchedule"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteBotsByIdSchedulesByScheduleId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                scheduleId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    patchBotsByIdSchedulesByScheduleId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                scheduleId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateBotScheduleBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BotSchedule"];
                     };
                 };
             };
