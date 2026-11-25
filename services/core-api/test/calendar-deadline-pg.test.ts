@@ -129,3 +129,15 @@ test("deleting a bookmark from the materials bin removes its event, and restorin
   assert.equal((await db.call(user, "POST", `/materials/posting/${id}/restore`)).status, 200);
   assert.equal((await eventsOf(user)).length, 1);
 });
+
+test("a posting deadline reads back as YYYY-MM-DD", async (t) => {
+  if (!db) {return t.skip(SKIP);}
+  const user = await db.person("PRO");
+  const id = await posting("날짜클라우드", 5);
+  const res = await db.call(user, "GET", `/postings/${id}`);
+  assert.equal(res.status, 200);
+  const [row] = await sql("SELECT deadline::text AS day FROM job_postings WHERE id = $1", [id]);
+  const { data } = res.body;
+  if (typeof data !== "object" || data === null || Array.isArray(data) || data instanceof Date || data instanceof Uint8Array) {throw new TypeError("posting is not an object");}
+  assert.equal(data.deadline, row.day);
+});
