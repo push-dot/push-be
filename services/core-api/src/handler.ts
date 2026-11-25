@@ -26,6 +26,7 @@ import { dispatchCompanies } from "./routes/companies.ts";
 import { dispatchConsents } from "./routes/consents.ts";
 import { dispatchNotificationJobs } from "./routes/notification-jobs.ts";
 import { dispatchMe } from "./routes/me.ts";
+import { dispatchMemories } from "./routes/memories.ts";
 import { dispatchBlocks } from "./routes/blocks.ts";
 import { dispatchOffers } from "./routes/offers.ts";
 import { dispatchPostings } from "./routes/postings.ts";
@@ -259,6 +260,8 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (blocks) {return blocks;}
   const posts = await dispatchPosts(ctx, path);
   if (posts) {return posts;}
+  const memories = await dispatchMemories(ctx, path);
+  if (memories) {return memories;}
   const mine = await dispatchMe(ctx, path);
   if (mine) {return mine;}
   const companies = await dispatchCompanies(ctx, path);
