@@ -1,6 +1,8 @@
 // Isolate-local cache of access token hash -> user, mirroring the gateway's AUTH_CACHE_TTL (5 s).
-// Only GET requests read it. Any other request resolves fresh and drops the caller's entries, so logout, refresh,
-// account deletion and profile or company changes take effect at once on this isolate and within the TTL on others.
+// Only GET requests read it. Any other authenticated request resolves fresh and drops the caller's entries, so account
+// deletion and profile or company changes take effect at once on this isolate and within the TTL on others.
+// Logout and refresh are public routes that never reach resolveUser, so a revoked token can still answer GETs for up to
+// the TTL, the same window the gateway's cache already allows.
 
 import type { UserRow } from "./types.ts";
 
