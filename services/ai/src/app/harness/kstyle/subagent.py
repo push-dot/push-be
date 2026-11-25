@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -18,7 +19,7 @@ from app.harness.policy import Tier
 from app.harness.tools import ToolSpec, to_structured_tool
 
 # The light tier the codebase already runs (plan_levers' FREE default): reading and extraction, not judgement.
-LIGHT_MODEL = "deepseek/deepseek-v4.1-flash"
+LIGHT_MODEL = os.environ.get("LIGHT_MODEL", "").strip() or "deepseek/deepseek-v4.1-flash"
 SUB_SECONDS = 120
 _KEEP = 2
 _FINAL = "도구 없이 지금까지 찾은 것으로 결과 JSON 하나만 써요."
@@ -100,14 +101,14 @@ def _derived(chat, tier: str, update: dict):
     return derived
 
 
-def light_model(chat):
+def light_model(chat, model: str = ""):
     """The turn's model moved to the light tier, for reading and extraction. Without the managed gate there
-    is no light tier: None, and the caller skips the subagent."""
+    is no light tier: None, and the caller skips the subagent. model overrides LIGHT_MODEL."""
     from app.harness.model import GateModel
 
     if not isinstance(chat, GateModel):
         return None
-    return _derived(chat, "light", {"model": LIGHT_MODEL, "effort": "LOW", "web_search": False})
+    return _derived(chat, "light", {"model": model or LIGHT_MODEL, "effort": "LOW", "web_search": False})
 
 
 def mid_model(chat):

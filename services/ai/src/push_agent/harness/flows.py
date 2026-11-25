@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from functools import partial
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -166,6 +167,11 @@ def _title_key(title: str | None) -> str:
     return squash(title or "").strip("'\"「」 ")
 
 
+def agent_light_model() -> str:
+    """The light model that reads applicant documents (claims, fact checks). Empty: LIGHT_MODEL."""
+    return os.environ.get("AGENT_LIGHT_MODEL", "").strip()
+
+
 def _cut_note(documents: str) -> list[str]:
     if len(documents) <= DOC_LIMIT:
         return []
@@ -285,7 +291,7 @@ def build_flows(
         chat = _chat(state)
         # shortcut: without the managed gate there is no light tier, so the turn model reads; fine for
         # BYO keys and tests, revisit if a non-gate model ever runs in production.
-        return None if chat is None else (light_model(chat) or chat)
+        return None if chat is None else (light_model(chat, agent_light_model()) or chat)
 
     class EmployerState(HarnessState, ThreadMemory, total=False):
         flow: dict | None
