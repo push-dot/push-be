@@ -323,8 +323,120 @@
         ],
         "type": "object"
       },
+      "ApplicantAiReview": {
+        "properties": {
+          "conversationId": {
+            "description": "The agent conversation that made it",
+            "format": "uuid",
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "flags": {
+            "items": {
+              "properties": {
+                "level": {
+                  "enum": [
+                    "CHECK",
+                    "SUPPORTED",
+                    "UNKNOWN"
+                  ],
+                  "type": "string"
+                },
+                "quote": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title",
+                "level",
+                "reason",
+                "quote"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "matches": {
+            "items": {
+              "properties": {
+                "evidence": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "requirement": {
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "MET",
+                    "PARTIAL",
+                    "MISSING"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "requirement",
+                "status",
+                "evidence"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "conversationId",
+          "createdAt",
+          "summary",
+          "matches",
+          "flags"
+        ],
+        "type": "object"
+      },
       "ApplicantDetail": {
         "properties": {
+          "aiReview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApplicantAiReview"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The latest AI document review of this application by the company's agent, or null. It marks what to check in an interview; it never decides."
+          },
           "applicant": {
             "properties": {
               "capturedAt": {
@@ -477,13 +589,92 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "interviewKit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApplicantInterviewKit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The latest AI interview kit for this application, or null."
           }
         },
         "required": [
           "application",
           "documents",
           "files",
-          "applicant"
+          "applicant",
+          "aiReview",
+          "interviewKit"
+        ],
+        "type": "object"
+      },
+      "ApplicantInterviewKit": {
+        "properties": {
+          "conversationId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "questions": {
+            "items": {
+              "properties": {
+                "cautionSignals": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "fromFlag": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "goodSignals": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "verify": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text",
+                "verify",
+                "goodSignals",
+                "cautionSignals",
+                "fromFlag"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "conversationId",
+          "createdAt",
+          "questions"
         ],
         "type": "object"
       },

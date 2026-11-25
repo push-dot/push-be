@@ -4361,7 +4361,34 @@ export interface components {
             /** @enum {string} */
             stage: "DISCOVERED" | "PREPARING" | "READY" | "APPLIED" | "SCREENING" | "INTERVIEW" | "OFFER" | "ACCEPTED" | "REJECTED" | "WITHDRAWN";
         };
+        ApplicantAiReview: {
+            /**
+             * Format: uuid
+             * @description The agent conversation that made it
+             */
+            conversationId: string;
+            /** Format: date-time */
+            createdAt: string;
+            flags: {
+                /** @enum {string} */
+                level: "CHECK" | "SUPPORTED" | "UNKNOWN";
+                quote: string | null;
+                reason: string;
+                title: string;
+            }[];
+            /** Format: uuid */
+            id: string;
+            matches: {
+                evidence: string | null;
+                requirement: string;
+                /** @enum {string} */
+                status: "MET" | "PARTIAL" | "MISSING";
+            }[];
+            summary: string;
+        };
         ApplicantDetail: {
+            /** @description The latest AI document review of this application by the company's agent, or null. It marks what to check in an interview; it never decides. */
+            aiReview: components["schemas"]["ApplicantAiReview"] | null;
             applicant: {
                 /** @description When the submitted profile was captured. Null when profileSource is CURRENT. */
                 capturedAt: string | null;
@@ -4395,6 +4422,23 @@ export interface components {
                 mimeType: string;
                 pageCount: number | null;
                 size: number;
+            }[];
+            /** @description The latest AI interview kit for this application, or null. */
+            interviewKit: components["schemas"]["ApplicantInterviewKit"] | null;
+        };
+        ApplicantInterviewKit: {
+            /** Format: uuid */
+            conversationId: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            questions: {
+                cautionSignals: string[];
+                fromFlag: string | null;
+                goodSignals: string[];
+                text: string;
+                verify: string;
             }[];
         };
         Application: {

@@ -1606,3 +1606,43 @@ test("a viewer on a free-mail address is still hidden from a candidate who hides
   const shown = await readJson<{ data: Array<{ careerStatus: string | null }> }>(await list({ ...sameCompany, same_company_as_viewer: false }, []));
   assert.equal(shown.data[0].careerStatus, "seeking");
 });
+
+test("applicant detail carries the company's latest AI review and interview kit", async () => {
+  resetLimits();
+  const seen: Array<Call> = [];
+  const review = {
+    id: DOC, conversation_id: POSTING, created_at: "2026-11-26T00:00:00.000Z",
+    report: { summary: "확인할 곳 1곳", matches: [{ requirement: "Java", status: "MET", evidence: "4년" }],
+      flags: [{ title: "Kafka 운영", level: "CHECK", reason: "범위가 모호해요", quote: "운영" }] },
+  };
+  const kit = {
+    id: DOC, conversation_id: POSTING, created_at: "2026-11-26T00:00:00.000Z",
+    kit: { questions: [{ text: "Kafka 장애는?", verify: "본인 운영", good_signals: ["재현"], caution_signals: [], from_flag: "Kafka 운영" }] },
+  };
+  const res = await handle(
+    new Request(`https://core.example/api/v1/postings/${POSTING}/applicants/${APP}`, { headers: { authorization: "Bearer secret-token" } }),
+    env(),
+    deps(authed(seen, true, async (sql) => {
+      if (sql.includes("FROM employer_reviews")) {return { rows: [review], rowCount: 1 };}
+      if (sql.includes("FROM employer_interview_kits")) {return { rows: [kit], rowCount: 1 };}
+      const member = await memberPosting(sql);
+      if (member) {return member;}
+      if (sql.includes("applications")) {return { rows: [applicationRow("OFFER")], rowCount: 1 };}
+      return empty;
+    })),
+  );
+  assert.equal(res.status, 200);
+  const body = await readJson<{ data: { aiReview: unknown; interviewKit: unknown } }>(res);
+  assert.deepEqual(body.data.aiReview, {
+    id: DOC, conversationId: POSTING, createdAt: "2026-11-26T00:00:00Z", summary: "확인할 곳 1곳",
+    matches: [{ requirement: "Java", status: "MET", evidence: "4년" }],
+    flags: [{ title: "Kafka 운영", level: "CHECK", reason: "범위가 모호해요", quote: "운영" }],
+  });
+  assert.deepEqual(body.data.interviewKit, {
+    id: DOC, conversationId: POSTING, createdAt: "2026-11-26T00:00:00Z",
+    questions: [{ text: "Kafka 장애는?", verify: "본인 운영", goodSignals: ["재현"], cautionSignals: [], fromFlag: "Kafka 운영" }],
+  });
+  const scoped = seen.filter((call) => call.sql.includes("FROM employer_"));
+  assert.equal(scoped.length, 2);
+  for (const call of scoped) {assert.match(call.sql, /company_id = \(SELECT company_id FROM job_postings WHERE id = \$2\)/);}
+});

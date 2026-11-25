@@ -993,6 +993,58 @@ const tenureOf = (value: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
+const strings = (value: unknown): Array<string> => (Array.isArray(value) ? value.map(String) : []);
+const textOr = (value: unknown): string | null => (value === null || value === undefined ? null : String(value));
+
+const reviewDto = (row: Row | null) => {
+  if (!row) {return null;}
+  const report = objectOf(row.report) ?? {};
+  return {
+    id: String(row.id),
+    conversationId: String(row.conversation_id),
+    createdAt: ts(row.created_at),
+    summary: String(report.summary ?? ""),
+    matches: jsonList(report.matches).map((raw) => {
+      const m = objectOf(raw) ?? {};
+      return { requirement: String(m.requirement ?? ""), status: String(m.status ?? "MISSING"), evidence: textOr(m.evidence) };
+    }),
+    flags: jsonList(report.flags).map((raw) => {
+      const f = objectOf(raw) ?? {};
+      return { title: String(f.title ?? ""), level: String(f.level ?? "UNKNOWN"), reason: String(f.reason ?? ""), quote: textOr(f.quote) };
+    }),
+  };
+};
+
+const kitDto = (row: Row | null) => {
+  if (!row) {return null;}
+  const kit = objectOf(row.kit) ?? {};
+  return {
+    id: String(row.id),
+    conversationId: String(row.conversation_id),
+    createdAt: ts(row.created_at),
+    questions: jsonList(kit.questions).map((raw) => {
+      const q = objectOf(raw) ?? {};
+      return {
+        text: String(q.text ?? ""), verify: String(q.verify ?? ""),
+        goodSignals: strings(q.good_signals), cautionSignals: strings(q.caution_signals), fromFlag: textOr(q.from_flag),
+      };
+    }),
+  };
+};
+
+const latestOf = async (ctx: Ctx, table: "employer_reviews" | "employer_interview_kits", column: "report" | "kit", postingId: string, applicationId: string): Promise<Row | null> => {
+  try {
+    return await one(ctx.deps.query,
+      `SELECT id, conversation_id, ${column}, created_at FROM ${table}
+       WHERE application_id = $1 AND company_id = (SELECT company_id FROM job_postings WHERE id = $2)
+       ORDER BY created_at DESC LIMIT 1`,
+      [applicationId, postingId]);
+  } catch (error) {
+    if (isMissingRelation(error)) {return null;}
+    throw error;
+  }
+};
+
 const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string): Promise<Response> => {
   const postingId = requireUuid(postingRaw, "id");
   const applicationId = requireUuid(applicationRaw, "applicationId");
@@ -1007,7 +1059,7 @@ const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string
       if (!isUndefinedColumn(error) && !isMissingRelation(error)) {throw error;}
     }
   };
-  const [, documents, files, person] = await Promise.all([
+  const [, documents, files, person, review, kit] = await Promise.all([
     markSeen(),
     snapshotDocuments(ctx, applicationId),
     applicationFiles(ctx, applicationId),
@@ -1016,6 +1068,8 @@ const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string
          (p.user_id IS NOT NULL AND COALESCE(s.profile_public, true) AND ${NOT_DELETING}) AS hub_public
        FROM users u LEFT JOIN profiles p ON p.user_id = u.id LEFT JOIN user_settings s ON s.user_id = u.id WHERE u.id = $1`,
       [String(application.user_id)]),
+    latestOf(ctx, "employer_reviews", "report", postingId, applicationId),
+    latestOf(ctx, "employer_interview_kits", "kit", postingId, applicationId),
   ]);
   const snap = objectOf(application.applicant_snapshot);
   const submitted = snap !== null && snap !== undefined;
@@ -1035,6 +1089,8 @@ const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string
       profileSource: submitted ? "SUBMITTED" : "CURRENT",
       capturedAt: submitted ? ts(snap.capturedAt) : null,
     },
+    aiReview: reviewDto(review),
+    interviewKit: kitDto(kit),
   }, ctx.rid);
 };
 
