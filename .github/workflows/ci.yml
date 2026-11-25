@@ -118,8 +118,8 @@ jobs:
         run: uv sync --locked --no-dev --extra test --python "${{ matrix.python }}"
       - name: Test
         working-directory: services/ai
-        # Coverage is reported, not enforced.
-        run: uv run --no-sync python -m pytest --cov=app --cov-report=term
+        # Coverage is reported, not enforced. app is the shared package; push_bot and push_agent are the two services.
+        run: uv run --no-sync python -m pytest --cov=app --cov=push_bot --cov=push_agent --cov-report=term
 
   # Reports ruff and mypy findings without failing the build (the backlog is not fixed yet).
   lint-ai:
@@ -404,7 +404,7 @@ jobs:
       (needs.bundle-gateway.result == 'success' || needs.bundle-gateway.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # staging overrides DATABASE_URL, the shared secrets, DEV_AUTH_TOKEN, AI_HOST,
+    # staging overrides DATABASE_URL, the shared secrets, DEV_AUTH_TOKEN, AI_HOST, AGENT_HOST,
     # DISPATCH_HOST and CORE_ORIGIN; everything else comes from the repository.
     environment: ${{ needs.changes.outputs.stage }}
     env:
@@ -497,8 +497,11 @@ jobs:
           EXPO_ACCESS_TOKEN: ${{ secrets.EXPO_ACCESS_TOKEN }}
           DEV_AUTH_TOKEN: ${{ secrets.DEV_AUTH_TOKEN }}
           STAGING_AI_HOST: ${{ vars.STAGING_AI_HOST }}
+          STAGING_AGENT_HOST: ${{ vars.STAGING_AGENT_HOST }}
           STAGING_DISPATCH_HOST: ${{ vars.STAGING_DISPATCH_HOST }}
           AI_HOST: ${{ vars.AI_HOST }}
+          # Optional: push-agent's public host. Empty leaves it with no route.
+          AGENT_HOST: ${{ vars.AGENT_HOST }}
           DISPATCH_HOST: ${{ vars.DISPATCH_HOST }}
           CORE_ORIGIN: ${{ vars.CORE_ORIGIN }}
           GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
@@ -514,6 +517,7 @@ jobs:
           ALERT_EMAIL_TO: ${{ vars.ALERT_EMAIL_TO }}
           ALERT_EMAIL_FROM: ${{ vars.ALERT_EMAIL_FROM }}
           AI_WORKER_CONCURRENCY: ${{ vars.AI_WORKER_CONCURRENCY }}
+          AGENT_WORKER_CONCURRENCY: ${{ vars.AGENT_WORKER_CONCURRENCY }}
           INGEST_WORKER_CONCURRENCY: ${{ vars.INGEST_WORKER_CONCURRENCY }}
         run: |
           set -euo pipefail
@@ -543,11 +547,11 @@ jobs:
                STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, GOOGLE_CLIENT_SECRET,
                GITHUB_CLIENT_SECRET: .GH_OAUTH_CLIENT_SECRET, RESEND_API_KEY,
                DISCORD_ALERT_WEBHOOK_URL, EXPO_ACCESS_TOKEN, DEV_AUTH_TOKEN, STAGING_AI_HOST,
-               STAGING_DISPATCH_HOST, AI_HOST, DISPATCH_HOST, CORE_ORIGIN,
+               STAGING_AGENT_HOST, STAGING_DISPATCH_HOST, AI_HOST, AGENT_HOST, DISPATCH_HOST, CORE_ORIGIN,
                GOOGLE_CLIENT_ID, GITHUB_CLIENT_ID: .GH_OAUTH_CLIENT_ID, STRIPE_PRICE_PRO,
                STRIPE_PRICE_ULTRA, QUEUE_BACKEND, EMBEDDING_PROVIDER, EMBEDDING_API_MODEL,
                RERANK_PROVIDER, AI_BASE_URL, NEON_STORAGE_LIMIT_BYTES, ALERT_EMAIL_TO,
-               ALERT_EMAIL_FROM, AI_WORKER_CONCURRENCY, INGEST_WORKER_CONCURRENCY}
+               ALERT_EMAIL_FROM, AI_WORKER_CONCURRENCY, AGENT_WORKER_CONCURRENCY, INGEST_WORKER_CONCURRENCY}
             | to_entries[] | select((.value // "") != "")
             | if (.value | test("[\u0027\n\r]")) then error("\(.key) contains a quote or newline")
               else "\(.key)=\u0027\(.value)\u0027" end
@@ -561,7 +565,10 @@ jobs:
             ssh_vps "${stage_arg[@]}" logs || true
             exit 1
           fi
-          for url in "https://${AI_HOST}/healthz" "https://${DISPATCH_HOST}/healthz"; do
+          # push-bot, the dispatcher, and push-agent when it has a public host.
+          urls=("https://${AI_HOST}/healthz" "https://${DISPATCH_HOST}/healthz")
+          [ -z "${AGENT_HOST:-}" ] || urls+=("https://${AGENT_HOST}/healthz")
+          for url in "${urls[@]}"; do
             ok=0
             for _ in $(seq 1 36); do
               code="$(curl -sS -o /tmp/healthz -w "%{http_code}" --max-time 15 "$url" || true)"
@@ -587,7 +594,8 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy $WRANGLER_ENV --var AI_ORIGIN:https://${{ vars.AI_HOST }}
+        # AGENT_ORIGIN only when push-agent has a public host; without it a company conversation's AI routes go to AI_ORIGIN.
+        run: npx wrangler deploy $WRANGLER_ENV --var AI_ORIGIN:https://${{ vars.AI_HOST }} ${{ vars.AGENT_HOST != '' && format('--var AGENT_ORIGIN:https://{0}', vars.AGENT_HOST) || '' }}
       # OAuth client IDs and Stripe price IDs are not secret, but they are
       # stored as Worker secrets so `wrangler deploy` (which replaces plain
       # vars with wrangler.jsonc) never drops them.
@@ -638,7 +646,8 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy $WRANGLER_ENV --var AI_ORIGIN:https://${{ vars.AI_HOST }}
+        # AGENT_ORIGIN only when push-agent has a public host; without it a company conversation's AI routes go to AI_ORIGIN.
+        run: npx wrangler deploy $WRANGLER_ENV --var AI_ORIGIN:https://${{ vars.AI_HOST }} ${{ vars.AGENT_HOST != '' && format('--var AGENT_ORIGIN:https://{0}', vars.AGENT_HOST) || '' }}
       - name: Set gateway secrets
         working-directory: services/gateway
         env:

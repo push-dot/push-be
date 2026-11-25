@@ -1,13 +1,18 @@
 # Hostinger KVM 2 (2 vCPU / 8 GB), bootstrapped by harden.sh. No panel, no docker.sock.
-# Traefik in this file terminates TLS for ${AI_HOST} and ${DISPATCH_HOST}; it is the
+# The AI side is two services built from services/ai/Dockerfile: push-bot (the consumer Bot,
+# ${AI_HOST}) and push-agent (the enterprise agent, ${AGENT_HOST}). They share Redis, the
+# dispatcher and the database, and read different streams: push-bot q:chat*, q:document;
+# push-agent q:agent*.
+# Traefik in this file terminates TLS for ${AI_HOST}, ${AGENT_HOST} and ${DISPATCH_HOST}; it is the
 # only service with published ports (80, 443). Everything else stays on internal networks.
 # This file does not run Postgres: DATABASE_URL points at Neon (pooled -pooler host
 # recommended—several services below each run an asyncpg pool). Migrations stay manual
 # (RUN_MIGRATIONS=0).
-# QUEUE_BACKEND=redis runs AI jobs in ai-worker from Redis Streams.
-# QUEUE_BACKEND=postgres rolls back to the in-process FOR UPDATE SKIP LOCKED poller (also in ai-worker).
+# QUEUE_BACKEND=redis runs AI jobs in push-bot and push-agent from Redis Streams.
+# QUEUE_BACKEND=postgres rolls back to the in-process FOR UPDATE SKIP LOCKED poller in both: push-bot
+# claims the personal conversations' chat_jobs, push-agent a company's.
 # Do not set CF_WORKER or CHAT_EXECUTOR=workflow on this host.
-# Memory: limits sum to 5,184 MB (tmpfs counts against each limit). The table is in README.md.
+# Memory: limits sum to 5,568 MB (tmpfs counts against each limit). The table is in README.md.
 # bin/check-compose rejects docker.sock, privileged, host namespaces and Dokploy in the
 # rendered config; CI and the VPS deploy both run it. Every image is pinned by digest
 # (check-compose rejects a bare tag); Dependabot proposes bumps.
@@ -20,17 +25,33 @@ x-hardened: &hardened
   cap_drop:
     - ALL
 
-x-ai-image: &ai-image
+# push-bot's image also runs the dispatcher and the ingest and notify workers: they need only the
+# shared package, and ingest fetches links with the same Chromium.
+x-bot-image: &bot-image
   <<: *hardened
   build:
     context: ../../services/ai
     dockerfile: Dockerfile
-  image: push-ai:local
+    target: push-bot
+  image: push-bot:local
   user: "10001:10001"
   pids_limit: 512
   tmpfs:
     - /tmp:size=256m,mode=1777
     - /home/app:size=64m,uid=10001,gid=10001,mode=0700
+
+x-agent-image: &agent-image
+  <<: *hardened
+  build:
+    context: ../../services/ai
+    dockerfile: Dockerfile
+    target: push-agent
+  image: push-agent:local
+  user: "10001:10001"
+  pids_limit: 256
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+    - /home/app:size=16m,uid=10001,gid=10001,mode=0700
 
 x-queue-env: &queue-env
   APP_ENV: production
@@ -96,8 +117,12 @@ services:
       net.ipv4.ip_unprivileged_port_start: 0
     environment:
       AI_HOST: ${AI_HOST:?AI_HOST is required}
+      # Empty keeps push-agent off the internet: it still runs its queue, and the gateway sends a
+      # company conversation's read routes to push-bot.
+      AGENT_HOST: ${AGENT_HOST:-}
       DISPATCH_HOST: ${DISPATCH_HOST:?DISPATCH_HOST is required}
       STAGING_AI_HOST: ${STAGING_AI_HOST:-}
+      STAGING_AGENT_HOST: ${STAGING_AGENT_HOST:-}
       STAGING_DISPATCH_HOST: ${STAGING_DISPATCH_HOST:-}
     ports:
       - "0.0.0.0:80:80"
@@ -114,7 +139,7 @@ services:
       - staging-edge
 
   dispatcher:
-    <<: *ai-image
+    <<: *bot-image
     command: ["python", "-m", "app.workers.dispatcher_main"]
     mem_limit: 128m
     pids_limit: 64
@@ -151,10 +176,11 @@ services:
       timeout: 5s
       retries: 3
 
-  # Runs the queue worker and, with SERVE_API=1, the temporary ai-api routes in one process.
-  ai-worker:
-    <<: *ai-image
-    command: ["python", "-m", "app.workers.ai_worker_main"]
+  # The consumer Bot. Runs the queue worker (q:chat:priority, q:chat, q:document) and, with
+  # SERVE_API=1, the temporary ai-api routes in one process.
+  push-bot:
+    <<: *bot-image
+    command: ["python", "-m", "push_bot.worker"]
     mem_limit: 1280m
     shm_size: 128m
     environment:
@@ -178,8 +204,33 @@ services:
     expose:
       - "8080"
 
+  # The enterprise agent on Push web. Runs the queue worker (q:agent:priority, q:agent) for employer
+  # turns and, with SERVE_API=1, a company conversation's read routes. No Chromium, no payment or
+  # OAuth flags. The data volume is read-only: an employer turn writes to the database only.
+  push-agent:
+    <<: *agent-image
+    command: ["python", "-m", "push_agent.worker"]
+    mem_limit: 384m
+    environment:
+      <<: *ai-env
+      SERVE_API: "1"
+      QUEUE_GROUP: agent
+      QUEUE_CONSUMER: agent-worker
+      QUEUE_CONCURRENCY: ${AGENT_WORKER_CONCURRENCY:-4}
+      # One pool slot per concurrent job, as on push-bot.
+      DB_POOL_MAX_SIZE: ${AGENT_WORKER_CONCURRENCY:-4}
+    volumes:
+      - ai-data:/data:ro
+    depends_on:
+      - redis
+    networks:
+      - edge
+      - push-internal
+    expose:
+      - "8080"
+
   ingest-worker:
-    <<: *ai-image
+    <<: *bot-image
     healthcheck:
       disable: true
     command: ["python", "-m", "app.workers.ingest_worker_main"]
@@ -197,7 +248,7 @@ services:
       - push-internal
 
   notify-worker:
-    <<: *ai-image
+    <<: *bot-image
     healthcheck:
       disable: true
     command: ["python", "-m", "app.workers.notify_worker_main"]
@@ -309,16 +360,16 @@ volumes:
   traefik-acme:
 
 networks:
-  # proxy <-> dispatcher, ai-worker. Needs outbound internet for ACME and the apps.
+  # proxy <-> dispatcher, push-bot, push-agent. Needs outbound internet for ACME and the apps.
   edge:
     driver: bridge
   # Redis, embed and the workers. ingest/notify reach the internet through this bridge too
   # (Neon, Expo, link fetches); the host firewall limits that egress.
   push-internal:
     driver: bridge
-  # Test server only: proxy <-> staging-ai-worker, staging-dispatcher (compose.staging.yaml
-  # joins it as external). Keeps staging off `edge`, so it cannot reach production's
-  # ai-worker or dispatcher.
+  # Test server only: proxy <-> staging-push-bot, staging-push-agent, staging-dispatcher
+  # (compose.staging.yaml joins it as external). Keeps staging off `edge`, so it cannot reach
+  # production's push-bot, push-agent or dispatcher.
   staging-edge:
     driver: bridge
   # embed alone, so the test server's workers can use the production TEI embed without

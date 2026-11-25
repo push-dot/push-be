@@ -25,8 +25,8 @@ from app.harness.graph import (
 )
 from app.harness.kstyle import stats
 from app.harness.model import GateModel, StubModel, settle_turn
-from app.harness.personal.tools import bound_services
-from app.harness.personal.resume.graph import bound_core, merge_inputs
+from app.harness.binding import bound_core, bound_services
+from app.harness.personal.resume.graph import merge_inputs
 from app.harness.personal.resume.profile_document import resolve_uploaded_source
 from app.harness.personal.resume.subject import (
     own_material, resume_request, saved_for_turn, turn_links, turn_posting,
@@ -92,24 +92,6 @@ def _stable_ids(job_id) -> tuple:
                 assistant_message_id(jid),
                 uuid5(NAMESPACE_URL, base + ":op"))
     return uuid4(), uuid4(), uuid4()
-
-
-_EMPLOYER_INTENTS = ("posting", "review", "interview")
-
-
-def employer_start(payload: dict, conversation: dict) -> dict | None:
-    """A web entry point (intent) starts an employer flow; plain chat goes to the agent."""
-    name = str(payload.get("intent") or "")
-    if name not in _EMPLOYER_INTENTS:
-        return None
-    application_id = (payload.get("application_id") or payload.get("applicationId")
-                      or conversation.get("application_id"))
-    start = {"name": name}
-    if name == "posting" and conversation.get("posting_id"):
-        start["reference_posting_id"] = conversation["posting_id"]
-    if name in ("review", "interview") and application_id:
-        start["application_id"] = str(application_id)
-    return start
 
 
 def _saved_resume(raw) -> dict:
@@ -458,8 +440,8 @@ class HarnessRuntime:
             # Heal calls a crashed turn left open too, or the provider rejects every later turn.
             crashed = None if waiting is not None else {"error": "TOOL_FAILED"}
             state["messages"] = [*_rejections(snapshot.values, crashed), *state["messages"]]
-            if spec.id == "employer":
-                start = employer_start(payload, conversation)
+            if spec.start_flow is not None:
+                start = spec.start_flow(payload, conversation)
                 if start is not None:
                     state["start_flow"] = start
             flowing = _saved_resume((snapshot.values or {}).get("resume")).get("status") == "active"

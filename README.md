@@ -1,7 +1,7 @@
 <h1 align="center">Push BE</h1>
 
 <p align="center">
-  <strong>Push의 API. 게이트웨이 Worker, 코어 Worker, VPS의 Python AI</strong>
+  <strong>Push의 API. 게이트웨이 Worker, 코어 Worker, VPS의 Python AI 두 서비스(push-bot, push-agent)</strong>
 </p>
 
 <p align="center">
@@ -10,7 +10,7 @@
 
 ---
 
-**push-be**는 Push 클라이언트가 호출하는 `/api/v1`이다. 공개 입구는 Cloudflare Worker `push-be`다. 인증과 CRUD는 Worker `push-be-core`가 맡고, AI 실행은 VPS의 Python 프로세스가 맡는다. 운영 DB는 Neon이다. 로컬 DB는 pgvector Postgres 16이다.
+**push-be**는 Push 클라이언트가 호출하는 `/api/v1`이다. 공개 입구는 Cloudflare Worker `push-be`다. 인증과 CRUD는 Worker `push-be-core`가 맡고, AI 실행은 VPS의 Python 서비스 둘이 맡는다. `push-bot`은 앱의 봇과 개인 채팅을, `push-agent`는 웹의 기업 에이전트를 실행한다. 운영 DB는 Neon이다. 로컬 DB는 pgvector Postgres 16이다.
 
 채팅을 큐에 넣는 요청은 `202`와 작업 id를 바로 돌려준다. 개인 이력서 워크플로는 `app/harness/personal/resume`의 LangGraph가 `mode_select` → `intake` → `analyze` → `strategy` → `craft` → `review` → `publish` → `present` 순으로 가고, 게이트에서 사용자 입력을 기다린다. 기업 대화는 `app/harness/employer`다. 두 하네스 id는 `app/harness/registry.py`의 `personal`, `employer`다. 토큰과 상태 이벤트는 `chat_events`에 남고, 게이트웨이 SSE가 그 행을 다시 보낸다.
 
@@ -26,7 +26,8 @@ gateway Worker `push-be`          npm 패키지 push-be-front
     ├─ 아래 「게이트웨이가 직접 답하는 경로」
     ├─ ownerOf → core  ──서비스 바인딩 CORE──►  push-be-core  ──Neon HTTP──►  Postgres
     └─ ownerOf → python ── AI_ORIGIN (x-push-ai-secret) ──►  VPS
-                                                              ├─ ai-worker (SERVE_API=1, LangGraph)
+         회사 대화는 AGENT_ORIGIN ──────────────────────────►   ├─ push-bot   (SERVE_API=1, 개인 하네스, q:chat*·q:document)
+                                                              ├─ push-agent (SERVE_API=1, 기업 하네스, q:agent*)
                                                               ├─ dispatcher (:8091, outbox → Redis)
                                                               ├─ ingest-worker
                                                               ├─ notify-worker (Expo 푸시)
@@ -75,7 +76,7 @@ gateway Worker `push-be`          npm 패키지 push-be-front
 
 그 밖의 분기는 `services/gateway/src/routes/owner.ts`의 `ownerOf`다. Python으로 가는 예는 근거 가져오기, 공고·문서·면접·프로젝트의 AI 실행, `operations`, 승인 결정, 대화 공유와 아티팩트다. 인증, 대화 쓰기, 결제, 공고·지원·회사·소셜·프로필, 문서 enqueue, `GET /api/v1/ai/jobs/:id`는 코어다.
 
-코어가 채팅을 넣을 때는 `chat_jobs`에 쓴다. 그 밖의 AI 작업은 `ai_jobs`와 `outbox`에 쓴다. `QUEUE_BACKEND=redis`이면 디스패처가 outbox를 Redis Streams로 넘긴다. 스트림은 `q:chat:priority`, `q:chat`, `q:document`, `q:ingest`, `q:notify`다. fit 작업도 `q:document`를 쓴다. `QUEUE_BACKEND=postgres`이면 프로세스 안 채팅 폴러가 `chat_jobs`를 가져간다. 그 폴러는 `CHAT_EXECUTOR=external`이거나 큐가 redis이면 켜지지 않는다 (`services/ai/src/app/jobs.py`).
+코어가 채팅을 넣을 때는 `chat_jobs`에 쓴다. 그 밖의 AI 작업은 `ai_jobs`와 `outbox`에 쓴다. `QUEUE_BACKEND=redis`이면 디스패처가 outbox를 Redis Streams로 넘긴다. 스트림은 `q:chat:priority`, `q:chat`, `q:agent:priority`, `q:agent`, `q:document`, `q:ingest`, `q:notify`다. fit 작업도 `q:document`를 쓴다. 개인 채팅(`chat`)은 `q:chat*`로 가서 `push-bot`이 읽고, 기업 턴(`employer_ai`)은 `q:agent*`로 가서 `push-agent`가 읽는다. 다른 서비스의 턴을 받은 워커는 그 턴을 제 스트림으로 넘긴다. `QUEUE_BACKEND=postgres`이면 프로세스 안 채팅 폴러가 `chat_jobs`를 가져간다. `push-bot`의 폴러는 회사가 없는 대화의 작업만, `push-agent`의 폴러는 회사 대화의 작업만 가져간다. 그 폴러는 `CHAT_EXECUTOR=external`이거나 큐가 redis이면 켜지지 않는다 (`services/ai/src/app/jobs.py`).
 
 근거 검색은 `app/rag`다. 임베딩 차원은 1024이고, 제공자는 `EMBEDDING_PROVIDER`다. `tei`면 TEI 컨테이너, 그 외 API 모드면 OpenAI 호환 `/embeddings`다. 재정렬 기본은 유사도이고, `RERANK_PROVIDER=tei`일 때만 TEI rerank를 쓴다. rerank 서비스는 compose 프로파일 `rerank`다.
 
@@ -108,10 +109,13 @@ Python extra는 `local`(uvicorn, asyncpg, 브라우저, PDF, llama-index), `test
 ```
 services/gateway/       Worker push-be. npm 패키지 push-be-front
 services/core-api/      Worker push-be-core. 크론 15 * * * *
-services/ai/            FastAPI, 하네스, 워커, scripts/migrate.py
-  src/app/api/          라우터
-  src/app/harness/      LangGraph (personal, employer)
-  src/app/workers/      dispatcher, ai, ingest, notify
+services/ai/            Python AI. 서비스 둘과 공용 패키지 하나, scripts/migrate.py
+  src/app/              공용 패키지: 엔진, 도메인, 큐, 라우터, 개인 하네스
+    api/                라우터
+    harness/            LangGraph 엔진과 개인(personal) 하네스
+    workers/            dispatcher, ingest, notify, 공용 워커 실행기
+  src/push_bot/         push-bot: 앱의 봇. main(API), worker(q:chat*, q:document)
+  src/push_agent/       push-agent: 웹의 기업 에이전트. harness(기업 흐름), main, worker(q:agent*)
   src/app/rag/          검색
   src/app/ingest/       페이지·파일 파싱
 packages/contracts/     OpenAPI 스펙과 생성 타입
@@ -125,7 +129,7 @@ Python이 `/api/v1`에 올리는 라우터는 `evidence`, `jobs`, `applications`
 
 ## 로컬 실행
 
-게이트웨이와 코어는 Neon HTTP 드라이버라 로컬 compose의 Postgres에 붙지 않는다. compose는 Postgres와 AI uvicorn만 띄운다. 게이트웨이 주석은 `cd services/gateway && npx wrangler dev`다. 노트북의 uvicorn은 게이트웨이를 거치지 않고 8080으로 직접 호출한다.
+게이트웨이와 코어는 Neon HTTP 드라이버라 로컬 compose의 Postgres에 붙지 않는다. compose는 Postgres와 AI uvicorn 둘(`push-bot` 8080, `push-agent` 8081)만 띄운다. 게이트웨이 주석은 `cd services/gateway && npx wrangler dev`다. 노트북의 uvicorn은 게이트웨이를 거치지 않고 8080으로 직접 호출한다.
 
 ```bash
 docker compose -f infra/docker-compose.yml up -d --build
@@ -140,7 +144,9 @@ cd services/ai
 uv sync --locked --extra local --extra test
 # 저장소 루트 .env.example 을 .env 로 복사한 뒤 DATABASE_URL 을 로컬 Postgres에 맞춘다
 uv run python scripts/migrate.py
-PYTHONPATH=src uv run uvicorn app.main:app --port 8080
+PYTHONPATH=src uv run uvicorn push_bot.main:app --port 8080
+# 기업 에이전트도 볼 때는 다른 터미널에서
+PYTHONPATH=src uv run uvicorn push_agent.main:app --port 8081
 ```
 
 ```bash
@@ -148,7 +154,7 @@ cd services/gateway && npx wrangler dev
 cd services/core-api && npx wrangler dev
 ```
 
-`AI_ORIGIN`이 비어 있으면 게이트웨이의 AI 경로는 500 `NOT_CONFIGURED`다. 오리진은 `https`여야 한다.
+`AI_ORIGIN`(push-bot)이 비어 있으면 게이트웨이의 AI 경로는 500 `NOT_CONFIGURED`다. 오리진은 `https`여야 한다. `AGENT_ORIGIN`(push-agent)이 있으면 게이트웨이는 회사 대화의 AI 경로(`/conversations/:id/turns`, `artifacts`, `share`)를 그쪽으로 보낸다. 비어 있으면 `AI_ORIGIN`으로 보낸다.
 
 ## 환경 변수
 
@@ -156,13 +162,13 @@ cd services/core-api && npx wrangler dev
 
 ### gateway (`FrontEnv`)
 
-`APP_ENV`, `AUTH_CACHE_TTL`, `AI_ORIGIN`, `AI_SHARED_SECRET`, `DATABASE_URL`, `DEV_AUTH_TOKEN`, `DEV_USER_ID`, `INTERNAL_API_SECRET`, `JOB_SITES_CACHE_TTL`, `MANAGED_AI`, `MODEL_CACHE_TTL`, `SSE_MAX_POLLS`
+`AGENT_ORIGIN`, `APP_ENV`, `AUTH_CACHE_TTL`, `AI_ORIGIN`, `AI_SHARED_SECRET`, `DATABASE_URL`, `DEV_AUTH_TOKEN`, `DEV_USER_ID`, `INTERNAL_API_SECRET`, `JOB_SITES_CACHE_TTL`, `MANAGED_AI`, `MODEL_CACHE_TTL`, `SSE_MAX_POLLS`
 
 `MANAGED_AI`, 캐시 TTL, `SSE_MAX_POLLS`는 `services/gateway/wrangler.jsonc`의 vars다. `DATABASE_URL`과 시크릿은 Worker 시크릿으로 둔다.
 
 ### core (`CoreEnv`)
 
-`AI_ORIGIN`, `AI_SHARED_SECRET`, `APP_ENV`, `APP_WEB_ORIGIN`, `APPLE_BUNDLE_ID`, `APPLE_CLIENT_ID`, `APPLE_IAP_KEY`, `APPLE_IAP_KEY_ID`, `APPLE_ISSUER_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY`, `APPLE_TEAM_ID`, `DATABASE_URL`, `DEV_AUTH_TOKEN`, `DEV_USER_ID`, `DISPATCH_ORIGIN`, `DISPATCH_SECRET`, `EXPO_ACCESS_TOKEN`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_GMAIL_BETA_ENABLED`, `GOOGLE_OIDC_AUDIENCE`, `GOOGLE_OIDC_EMAIL`, `GOOGLE_PLAY_KEY`, `GOOGLE_PLAY_PACKAGE`, `IAP_PRODUCT_PRO`, `IAP_PRODUCT_TOPUP`, `IAP_PRODUCT_ULTRA`, `IAP_TOPUP_CREDITS`, `INTERNAL_API_SECRET`, `INTERNAL_JOB_TOKEN`, `MAIL_FROM`, `MANAGED_AI`, `NTS_SERVICE_KEY`, `OAUTH_REDIRECT_ORIGINS`, `PENDING_SIGNUP_SECRET`, `PHONE_CODE_COOLDOWN_SEC`, `PHONE_CODE_MAX_ATTEMPTS`, `PHONE_CODE_TTL_SEC`, `PHONE_SMS_MODE`, `QUEUE_BACKEND`, `RESEND_API_KEY`, `SENS_ACCESS_KEY`, `SENS_SECRET_KEY`, `SENS_SERVICE_ID`, `SMS_FROM`, `STRIPE_PORTAL_RETURN_URL`, `STRIPE_PRICE_EMPLOYER_BASIC`, `STRIPE_PRICE_EMPLOYER_PRO`, `STRIPE_PRICE_EMPLOYER_ULTRA`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_TOPUP`, `STRIPE_PRICE_ULTRA`, `STRIPE_RETURN_ORIGINS`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `TOKEN_ENCRYPTION_KEY`
+`AGENT_ORIGIN`, `AI_ORIGIN`, `AI_SHARED_SECRET`, `APP_ENV`, `APP_WEB_ORIGIN`, `APPLE_BUNDLE_ID`, `APPLE_CLIENT_ID`, `APPLE_IAP_KEY`, `APPLE_IAP_KEY_ID`, `APPLE_ISSUER_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY`, `APPLE_TEAM_ID`, `DATABASE_URL`, `DEV_AUTH_TOKEN`, `DEV_USER_ID`, `DISPATCH_ORIGIN`, `DISPATCH_SECRET`, `EXPO_ACCESS_TOKEN`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_GMAIL_BETA_ENABLED`, `GOOGLE_OIDC_AUDIENCE`, `GOOGLE_OIDC_EMAIL`, `GOOGLE_PLAY_KEY`, `GOOGLE_PLAY_PACKAGE`, `IAP_PRODUCT_PRO`, `IAP_PRODUCT_TOPUP`, `IAP_PRODUCT_ULTRA`, `IAP_TOPUP_CREDITS`, `INTERNAL_API_SECRET`, `INTERNAL_JOB_TOKEN`, `MAIL_FROM`, `MANAGED_AI`, `NTS_SERVICE_KEY`, `OAUTH_REDIRECT_ORIGINS`, `PENDING_SIGNUP_SECRET`, `PHONE_CODE_COOLDOWN_SEC`, `PHONE_CODE_MAX_ATTEMPTS`, `PHONE_CODE_TTL_SEC`, `PHONE_SMS_MODE`, `QUEUE_BACKEND`, `RESEND_API_KEY`, `SENS_ACCESS_KEY`, `SENS_SECRET_KEY`, `SENS_SERVICE_ID`, `SMS_FROM`, `STRIPE_PORTAL_RETURN_URL`, `STRIPE_PRICE_EMPLOYER_BASIC`, `STRIPE_PRICE_EMPLOYER_PRO`, `STRIPE_PRICE_EMPLOYER_ULTRA`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_TOPUP`, `STRIPE_PRICE_ULTRA`, `STRIPE_RETURN_ORIGINS`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `TOKEN_ENCRYPTION_KEY`
 
 `EMAIL`은 문자 환경 변수가 아니라 선택 Cloudflare Email 바인딩이다. 휴대폰 인증 문자는 `SENS_ACCESS_KEY`, `SENS_SECRET_KEY`, `SENS_SERVICE_ID`, `SMS_FROM`이 모두 있으면 네이버 클라우드 SENS로 보낸다. SENS는 `+82` 번호만 보낸다. 넷 중 하나라도 없으면 `APP_ENV=development`이고 `PHONE_SMS_MODE=log`일 때만 Worker 로그에 인증번호를 찍고, 그 밖에는 `POST /auth/phone/send`가 503 `NOT_CONFIGURED`를 준다. CI는 `SENS_ACCESS_KEY`, `SENS_SECRET_KEY`를 GitHub 시크릿에서, `SENS_SERVICE_ID`, `SMS_FROM`을 GitHub 변수에서 읽어 core Worker 시크릿으로 넣는다. `QUEUE_BACKEND`와 `DISPATCH_ORIGIN`의 운영 기본은 `services/core-api/wrangler.jsonc`의 vars다.
 
@@ -172,11 +178,11 @@ cd services/core-api && npx wrangler dev
 
 `ADMIN_TOKEN`, `AI_BASE_URL`, `AI_SHARED_SECRET`, `ALERT_EMAIL_FROM`, `ALERT_EMAIL_TO`, `APP_ENV`, `BLOB_STORE`, `CHAT_EXECUTOR`, `CHECKPOINTER`, `CHECKPOINTER_POOL_MAX_SIZE`, `CORE_ORIGIN`, `DATABASE_URL`, `DB_DRIVER`, `DB_POOL_MAX_SIZE`, `DB_POOL_MIN_SIZE`, `DEV_AUTH_TOKEN`, `DEV_USER_ID`, `DISCORD_ALERT_WEBHOOK_URL`, `DISPATCH_PORT`, `DISPATCH_SECRET`, `EMBEDDING_API_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_API_MODEL`, `EMBEDDING_PROVIDER`, `EXPERIMENTS`, `EXPO_ACCESS_TOKEN`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_GMAIL_BETA_ENABLED`, `INTERNAL_API_SECRET`, `LISTEN_ADDR`, `MODEL_EMPLOYER_ULTRA`, `MODEL_FREE`, `MODEL_PRO`, `MODEL_ULTRA`, `NEON_STORAGE_LIMIT_BYTES`, `OPENROUTER_API_KEY`, `PGDATABASE`, `PGHOST`, `PGPASSWORD`, `PGPORT`, `PGUSER`, `PG_TRANSPORT`, `PLAYWRIGHT_NO_SANDBOX`, `PORT`, `PUSH_RESUME_DIR`, `QUEUE_BACKEND`, `QUEUE_CONCURRENCY`, `QUEUE_CONSUMER`, `QUEUE_GROUP`, `REDIS_URL`, `RERANK_PROVIDER`, `RESEND_API_KEY`, `RUN_MIGRATIONS`, `SERVE_API`, `STORAGE_DIR`, `STRIPE_CANCEL_URL`, `STRIPE_PORTAL_RETURN_URL`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA`, `STRIPE_SECRET_KEY`, `STRIPE_SUCCESS_URL`, `STRIPE_WEBHOOK_SECRET`, `TEI_EMBED_MODEL`, `TEI_EMBED_URL`, `TEI_RERANK_URL`, `TOKEN_ENCRYPTION_KEY`
 
-큐 시간 한도: `HEARTBEAT_LIMIT_CHAT_S`, `HEARTBEAT_LIMIT_EMPLOYER_AI_S`, `HEARTBEAT_LIMIT_DOCUMENT_S`, `HEARTBEAT_LIMIT_FIT_S`, `HEARTBEAT_LIMIT_INGEST_S`, `HEARTBEAT_LIMIT_NOTIFY_S`, `JOB_DEADLINE_CHAT_S`, `JOB_DEADLINE_EMPLOYER_AI_S`, `JOB_DEADLINE_DOCUMENT_S`, `JOB_DEADLINE_FIT_S`, `JOB_DEADLINE_INGEST_S`, `JOB_DEADLINE_NOTIFY_S`, `VISIBILITY_Q_CHAT_PRIORITY_S`, `VISIBILITY_Q_CHAT_S`, `VISIBILITY_Q_DOCUMENT_S`, `VISIBILITY_Q_INGEST_S`, `VISIBILITY_Q_NOTIFY_S`
+큐 시간 한도: `HEARTBEAT_LIMIT_CHAT_S`, `HEARTBEAT_LIMIT_EMPLOYER_AI_S`, `HEARTBEAT_LIMIT_DOCUMENT_S`, `HEARTBEAT_LIMIT_FIT_S`, `HEARTBEAT_LIMIT_INGEST_S`, `HEARTBEAT_LIMIT_NOTIFY_S`, `JOB_DEADLINE_CHAT_S`, `JOB_DEADLINE_EMPLOYER_AI_S`, `JOB_DEADLINE_DOCUMENT_S`, `JOB_DEADLINE_FIT_S`, `JOB_DEADLINE_INGEST_S`, `JOB_DEADLINE_NOTIFY_S`, `VISIBILITY_Q_CHAT_PRIORITY_S`, `VISIBILITY_Q_CHAT_S`, `VISIBILITY_Q_AGENT_PRIORITY_S`, `VISIBILITY_Q_AGENT_S`, `VISIBILITY_Q_DOCUMENT_S`, `VISIBILITY_Q_INGEST_S`, `VISIBILITY_Q_NOTIFY_S`
 
-VPS compose가 환경으로 만드는 이름: `AI_HOST`, `DISPATCH_HOST`, `REDIS_PASSWORD`, `AI_WORKER_CONCURRENCY`(`QUEUE_CONCURRENCY`로 들어가고 ai-worker의 `DB_POOL_MAX_SIZE` 기본값도 된다), `INGEST_WORKER_CONCURRENCY`(ingest의 `QUEUE_CONCURRENCY`). Redis 컨테이너의 `REDISCLI_AUTH`는 `REDIS_PASSWORD`와 같다.
+VPS compose가 환경으로 만드는 이름: `AI_HOST`(push-bot), `AGENT_HOST`(push-agent, 선택), `DISPATCH_HOST`, `REDIS_PASSWORD`, `AI_WORKER_CONCURRENCY`(`QUEUE_CONCURRENCY`로 들어가고 push-bot의 `DB_POOL_MAX_SIZE` 기본값도 된다), `AGENT_WORKER_CONCURRENCY`(push-agent의 `QUEUE_CONCURRENCY`와 `DB_POOL_MAX_SIZE`), `INGEST_WORKER_CONCURRENCY`(ingest의 `QUEUE_CONCURRENCY`). Redis 컨테이너의 `REDISCLI_AUTH`는 `REDIS_PASSWORD`와 같다.
 
-운영 compose는 Hostinger VPS에서 `DB_DRIVER=asyncpg`, `PG_TRANSPORT=tcp`로 Neon에 TCP 접속하고, `CHAT_EXECUTOR=local`, `BLOB_STORE=db`, `CHECKPOINTER=postgres`, `RUN_MIGRATIONS=0`, `QUEUE_BACKEND` 기본 `redis`를 넣는다. DB는 Neon이고 VPS `DATABASE_URL`은 **풀러 호스트(`-pooler`)** 를 쓰는 것이 좋다. ai-worker·ingest-worker·dispatcher 등 여러 컨테이너가 각각 asyncpg 풀(기본 상한 `DB_POOL_MAX_SIZE=10`)과 checkpointer 풀(기본 `CHECKPOINTER_POOL_MAX_SIZE=4`)을 연다. 풀러 없이 direct 엔드포인트만 쓰면 compute `max_connections` 한도를 금방 쓴다. `DB_POOL_MAX_SIZE`를 올릴 때는 반드시 풀러 URL을 확인한다. `push-be-core`는 Cloudflare Workers에서 Neon `pgproto` **요청당 한 연결**(ContextVar)이라 이 풀 env와 무관하다. 절차와 한도는 `infra/vps/README.md`에 있다.
+운영 compose는 Hostinger VPS에서 `DB_DRIVER=asyncpg`, `PG_TRANSPORT=tcp`로 Neon에 TCP 접속하고, `CHAT_EXECUTOR=local`, `BLOB_STORE=db`, `CHECKPOINTER=postgres`, `RUN_MIGRATIONS=0`, `QUEUE_BACKEND` 기본 `redis`를 넣는다. DB는 Neon이고 VPS `DATABASE_URL`은 **풀러 호스트(`-pooler`)** 를 쓰는 것이 좋다. push-bot·push-agent·ingest-worker·dispatcher 등 여러 컨테이너가 각각 asyncpg 풀(기본 상한 `DB_POOL_MAX_SIZE=10`)과 checkpointer 풀(기본 `CHECKPOINTER_POOL_MAX_SIZE=4`)을 연다. 풀러 없이 direct 엔드포인트만 쓰면 compute `max_connections` 한도를 금방 쓴다. `DB_POOL_MAX_SIZE`를 올릴 때는 반드시 풀러 URL을 확인한다. `push-be-core`는 Cloudflare Workers에서 Neon `pgproto` **요청당 한 연결**(ContextVar)이라 이 풀 env와 무관하다. 절차와 한도는 `infra/vps/README.md`에 있다.
 
 ### GitHub Actions 배포
 
@@ -234,11 +240,13 @@ DB 검사는 마이그레이션 뒤에 `db/tests/schema_checks.sql`을 실행한
 배포 명령은 워크플로와 같다.
 
 ```bash
-# services/core-api 와 services/gateway 에서. AI_HOST 는 저장소 변수
-npx wrangler deploy --var AI_ORIGIN:https://${AI_HOST}
+# services/core-api 와 services/gateway 에서. AI_HOST, AGENT_HOST 는 저장소 변수
+npx wrangler deploy --var AI_ORIGIN:https://${AI_HOST} --var AGENT_ORIGIN:https://${AGENT_HOST}
 ```
 
-그 다음 각 디렉터리에서 `npx wrangler secret bulk`로 시크릿을 넣는다. 빈 값은 빼고, 이미 있는 시크릿은 유지한다. VPS는 `/opt/push-be/.env`를 다시 쓰고 `infra/vps/compose.yaml`로 올린다. 배포 뒤 `https://<AI_HOST>/healthz`와 `https://<DISPATCH_HOST>/healthz`가 200인지 확인한다.
+`AGENT_HOST`가 비어 있으면 워크플로는 `AGENT_ORIGIN`을 넘기지 않는다.
+
+그 다음 각 디렉터리에서 `npx wrangler secret bulk`로 시크릿을 넣는다. 빈 값은 빼고, 이미 있는 시크릿은 유지한다. VPS는 `/opt/push-be/.env`를 다시 쓰고 `infra/vps/compose.yaml`로 올린다. 배포 뒤 `https://<AI_HOST>/healthz`, `https://<DISPATCH_HOST>/healthz`, 그리고 `AGENT_HOST`가 있으면 `https://<AGENT_HOST>/healthz`가 200인지 확인한다.
 
 Python Worker `push-be-python`은 배포하지 않는다. 게이트웨이 `workers_dev`는 켜져 있고, 코어 `workers_dev`는 꺼져 있다. 코어 크론은 `15 * * * *`이다. 게이트웨이 크론 목록은 비어 있다.
 

@@ -30,9 +30,11 @@ export interface FrontEnv {
   MODEL_CACHE_TTL?: string;
   JOB_SITES_CACHE_TTL?: string;
   AUTH_CACHE_TTL?: string;
-  /** HTTPS origin of the AI service on the VPS. AI routes return 500 when this is empty. */
+  /** HTTPS origin of push-bot on the VPS. AI routes return 500 when this is empty. */
   AI_ORIGIN?: string;
-  /** Shared secret sent as x-push-ai-secret when AI_ORIGIN is set. */
+  /** HTTPS origin of push-agent on the VPS. A company conversation's AI routes go here; empty sends them to AI_ORIGIN. */
+  AGENT_ORIGIN?: string;
+  /** Shared secret sent as x-push-ai-secret to AI_ORIGIN and AGENT_ORIGIN. */
   AI_SHARED_SECRET?: string;
   /** AI worker act-as secret (same value as core). Requests that carry it keep their act-as headers to core. */
   INTERNAL_API_SECRET?: string;

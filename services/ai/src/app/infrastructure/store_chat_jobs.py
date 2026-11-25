@@ -41,15 +41,28 @@ def assistant_message_id(job_id: UUID) -> UUID:
     return uuid5(NAMESPACE_URL, "push:chat:" + str(job_id) + ":assistant")
 
 
+# Whose chat_jobs the in-process worker takes and requeues: push-bot ("personal") the conversations
+# without a company, push-agent ("company") a company's. Any other audience takes every one.
+# Plain constants picked by a conditional, so scripts/sql-check folds each variant and CI PREPAREs it.
+_COMPANY_JOB = ("EXISTS (SELECT 1 FROM conversations c "
+                "WHERE c.id = chat_jobs.conversation_id AND c.company_id IS NOT NULL)")
+_PERSONAL_ONLY = " AND NOT " + _COMPANY_JOB
+_COMPANY_ONLY = " AND " + _COMPANY_JOB
+
+
 class ChatJobStore:
-    def __init__(self, db: DB):
+    def __init__(self, db: DB, audience: Optional[str] = None):
         self.db = db
+        self.audience = audience
 
     async def claim(self) -> Optional[dict]:
+        owns = (_PERSONAL_ONLY if self.audience == "personal"
+                else _COMPANY_ONLY if self.audience == "company" else "")
         row = await self.db.pool.fetchrow(
             "UPDATE chat_jobs SET status='RUNNING', attempt=attempt+1, "
             "updated_at=$1 WHERE id = ("
             "  SELECT id FROM chat_jobs WHERE status='PENDING' AND run_at<=now()"
+            + owns +
             "  ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED"
             ") RETURNING id, user_id, conversation_id, payload, attempt",
             utcnow())
@@ -94,18 +107,21 @@ class ChatJobStore:
         """
         age = STALE_RUNNING_S if max_age_s is None else max_age_s
         now = utcnow()
+        owns = (_PERSONAL_ONLY if self.audience == "personal"
+                else _COMPANY_ONLY if self.audience == "company" else "")
         await self.db.pool.execute(
             "UPDATE chat_jobs SET status='FAILED', error='worker died', "
             "updated_at=$1 WHERE status='RUNNING' AND ("
             "attempt >= 3 OR COALESCE((checkpoint->>'fails')::int, 0) >= 3) "
-            "AND updated_at <= now() - make_interval(secs => $2::double precision)",
+            "AND updated_at <= now() - make_interval(secs => $2::double precision)"
+            + owns,
             now, age)
         val = await self.db.pool.fetchval(
             "WITH r AS (UPDATE chat_jobs SET status='PENDING', run_at=now(), "
             "updated_at=$1, "
             "checkpoint = COALESCE(checkpoint, '{}'::jsonb) - 'claim' "
             "WHERE status='RUNNING' AND updated_at <= now() - "
-            "make_interval(secs => $2::double precision) RETURNING id), "
+            "make_interval(secs => $2::double precision)" + owns + " RETURNING id), "
             "d AS (DELETE FROM chat_events WHERE job_id IN (SELECT id FROM r)) "
             "SELECT count(*) FROM r", now, age)
         return int(val or 0)
@@ -292,6 +308,13 @@ class ChatJobStore:
             "WHERE id=$1 AND status='RUNNING'",
             job_id, now)
 
+    async def worker_forward(self, job_id, queue, now) -> None:
+        """Hand a claimed job to another stream; the row follows so retries and rehydration use it."""
+        await self.db.q().execute(
+            "UPDATE ai_jobs SET status='QUEUED', queue=$2, heartbeat_at=NULL, updated_at=$3 "
+            "WHERE id=$1 AND status='RUNNING'",
+            job_id, queue, now)
+
     async def worker_touch(self, job_id, now) -> None:
         await self.db.q().execute(
             "UPDATE ai_jobs SET heartbeat_at=$2, updated_at=$2 WHERE id=$1 AND status='RUNNING'",
@@ -332,6 +355,9 @@ class QueueJobs:
 
     async def release_claim(self, job_id, now):
         await self.store.worker_release(job_id, now)
+
+    async def forward(self, job_id, queue, now):
+        await self.store.worker_forward(job_id, queue, now)
 
     async def touch(self, job_id, now):
         await self.store.worker_touch(job_id, now)

@@ -71,9 +71,9 @@ export async function proxy(request: Request, binding: FrontEnv["CORE"] | undefi
   return relay(() => binding.fetch(new Request(request.url, init)), rid, init);
 }
 
-// The origin is the public VPS, so it must be HTTPS and carry the shared secret.
-export async function proxyPython(request: Request, env: FrontEnv, deps: Deps, rid: string): Promise<Response> {
-  const origin = (env.AI_ORIGIN || "").trim().replace(/\/$/, "");
+// The origin is the public VPS, so it must be HTTPS and carry the shared secret. push-bot (AI_ORIGIN) unless the caller names push-agent's.
+export async function proxyPython(request: Request, env: FrontEnv, deps: Deps, rid: string, target = env.AI_ORIGIN): Promise<Response> {
+  const origin = (target || "").trim().replace(/\/$/, "");
   const secret = (env.AI_SHARED_SECRET || "").trim();
   if (!origin) {return errorResponse(500, "NOT_CONFIGURED", "ai origin is not configured", rid);}
   if (!secret || !origin.startsWith("https://")) {return errorResponse(500, "INTERNAL", "internal error", rid);}

@@ -227,6 +227,14 @@ const present = (value: unknown): boolean => (value !== null && value !== undefi
 export const isBotThread = async (deps: Deps, conversationId: string): Promise<boolean> =>
   (await deps.query("SELECT 1 FROM conversations WHERE id = $1::uuid AND bot_id IS NOT NULL", [conversationId])).length > 0;
 
+// push-agent owns a company's conversations and push-bot the rest. Without AGENT_ORIGIN one AI service answers both, so nothing is asked.
+export const aiOriginFor = async (env: FrontEnv, deps: Deps, conversationId: string | null): Promise<string> => {
+  const agent = (env.AGENT_ORIGIN || "").trim();
+  if (!agent || !conversationId) {return env.AI_ORIGIN || "";}
+  const company = await deps.query("SELECT 1 FROM conversations WHERE id = $1::uuid AND company_id IS NOT NULL", [conversationId]);
+  return company.length > 0 ? agent : env.AI_ORIGIN || "";
+};
+
 async function listMessagesFor(deps: Deps, userId: string, id: string, cursor: { at: string | null; id: string | null }, limit: number, rid: string, companyId: string | null): Promise<Response> {
   const rows = await deps.query(SCOPED_MESSAGES_SQL, [id, userId, companyId, cursor.at, cursor.id, limit + 1]);
   if (!present(rows[0]?.conversation_id)) {return errorResponse(404, "NOT_FOUND", "resource not found", rid);}

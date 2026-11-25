@@ -70,19 +70,20 @@ ls /etc/cron.daily/push-lastlog-clear                   # 있다
 
 필수 변수: `AI_HOST`, `DISPATCH_HOST`, `GOOGLE_CLIENT_ID`, `GH_OAUTH_CLIENT_ID`(`GITHUB_CLIENT_ID`로 들어간다), `STRIPE_PRICE_PRO`, `STRIPE_PRICE_ULTRA`, `VPS_SSH_HOST_KEY`(`harden.sh`가 출력한 `ssh-ed25519 AAAA…`. CI는 이 키만 믿는다. 처음 본 키를 믿지 않는다).
 
-선택 변수: `CORE_ORIGIN`, `QUEUE_BACKEND`, `EMBEDDING_PROVIDER`, `EMBEDDING_API_MODEL`, `RERANK_PROVIDER`, `AI_BASE_URL`, `NEON_STORAGE_LIMIT_BYTES`, `ALERT_EMAIL_TO`, `ALERT_EMAIL_FROM`, `AI_WORKER_CONCURRENCY`, `INGEST_WORKER_CONCURRENCY`, `DEPLOY_BRANCH`.
+선택 변수: `AGENT_HOST`(push-agent의 공개 호스트. 비우면 push-agent는 큐로만 일하고 공개 경로가 없다), `CORE_ORIGIN`, `QUEUE_BACKEND`, `EMBEDDING_PROVIDER`, `EMBEDDING_API_MODEL`, `RERANK_PROVIDER`, `AI_BASE_URL`, `NEON_STORAGE_LIMIT_BYTES`, `ALERT_EMAIL_TO`, `ALERT_EMAIL_FROM`, `AI_WORKER_CONCURRENCY`, `AGENT_WORKER_CONCURRENCY`, `INGEST_WORKER_CONCURRENCY`, `DEPLOY_BRANCH`.
 
 CI가 하는 일:
 
 1. VPS: 저장소 tar를 `/opt/push-be/releases/<sha>`에 풀고, 위 값으로 `/opt/push-be/.env`(0600, `deploy` 소유)를 새로 쓴 뒤 `check-compose`를 통과하면 `docker compose up -d --build`를 실행한다. 값은 로그에 찍지 않는다. 작은따옴표나 줄바꿈이 든 값은 거부한다. 최근 릴리스 3개만 남긴다.
 2. Worker: `wrangler secret bulk`로 `push-be`와 `push-be-core`에만 시크릿을 쓴다. 다른 기존 시크릿은 그대로 둔다. OAuth 클라이언트 ID와 Stripe 가격 ID는 비밀이 아니지만 `wrangler deploy`가 지우지 않도록 시크릿으로 넣는다. `push-be-python`은 배포하지 않고 시크릿도 넣지 않는다. `AI_SHARED_SECRET`은 VPS·코어·게이트웨이가 같이 쓴다. 게이트웨이가 Python으로 넘길 때 `x-push-ai-secret`에 넣는다.
-3. `https://<AI_HOST>/healthz`와 `https://<DISPATCH_HOST>/healthz`가 200을 줄 때까지 6분 동안 기다린다.
+3. `https://<AI_HOST>/healthz`(push-bot)와 `https://<DISPATCH_HOST>/healthz`가 200을 줄 때까지 6분 동안 기다린다. `AGENT_HOST`가 있으면 `https://<AGENT_HOST>/healthz`(push-agent)도 기다린다.
+4. Worker 배포에 `--var AI_ORIGIN:https://<AI_HOST>`를 넘긴다. `AGENT_HOST`가 있으면 `--var AGENT_ORIGIN:https://<AGENT_HOST>`도 넘긴다.
 
 ## Neon 연결과 DB 풀
 
 Postgres는 Neon이다. VPS는 compose로 AI를 돌리고 `DB_DRIVER=asyncpg`, `PG_TRANSPORT=tcp`로 접속한다. `push-be-core`는 Cloudflare Workers에서 `DATABASE_URL`로 같은 DB를 쓰되, Workers 런타임 규칙 때문에 `app.pgproto`가 **요청마다 ContextVar로 한 연결**만 연다(프로세스 단위 asyncpg 풀과 분리).
 
-VPS에서는 `ai-worker`, `ingest-worker`, `dispatcher`, `notify-worker` 등 **여러 컨테이너**가 각자 `create_pool`을 연다. 기본은 컨테이너당 asyncpg `DB_POOL_MAX_SIZE=10`, checkpointer가 켜진 서비스는 추가로 `CHECKPOINTER_POOL_MAX_SIZE=4`다. `DB_POOL_MIN_SIZE=0`이면 유휴 시 연결을 들고 있지 않는다. `ai-worker`만 예외로 `DB_POOL_MAX_SIZE` 기본값이 `AI_WORKER_CONCURRENCY`와 같다. 동시 작업 하나가 풀 연결 하나를 쓰므로 풀이 동시성보다 작으면 작업이 연결을 기다린다. `DB_POOL_MAX_SIZE`를 직접 지정할 때는 `AI_WORKER_CONCURRENCY` 이상으로 둔다.
+VPS에서는 `push-bot`, `push-agent`, `ingest-worker`, `dispatcher`, `notify-worker` 등 **여러 컨테이너**가 각자 `create_pool`을 연다. 기본은 컨테이너당 asyncpg `DB_POOL_MAX_SIZE=10`, checkpointer가 켜진 서비스는 추가로 `CHECKPOINTER_POOL_MAX_SIZE=4`다. `DB_POOL_MIN_SIZE=0`이면 유휴 시 연결을 들고 있지 않는다. `ai-worker`만 예외로 `DB_POOL_MAX_SIZE` 기본값이 `AI_WORKER_CONCURRENCY`와 같다. 동시 작업 하나가 풀 연결 하나를 쓰므로 풀이 동시성보다 작으면 작업이 연결을 기다린다. `DB_POOL_MAX_SIZE`를 직접 지정할 때는 `AI_WORKER_CONCURRENCY` 이상으로 둔다.
 
 | Neon 엔드포인트 | 용도 |
 | --- | --- |
@@ -106,7 +107,7 @@ develop에 push하면 테스트 서버가 배포된다. main은 지금처럼 운
 
 - 테스트 AI는 운영 Traefik과 운영 `embed`를 함께 쓴다. 그래서 운영을 먼저 배포해야 한다. 운영 프로젝트가 만드는 전용 네트워크 `push-ai_staging-edge`(프록시만 연결)와 `push-ai_embed-shared`(`embed`만 연결)로만 이어지고, 운영 `edge`·`push-internal`에는 붙지 않는다. Redis와 워커는 테스트 프로젝트 자체 `internal` 네트워크에 있다.
 - GitHub 환경 `staging`이 `DATABASE_URL`, `REDIS_PASSWORD`, `AI_SHARED_SECRET`, `INTERNAL_API_SECRET`, `DISPATCH_SECRET`, `ADMIN_TOKEN`, `TOKEN_ENCRYPTION_KEY`, `DEV_AUTH_TOKEN`과 변수 `AI_HOST`, `DISPATCH_HOST`, `CORE_ORIGIN`을 덮어쓴다. 나머지는 저장소 값을 쓴다.
-- 운영 프록시가 테스트 호스트를 받으려면 저장소 변수 `STAGING_AI_HOST`, `STAGING_DISPATCH_HOST`가 있어야 한다.
+- 운영 프록시가 테스트 호스트를 받으려면 저장소 변수 `STAGING_AI_HOST`, `STAGING_DISPATCH_HOST`가 있어야 한다. 테스트 push-agent에 공개 호스트를 주려면 `STAGING_AGENT_HOST`(저장소 변수)와 `staging` 환경의 `AGENT_HOST`를 같은 값으로 넣는다.
 - 마이그레이션은 `gh workflow run migrate.yml --ref develop -f transport=tcp -f environment=staging`으로 돌린다.
 - 처음 한 번은 root가 `push-deploy`를 다시 설치하고 `/opt/push-be-staging`을 만들어야 한다. `harden.sh`를 다시 돌리거나 아래 세 줄을 실행한다.
 
@@ -141,7 +142,7 @@ install -m 0755 /opt/push-be/current/infra/vps/bin/check-compose /usr/local/lib/
 Neon 스키마는 여전히 수동이다. `services/ai/scripts/migrate.py` 또는 마이그레이션 워크플로로 `db/migrations/` 전체를 순서대로 적용한다. 0027·0028은 인덱스를 만드는 동안 해당 테이블 쓰기를 잠깐 막으니 한가한 시간에 돌린다. 그다음 업로드 파일을 DB로 옮긴다. 다시 실행해도 안전하다.
 ```bash
 docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/infra/vps/compose.yaml \
-  exec ai-worker python scripts/migrate_blobs_to_db.py
+  exec push-bot python scripts/migrate_blobs_to_db.py
 ```
 `services/ai/scripts/seed_local.py`는 `APP_ENV=development`가 아니면 종료한다. 프로덕션에서 실행하지 않는다.
 
@@ -191,22 +192,23 @@ docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/i
 
 ## 컨테이너와 메모리
 
-KVM 2는 8,192 MB다. 관리 패널이 없어서 이 compose의 한도 합계 5,184 MB를 빼도 OS와 Docker에 약 3 GB가 남는다. tmpfs도 각 컨테이너 한도에 포함된다.
+KVM 2는 8,192 MB다. 관리 패널이 없어서 이 compose의 한도 합계 5,568 MB를 빼도 OS와 Docker에 약 2.6 GB가 남는다. tmpfs도 각 컨테이너 한도에 포함된다. 테스트 서버(`compose.staging.yaml`)의 한도 합계 1,760 MB도 같은 VPS에서 나간다. 둘을 더하면 7,328 MB라서, 배포한 뒤 `docker stats`로 실제 사용량을 꼭 확인한다.
 
 | 서비스 | 하는 일 | 한도 |
 | --- | --- | --- |
-| `proxy` | Traefik. TLS를 끝내고 `AI_HOST` → `ai-worker:8080`, `DISPATCH_HOST` → `dispatcher:8091`로 보낸다. 80/443을 여는 유일한 서비스다 | 128 MB |
-| `ai-worker` | `q:chat:priority` → `q:chat` → `q:document` 순서로 읽는다. 채팅, 기업 AI, 서류 생성, 공고 적합도를 처리한다. `SERVE_API=1`이라 core로 아직 옮기지 않은 Python 경로(임시 `ai-api`)도 같은 프로세스에서 받는다. 하네스 산출물은 `ai-data` 볼륨의 `/data/resume`에 남는다 | 1,280 MB |
+| `proxy` | Traefik. TLS를 끝내고 `AI_HOST` → `push-bot:8080`, `AGENT_HOST` → `push-agent:8080`, `DISPATCH_HOST` → `dispatcher:8091`로 보낸다. 80/443을 여는 유일한 서비스다 | 128 MB |
+| `push-bot` | 앱의 봇과 개인 채팅. `q:chat:priority` → `q:chat` → `q:document` 순서로 읽는다. 채팅, 서류 생성, 공고 적합도를 처리한다. `SERVE_API=1`이라 core로 아직 옮기지 않은 Python 경로(임시 `ai-api`)도 같은 프로세스에서 받는다. 하네스 산출물은 `ai-data` 볼륨의 `/data/resume`에 남는다. 이미지 타깃은 `push-bot`이고 Chromium이 들어 있다 | 1,280 MB |
+| `push-agent` | 웹의 기업 에이전트. `q:agent:priority` → `q:agent` 순서로 읽고 기업 턴(`employer_ai`)만 처리한다. `SERVE_API=1`로 회사 대화의 읽기 경로(`turns`, `artifacts`, `share`)와 `/healthz`를 받는다. 이미지 타깃은 `push-agent`이고 Chromium과 개인 봇 코드가 없다. `ai-data` 볼륨은 읽기 전용이다 | 384 MB |
 | `ingest-worker` | `q:ingest`. 업로드, 링크, GitHub, 공고를 잘라 `rag_nodes`에 색인한다 | 512 MB |
 | `dispatcher` | outbox를 Redis Streams로 넘기고, 지연 큐를 승격하고, 멈춘 작업을 되돌린다. `/internal/kick`, `/admin/*`, 경보를 맡는다. 유지보수 루프가 만료된 `rate_limits`와 삭제 요청 후 30일이 지난 계정을 지운다 | 128 MB |
 | `notify-worker` | `q:notify`. 알림 행을 쓰고 Expo 푸시를 보낸다 | 128 MB |
 | `redis` | 큐, 속도 제한, 락, 임베딩 캐시. 외부 포트가 없고 `push-internal` 네트워크에서만 열린다. AOF `everysec`과 RDB 스냅샷을 쓴다. `maxmemory 128mb`, `volatile-lru`라서 TTL이 있는 임베딩 캐시만 밀려나고 큐 데이터는 남는다 | 192 MB |
 | `embed` | TEI `BAAI/bge-m3` (1024차원). 가중치만 약 2.3 GB라서 `--max-batch-tokens 2048`, `--max-concurrent-requests 8`로 활성 메모리를 줄였다 | 2,816 MB |
 | `volume-init` | 배포할 때 한 번 돌고 끝난다. `traefik-acme`, `tei-models` 볼륨의 최상위 디렉터리 소유자를 non-root 사용자로 바꾼다. `CHOWN` 권한 하나만 있고 네트워크가 없다 | — |
-| 합계 | | 5,184 MB |
+| 합계 | | 5,568 MB |
 
 - `rerank`(TEI `bge-reranker-v2-m3`)는 기본으로 띄우지 않는다. 이 모델도 가중치가 약 2.3 GB다. 재정렬은 `RERANK_PROVIDER=similarity`(기본값)로 임베딩 코사인 유사도를 쓴다. 쓰려면 `EMBEDDING_PROVIDER=api`로 바꿔(아래 경고 참고) `embed`를 멈추거나 VPS를 올린 뒤 `--profile rerank`로 `rerank`를 띄우고 `RERANK_PROVIDER=tei`를 넣는다.
-- `embed`가 메모리 부족으로 재시작되면 `EMBEDDING_PROVIDER=api`로 바꾸고 `embed`를 멈춘다. 그러면 합계가 2,368 MB로 줄어든다.
+- `embed`가 메모리 부족으로 재시작되면 `EMBEDDING_PROVIDER=api`로 바꾸고 `embed`를 멈춘다. 그러면 합계가 2,752 MB로 줄어든다.
   > **경고:** `EMBEDDING_PROVIDER=api`는 서류 조각 텍스트를 OpenRouter를 거쳐 OpenAI로 보낸다. 개인정보 처리방침의 국외 이전 표(7·8항)에 OpenAI를 먼저 추가하고 문서를 새로 시행한 뒤에만 켠다. 그 전에 켜면 처리방침이 사실과 달라진다.
 
 배포한 뒤 `docker stats`로 실제 사용량을 확인한다.
@@ -215,7 +217,7 @@ KVM 2는 8,192 MB다. 관리 패널이 없어서 이 compose의 한도 합계 5,
 
 | 변수 | 값 | 되돌리기 |
 | --- | --- | --- |
-| `QUEUE_BACKEND` | `redis` | `postgres`로 바꾸면 `ai-worker`의 API 프로세스가 다시 `chat_jobs`를 직접 처리한다. core에도 같은 값을 넣는다 |
+| `QUEUE_BACKEND` | `redis` | `postgres`로 바꾸면 `push-bot`과 `push-agent`의 API 프로세스가 다시 `chat_jobs`를 직접 처리한다. `push-bot`은 회사가 없는 대화의 작업만, `push-agent`는 회사 대화의 작업만 가져간다. core에도 같은 값을 넣는다 |
 | `EMBEDDING_PROVIDER` | `tei` | `api`로 바꾸면 OpenAI 호환 `/embeddings`(1024차원)를 쓴다. 처리방침 국외 이전 표에 OpenAI를 먼저 올린 뒤에만 켠다 |
 | `RERANK_PROVIDER` | `similarity` | `tei`는 `rerank` 프로필을 띄웠을 때만 쓴다 |
 
@@ -262,7 +264,7 @@ docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/i
 코드 밖에서 준비할 것:
 
 1. Discord에 `#push-alerts` 채널과 웹훅을 만들어 `DISCORD_ALERT_WEBHOOK_URL`에 넣는다.
-2. Better Stack 무료 업타임 체크 2개(게이트웨이 `/healthz`, `https://<AI_HOST>/healthz`)를 만들고 같은 Discord 채널에 연결한다.
+2. Better Stack 무료 업타임 체크 2개(게이트웨이 `/healthz`, `https://<AI_HOST>/healthz`)를 만들고 같은 Discord 채널에 연결한다. `AGENT_HOST`를 쓰면 `https://<AGENT_HOST>/healthz`도 추가한다.
 
 ## 보관 정리
 

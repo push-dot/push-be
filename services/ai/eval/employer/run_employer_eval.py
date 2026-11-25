@@ -21,12 +21,12 @@ import json
 from pathlib import Path
 
 from app.config import load_config
-from app.domain.fair_hiring import banned_in_interview, banned_in_posting, verdicts_in
+from push_agent.domain.fair_hiring import banned_in_interview, banned_in_posting, verdicts_in
 from app.domain.plan_levers import PlanLevers, levers_for
 from app.framework.llm import chat_model_for
-from app.harness.employer import nodes
-from app.harness.employer.llm import structured_generate
-from app.harness.employer.schemas import Flag, PostingDraft
+from push_agent.harness import nodes
+from push_agent.harness.llm import structured_generate
+from push_agent.harness.schemas import Flag, PostingDraft
 
 CASES = json.loads((Path(__file__).parent / "cases.json").read_text(encoding="utf-8"))
 

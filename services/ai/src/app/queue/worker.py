@@ -11,7 +11,7 @@ from datetime import timedelta
 from app.clock import utcnow
 from app.domain.errors import missing_provider_key
 from app.queue.backoff import backoff_seconds
-from app.queue.config import job_deadlines
+from app.queue.config import TURN_QUEUES, job_deadlines
 from app.queue.fairness import refresh_slot, release_slot, try_slot
 from app.queue.locks import LockBusy, job_lock
 from app.queue.streams import Message, StreamQueue
@@ -202,6 +202,14 @@ class Worker:
         if job is None:
             await self.queue.ack(msg.queue, self.group, msg.id)
             return "skip"
+        home = self._home(job, msg)
+        if home is not None:
+            # The row first: if the add is lost, the dispatcher rehydrates the job from its new queue.
+            await self.db.forward(job["id"], home, now)
+            await self.queue.add(home, job["id"])
+            await self.queue.ack(msg.queue, self.group, msg.id)
+            logger.info(json.dumps({"jobId": str(job["id"]), "type": job["type"], "step": "forwarded", "queue": home}))
+            return "forwarded"
         started = time.perf_counter()
         log: dict = {}
         try:
@@ -218,6 +226,20 @@ class Worker:
             "latencyMs": int((time.perf_counter() - started) * 1000),
         }, ensure_ascii=False))
         return outcome
+
+    def _home(self, job, msg: Message) -> str | None:
+        """The other service's stream for a turn this worker has no handler for.
+
+        Core routes employer turns to q:agent*; a core deployed before the split, or rolled back, still
+        sends them to q:chat*, where push-bot's worker reads them.
+        """
+        if job["type"] in self.handlers:
+            return None
+        base = TURN_QUEUES.get(job["type"])
+        if base is None:
+            return None
+        home = base + ":priority" if msg.queue.endswith(":priority") else base
+        return None if home in self.queues else home
 
     async def _run(self, job, msg: Message, log: dict, renew_lock: Renew) -> str:
         slots: list[str] = []

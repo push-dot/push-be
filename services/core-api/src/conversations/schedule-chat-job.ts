@@ -22,9 +22,12 @@ async function wakeVps(ctx: Ctx, origin: string, jobId: string): Promise<void> {
   }
 }
 
+const originOf = (value: string | undefined): string => (value || "").trim().replace(/\/+$/, "");
+
 // The VPS claims the inserted row. An empty origin is a configuration error.
-export const scheduleChatJob = async (ctx: Ctx, jobId: string): Promise<void> => {
-  const origin = (ctx.env.AI_ORIGIN || "").trim().replace(/\/+$/, "");
+// A company conversation's job belongs to push-agent; without AGENT_ORIGIN the wake goes to push-bot and push-agent's own poll claims it.
+export const scheduleChatJob = async (ctx: Ctx, jobId: string, companyId?: string): Promise<void> => {
+  const origin = (companyId ? originOf(ctx.env.AGENT_ORIGIN) : "") || originOf(ctx.env.AI_ORIGIN);
   if (!origin) {throw new HttpError(500, "NOT_CONFIGURED", "ai origin is not configured");}
   await wakeVps(ctx, origin, jobId);
 };

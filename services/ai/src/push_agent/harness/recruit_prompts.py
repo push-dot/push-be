@@ -5,9 +5,10 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-_RES = Path(__file__).resolve().parents[2] / "resources"
-RECRUIT_ROOT = _RES / "super-recruit"
-RESUME_ROOT = _RES / "super-resume"
+import app
+
+RECRUIT_ROOT = Path(__file__).resolve().parents[1] / "resources" / "super-recruit"
+RESUME_ROOT = Path(app.__file__).resolve().parent / "resources" / "super-resume"
 
 # competency-signals is shared with super-resume: the bar job seekers write to is the bar
 # recruiters read with.

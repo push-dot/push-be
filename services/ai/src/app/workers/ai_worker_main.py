@@ -1,21 +1,7 @@
+"""The queue worker both services run: each passes the streams it reads and the job types it handles."""
+
 import asyncio
 import os
-
-AI_WORKER_QUEUES = ["q:chat:priority", "q:chat", "q:document"]
-
-
-def ai_handlers(deps, query) -> dict:
-    from app.workers.handlers.chat import chat
-    from app.workers.handlers.document import make_document
-    from app.workers.handlers.fit import make_fit
-
-    gate = getattr(getattr(deps, "ai", None), "gate", None)
-    return {
-        "chat": chat,
-        "employer_ai": chat,
-        "document": make_document(deps.documents),
-        "fit": make_fit(query, gate),
-    }
 
 
 async def build_chat(svc) -> None:
@@ -39,7 +25,9 @@ async def serve_api(app, worker) -> None:
         worker.stop()
 
 
-async def main() -> None:
+async def run(app, *, queues, handlers, group, consumer, fair_queue=None) -> None:
+    """`handlers(deps, query)` maps this service's job types to their handlers. `group` and `consumer`
+    are the defaults QUEUE_GROUP and QUEUE_CONSUMER override."""
     import logging
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -47,7 +35,7 @@ async def main() -> None:
 
     from app.clock import utcnow
     from app.infrastructure.store_chat_jobs import QueueJobs
-    from app.main import app, ensure_ready
+    from app.main import ensure_ready
     from app.queue.credits import release_job, settle_job
     from app.queue.streams import StreamQueue
     from app.queue.worker import Worker
@@ -70,12 +58,12 @@ async def main() -> None:
     worker = Worker(
         StreamQueue(redis),
         QueueJobs(svc.jobs),
-        os.environ.get("QUEUE_GROUP", "ai"),
-        os.environ.get("QUEUE_CONSUMER", "ai-worker"),
-        AI_WORKER_QUEUES,
-        ai_handlers(app.state.deps, app.state.db.q),
+        os.environ.get("QUEUE_GROUP", group),
+        os.environ.get("QUEUE_CONSUMER", consumer),
+        queues,
+        handlers(app.state.deps, app.state.db.q),
         int(os.environ.get("QUEUE_CONCURRENCY", "4")),
-        fair_queue="q:document",
+        fair_queue=fair_queue,
         settle=settle,
         release=release,
     )
@@ -87,7 +75,3 @@ async def main() -> None:
         await asyncio.gather(*runs)
     finally:
         await redis.aclose()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

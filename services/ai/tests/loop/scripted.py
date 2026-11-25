@@ -126,7 +126,7 @@ _PATCHED = (("app.harness.runtime", "fetch_page_text"), ("app.rag.readers", "fet
             ("app.harness.personal.tools", "fetch_page"), ("app.harness.personal.resume.tools", "fetch_page"),
             ("app.harness.personal.resume.source_agents", "fetch_page"), ("app.framework.fit_judge", "judge_fit"),
             ("app.harness.personal.resume.tools", "judge_fit"), ("app.harness.personal.tools", "judge_fit"),
-            ("app.harness.employer.tools", "judge_fit"), ("app.infrastructure.posting_fit_cache", "judge_fit"))
+            ("push_agent.harness.tools", "judge_fit"), ("app.infrastructure.posting_fit_cache", "judge_fit"))
 
 
 @contextmanager

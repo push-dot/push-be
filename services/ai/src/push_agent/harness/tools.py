@@ -178,7 +178,7 @@ def _kept(args, drop: set[str]) -> dict:
 
 async def _fit(ctx: ToolContext, args: FitArgs) -> dict:
     from app.domain.employer_chat import current_employer_plan
-    from app.harness.personal.tools import current_ai_gate
+    from app.harness.binding import current_ai_gate
     from app.infrastructure.posting_fit_cache import company_posting
 
     if ctx is None or ctx.db is None or args.posting_id is None:

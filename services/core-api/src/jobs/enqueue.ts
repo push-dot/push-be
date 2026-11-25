@@ -98,7 +98,7 @@ type Row = NonNullable<Awaited<ReturnType<typeof one>>>;
 
 interface Queued { jobId: string; queue: QueueName }
 
-const QUEUE_NAMES: ReadonlyArray<QueueName> = ["q:chat:priority", "q:chat", "q:document", "q:ingest", "q:notify", "q:dead"];
+const QUEUE_NAMES: ReadonlyArray<QueueName> = ["q:chat:priority", "q:chat", "q:agent:priority", "q:agent", "q:document", "q:ingest", "q:notify", "q:dead"];
 
 // ai_jobs.queue only ever holds a name queueFor returned; anything else is a corrupt row.
 const queueNameOf = (value: DbValue | undefined): QueueName => {

@@ -58,6 +58,11 @@ class MemoryJobs:
             job["status"] = "QUEUED"
             job["updated_at"] = now
 
+    async def forward(self, job_id, queue, now):
+        job = self.jobs[job_id]
+        if job["status"] == "RUNNING":
+            job.update(status="QUEUED", queue=queue, heartbeat_at=None, updated_at=now)
+
     async def touch(self, job_id, now):
         if self.jobs[job_id]["status"] == "RUNNING":
             self.jobs[job_id]["heartbeat_at"] = now

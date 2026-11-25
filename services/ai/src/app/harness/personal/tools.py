@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import json
 from dataclasses import replace
 from typing import Literal
@@ -19,6 +18,7 @@ from app.domain.validators import validate_https_url
 from app.framework.fit_judge import judge_fit
 from app.harness.approval import approval_id_for, site_granted, site_host, user_supplied
 from app.harness.approvals import insert_chat_approval
+from app.harness.binding import bound_services, current_ai_gate
 from app.harness.core_client import idempotency_key
 from app.harness.document_edits import apply_edit
 from app.harness.graph import _dictated, drop_flow_notes, enter_flow, turn_model
@@ -32,18 +32,6 @@ from app.harness.tools import OptionalId, ToolContext, ToolSpec, emit
 from app.infrastructure.posting_fit_cache import load_fit, read_plan
 from app.ingest.web_page import LeftSite, fetch_page
 from app.jsonutil import to_jsonable
-
-bound_services: contextvars.ContextVar = contextvars.ContextVar(
-    "harness_services", default=None)
-
-
-def current_ai_gate():
-    svc = bound_services.get()
-    gate = getattr(svc, "ai", None) if svc is not None else None
-    if gate is None or not hasattr(gate, "_reserve"):
-        return None
-    return gate
-
 
 class EmptyArgs(BaseModel):
     pass

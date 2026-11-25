@@ -129,6 +129,7 @@ async def _bootstrap(app: FastAPI, cfg: Config) -> None:
         conversations = ConversationService(
             db, gate, await _chat_checkpointer(cfg, stack), documents,
             jobs_svc, applications)
+        conversations.jobs.audience = getattr(app.state, "audience", None)
         if runs_local_chat_worker():
             await conversations.start_worker()
             stack.push_async_callback(conversations.stop_worker)
@@ -170,7 +171,16 @@ async def _shutdown(app: FastAPI) -> None:
         await stack.aclose()
 
 
-def create_app(cfg: Config | None = None) -> FastAPI:
+API_ROUTERS = (
+    evidence.router, jobs.router, applications.router, documents.router, projects.router,
+    interviews.router, conversations.router, bots.router, approvals.router, operations.router,
+    ai.router, me.router,
+)
+
+
+def create_app(cfg: Config | None = None, *, routers=API_ROUTERS, audience: str | None = None) -> FastAPI:
+    """`routers` are the /api/v1 routes this service answers. `audience` is whose chat jobs its
+    in-process worker claims ("personal", "company"); None claims every one."""
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await ensure_ready(app, cfg)
@@ -180,6 +190,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             await _shutdown(app)
 
     app = FastAPI(lifespan=lifespan)
+    app.state.audience = audience
     app.add_exception_handler(DomainError, domain_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.add_exception_handler(HTTPException, http_error_handler)
@@ -200,10 +211,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     app.add_middleware(SharedSecretMiddleware)
     app.add_middleware(RequestIDMiddleware)
 
-    for r in (evidence.router, jobs.router, applications.router,
-              documents.router, projects.router, interviews.router,
-              conversations.router, bots.router, approvals.router,
-              operations.router, ai.router, me.router):
+    for r in routers:
         app.include_router(r, prefix="/api/v1")
     app.include_router(internal.router)
 

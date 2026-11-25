@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from app.harness.employer.tools import EMPLOYER_TOOLS
+from push_agent.harness.tools import EMPLOYER_TOOLS
 from app.harness.personal.tools import PERSONAL_TOOLS
 from app.harness.policy import Tier
 from app.harness.personal.resume.tools import RESUME_TOOLS
