@@ -8,9 +8,9 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 from app.domain.services.conversation import ConversationService
+from app.harness.approval import approval_id_for
 from app.harness.core_client import CoreClient
 from app.harness.graph import astream_harness, build_harness_graph
-from app.harness.approval import approval_id_for
 from app.harness.policy import ALWAYS_ASK_TOOLS, Tier
 from app.harness.registry import REGISTRY
 from app.harness.router import select_harness
@@ -35,6 +35,7 @@ _TIERS = {
     "get_fit_score": Tier.READ,
     "search_career_context": Tier.READ,
     "read_page": Tier.EXTERNAL_READ,
+    "read_sources": Tier.READ,
     "bookmark_posting": Tier.SAFE_WRITE,
     "unbookmark_posting": Tier.SAFE_WRITE,
     "create_calendar_event": Tier.SAFE_WRITE,
@@ -55,6 +56,7 @@ _TIERS = {
 }
 
 _PYTHON = {
+    "read_sources",
     "read_page",
     "list_documents",
     "get_document",
@@ -381,8 +383,8 @@ async def test_start_document_marks_resume_active():
     assert result.goto == "resume_flow"
     assert result.update["resume"]["status"] == "active"
     assert result.update["resume"]["phase"] == "mode_select"
-    assert "resume_state" in db.calls[0][0]
-    assert db.calls[0][1][0] == "conv-1"
+    [update] = [call for call in db.calls if "resume_state" in call[0]]
+    assert update[1][0] == "conv-1"
 
 
 _PHASES = (
@@ -421,7 +423,7 @@ def _flow_input(conversation_id: str, phase: str | None = None) -> dict:
             "conversation_id": conversation_id,
             "user_id": "user-1",
             "job_id": _JOB,
-            "access_mode": "AUTO",
+            "access_mode": "ALWAYS_ASK",
         }
     return payload
 
@@ -539,20 +541,22 @@ async def test_cancel_text_returns_to_agent_same_thread(text):
     assert any(event.get("token") == "다른 걸 도와드릴까요?" for event in events)
 
 
-async def test_the_profile_save_is_not_confirmed_and_returns_to_agent_same_thread():
-    saver = MemorySaver()
-    graph = _flow_graph(saver, ScriptedChat([{"content": "다음을 도와드릴까요?"}]), None)
+async def test_a_finished_flow_ends_the_turn_without_another_agent_call():
+    # An agent turn after the flow saw only the old request and redid it or denied the result.
+    model = ScriptedChat([{"content": "아직 아무것도 만들지 않았어요.", "tool_calls": [
+        {"name": "start_document", "args": {}, "id": "again"}]}])
+    graph = _flow_graph(MemorySaver(), model, None)
     config = _flow_config("conv-done")
     events = await _drain(graph, _flow_input("conv-done", "present"), config)
     done = await graph.aget_state(config)
     assert done.next == ()
     assert done.values["resume"]["status"] == "done"
     assert not any(event.get("type") == "choice" and not event.get("auto") for event in events)
-    assert any(event.get("token") == "다음을 도와드릴까요?" for event in events)
-    assert any(
-        getattr(message, "content", "") == "서류 작성을 끝냈어요."
-        for message in done.values["messages"]
-    )
+    assert model.seen == []
+    assert not any(event.get("token") == "아직 아무것도 만들지 않았어요." for event in events)
+    last = done.values["messages"][-1]
+    # The flow's own closing line is what the user saw, so it is what the transcript keeps.
+    assert last.type == "ai" and last.content == "결과를 정리했어요."
 
 
 async def test_ainvoke_into_active_resume_reaches_the_gate_without_a_stream(monkeypatch):

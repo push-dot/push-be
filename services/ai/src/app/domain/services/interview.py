@@ -30,12 +30,11 @@ class InterviewService:
         self.ai = ai
 
     async def prepare(self, user_id: UUID, id_: UUID, expected: int,
-                      ai: Optional[ent.AiOptions]) -> ent.Operation:
+                      ai: Optional[ent.AiOptions], model=None) -> ent.Operation:
+        """``model`` is the chat turn's model; None (the REST path) keeps the rule-based output."""
         await self.ai.check(user_id, ai)
-        op = None
 
-        async def work():
-            nonlocal op
+        async def load():
             try:
                 v = await self.interviews.get(user_id, id_)
             except NotFoundError:
@@ -54,11 +53,13 @@ class InterviewService:
                 for req in job.requirements
             ]
             star_answers = []
+            rows = []
             for eid in v.evidence_ids:
                 try:
                     e = await self.evidence.get(user_id, eid)
                 except NotFoundError:
                     raise not_found()
+                rows.append(e)
                 star_answers.append({
                     "evidenceIds": [str(eid)], "situation": e.title,
                     "task": "", "action": "", "result": "",
@@ -72,16 +73,31 @@ class InterviewService:
                     "claim": claim, "sourceUrl": cs.source_url,
                     "accessedAt": _ts(cs.accessed_at),
                     "verificationStatus": ent.VERIFICATION_USER_PROVIDED})
+            value = {"questions": questions, "starAnswers": star_answers,
+                     "research": research}
+            return v, job, rows, value
+
+        async def save(application_id, value):
             now = utcnow()
             op = ent.Operation(
                 id=uuid4(), user_id=user_id, type=ent.OP_INTERVIEW_PREPARE,
-                application_id=v.application_id, status=ent.OP_SUCCEEDED,
+                application_id=application_id, status=ent.OP_SUCCEEDED,
                 result=ent.OperationResult(
-                    kind=ent.OP_INTERVIEW_PREPARE,
-                    value={"questions": questions, "starAnswers": star_answers,
-                           "research": research}),
+                    kind=ent.OP_INTERVIEW_PREPARE, value=value),
                 created_at=now, updated_at=now)
             await self.ops.create(op)
+            return op
 
-        await self.db.run(work)
-        return op
+        if model is None:
+            async def work():
+                v, _, _, value = await load()
+                return await save(v.application_id, value)
+
+            return await self.db.run(work)
+        # Model calls run outside the transaction, so no connection is held while they run.
+        from app.harness.personal.interview_prep import prepare as prepare_with_model
+
+        v, job, rows, value = await self.db.run(load)
+        value = await prepare_with_model(
+            model, list(job.requirements), rows, list(v.company_sources), value)
+        return await self.db.run(lambda: save(v.application_id, value))

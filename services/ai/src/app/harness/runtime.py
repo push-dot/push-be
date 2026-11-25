@@ -20,13 +20,17 @@ from app.framework.untrusted import strip_exfil
 from app.harness.document_edits import env_core
 from app.harness.consent import require_consent
 from app.harness.graph import (
-    RECURSION_LIMIT, _open_calls, _seen_text, build_harness_graph, quick_start_resume,
-    turn_model,
+    RECURSION_LIMIT, _open_calls, _seen_text, build_harness_graph, drop_flow_notes,
+    quick_start_resume, turn_model,
 )
+from app.harness.kstyle import stats
 from app.harness.model import GateModel, StubModel, settle_turn
 from app.harness.personal.tools import bound_services
 from app.harness.personal.resume.graph import bound_core, merge_inputs
-from app.harness.personal.resume.subject import saved_for_turn, turn_links, turn_posting
+from app.harness.personal.resume.profile_document import resolve_uploaded_source
+from app.harness.personal.resume.subject import (
+    own_material, resume_request, saved_for_turn, turn_links, turn_posting,
+)
 from app.harness.router import select_harness
 from app.harness.sources import TurnSources, current_sources, listed
 from app.harness.status import THINKING, Run, current_run, wire_time
@@ -39,7 +43,7 @@ _PLACEHOLDER_TITLES = {"새 채팅", "New chat", ""}
 _TEXT_GATES = ("RESUME_GATE", "EMPLOYER_GATE")
 _POSTING_TEXT_CAP = 6000
 _PAGES_PER_TURN = 2
-_INPUT_KEYS = ("pages", "attachments", "documentId", "postingId")
+_INPUT_KEYS = ("pages", "attachments", "documentId", "postingId", "github", "links")
 
 
 def _column(row: Any, key: str) -> Any:
@@ -190,7 +194,11 @@ def _gate_answer(resume: dict) -> dict:
 
 async def _turn_inputs(payload: dict) -> dict:
     context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
-    urls = turn_links(payload)[:_PAGES_PER_TURN]
+    links = turn_links(payload)
+    # GitHub links go to the GitHub step, so they never take one of the turn's page reads.
+    github = [url for url in links if own_material(url)]
+    others = [url for url in links if not own_material(url)]
+    urls = others[:_PAGES_PER_TURN]
     bodies = await asyncio.gather(*(fetch_page_text(url) for url in urls), return_exceptions=True)
     pages = {}
     for url, body in zip(urls, bodies):
@@ -202,6 +210,11 @@ async def _turn_inputs(payload: dict) -> dict:
     document_id = context.get("documentId")
     if document_id:
         incoming["documentId"] = str(document_id)
+    if github:
+        incoming["github"] = github
+    # Links past the prefetched ones stay openable: the flow's open_page reads them on demand.
+    if others[_PAGES_PER_TURN:]:
+        incoming["links"] = others[_PAGES_PER_TURN:]
     return incoming
 
 
@@ -228,6 +241,8 @@ def _final_text(values: dict) -> str:
 def _flow_reply(snapshot) -> tuple[str, str]:
     for task in getattr(snapshot, "tasks", ()) or ():
         values = getattr(getattr(task, "state", None), "values", None) or {}
+        if not values.get("reply") and isinstance(values.get("flow"), dict):
+            values = values["flow"]  # an employer flow keeps its reply in the flow dict
         reply = values.get("reply") or ""
         if isinstance(reply, str) and reply:
             return reply, str(values.get("reply_job") or "")
@@ -386,6 +401,7 @@ class HarnessRuntime:
             (bound_core, bound_core.set(self._core)),
             (current_run, current_run.set(run)),
             (current_sources, current_sources.set(TurnSources())),
+            (stats.current, stats.current.set(turn)),
         ]
         plan_token = bind_employer_plan(plan or "") if spec.id == "employer" else None
         ok = False
@@ -398,6 +414,7 @@ class HarnessRuntime:
                 yield item
             ok = True
         finally:
+            logging.getLogger(__name__).info("turn stats %s", json.dumps(stats.summary(turn), ensure_ascii=False))
             gate = getattr(self.svc, "ai", None)
             if gate is not None:
                 await settle_turn(gate, turn, ok)
@@ -445,25 +462,46 @@ class HarnessRuntime:
                 start = employer_start(payload, conversation)
                 if start is not None:
                     state["start_flow"] = start
-            if spec.id == "personal" and _saved_resume((snapshot.values or {}).get("resume")).get("status") != "active":
+            flowing = _saved_resume((snapshot.values or {}).get("resume")).get("status") == "active"
+            if spec.id == "personal" and flowing and waiting is None and text.strip():
+                # A message mid-flow with no gate open steers the flow instead of going unread.
+                state["steer"] = text
+            if spec.id == "personal" and not flowing:
                 saved = _saved_resume(conversation.get("resume_state"))
                 context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
                 state["context"] = context
                 state["quick_start"] = None
                 state["quick_start_done"] = False
+                asked = not payload.get("intent") and resume_request(text, context)
+                # A plain "이력서 만들어줘" with material is the posting quick start.
+                intent = "match_posting" if asked else payload.get("intent")
                 if saved.get("status") == "active":
                     seeded = _resume_state(payload, conversation)
                     incoming = await self._inputs(payload)
                     seeded["inputs"] = merge_inputs(seeded.get("inputs") or {}, incoming)
                     state["resume"] = seeded
-                elif quick_start_resume(payload.get("intent"), saved) is not None:
-                    state["intent"] = payload.get("intent")
+                elif quick_start_resume(intent, saved) is not None:
+                    state["intent"] = intent
                     posting = turn_posting(payload, conversation.get("bot"))
                     incoming = await self._inputs(payload, posting)
-                    base = dict(saved_for_turn(saved, posting, turn_links(payload)))
+                    kept = saved_for_turn(saved, posting, turn_links(payload))
+                    dropped = kept is not saved and bool(saved.get("inputs"))
+                    if dropped:
+                        await drop_flow_notes(self.svc.db, payload["conversation_id"])
+                    base = dict(kept)
                     if any(incoming.get(key) for key in _INPUT_KEYS):
                         base["inputs"] = merge_inputs(base.get("inputs") or {}, incoming)
-                    if base:
+                    if asked:
+                        # Naming an uploaded resume, as the agent's attachment route does,
+                        # which a set intent skips.
+                        stamped = await resolve_uploaded_source(
+                            self.svc.db,
+                            {"user_id": payload.get("user_id"), "inputs": base.get("inputs") or {}},
+                        )
+                        if stamped:
+                            base["inputs"] = stamped["inputs"]
+                    if base or dropped:
+                        # Empty too when dropped: the checkpoint's old flow must not carry over.
                         state["resume"] = base
                 elif quick_start_seed(payload.get("intent"), text, context) is not None:
                     state["intent"] = payload.get("intent")
@@ -553,8 +591,12 @@ class HarnessRuntime:
         )
 
     async def _stream_graph(self, graph, state, config, stream_mode):
-        async for mode, chunk in graph.astream(
-                state, config, stream_mode=stream_mode or ["custom", "values"]):
+        # Employer flows are subgraph nodes: their events stream one namespace down. Only the root's
+        # values are the turn's state, and a child's __interrupt__ would add a second done.
+        async for namespace, mode, chunk in graph.astream(
+                state, config, stream_mode=stream_mode or ["custom", "values"], subgraphs=True):
+            if namespace and mode != "custom":
+                continue
             yield mode, chunk
             if mode == "values" and isinstance(chunk, dict) and chunk.get("__interrupt__"):
                 value = getattr(chunk["__interrupt__"][0], "value", None) or {}

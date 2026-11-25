@@ -1,0 +1,67 @@
+{
+  "surface": "employer",
+  "domain": "의료기기 펌웨어",
+  "seniority": "시니어",
+  "intent": "posting",
+  "text": "펌웨어 리드 공고 써 줘",
+  "conversation": {
+    "company_id": "4d000000-0000-4000-8000-000000000004",
+    "resume_state": null
+  },
+  "max_turns": 5,
+  "script": {
+    "입장의 검토자": {
+      "objections": []
+    },
+    "CompanyProfile": {
+      "name": "회사 D",
+      "summary": "가정용 측정 기기를 만드는 회사"
+    },
+    "RoleOptions": {
+      "options": [
+        {
+          "id": "fw",
+          "label": "측정 기기 펌웨어를 이끌 리드"
+        },
+        {
+          "id": "qa",
+          "label": "인증 시험을 맡을 품질 담당자"
+        }
+      ]
+    },
+    "RoleSpec": {
+      "need": "펌웨어 리드",
+      "career_min": 8,
+      "career_max": 12
+    },
+    "PostingDraft": {
+      "title": "펌웨어 리드",
+      "description": [
+        "측정 기기 펌웨어 설계를 이끌어요"
+      ],
+      "requirements": [
+        "C로 임베디드 펌웨어를 개발한 경험 8년 이상"
+      ],
+      "preferred": [
+        "저전력 설계 경험"
+      ]
+    },
+    "PostingReview": {
+      "draft": {
+        "title": "펌웨어 리드",
+        "description": [
+          "측정 기기 펌웨어 설계를 이끌어요"
+        ],
+        "requirements": [
+          "C로 임베디드 펌웨어를 개발한 경험 8년 이상"
+        ],
+        "preferred": [
+          "저전력 설계 경험"
+        ]
+      }
+    },
+    "": [
+      "공고 초안을 저장했어요."
+    ]
+  }
+}

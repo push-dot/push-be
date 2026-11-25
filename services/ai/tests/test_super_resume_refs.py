@@ -5,7 +5,7 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1] / "src" / "app" / "resources" / "super-resume"
 _SHA = "225e303689f3986b01dff16323c31d37c867400a"
-_PUSH_EDITS = frozenset({"skills/blueprint-generator.md"})
+_PUSH_EDITS = frozenset({"skills/blueprint-generator.md", "skills/github-explorer.md"})
 _UPSTREAM_BLUEPRINT = "855855a634ab5d5456d79f10d3693415bd49fb6730717aa3de47db5d9e4bb8ab"
 _MATCH = {
     "orchestrator.md": "47e13527bff08ee9cd11f23b266d8b7f2171a02524cf66cab968f298da712d88",
@@ -20,7 +20,6 @@ _MATCH = {
     "skills/bottleneck-validator.md": "c6dade1dd2064bc4045650da72ba0d06258e204cf88228e1efeccc013fc72a23",
     "skills/content-craft.md": "c9ae1c005ff20475c9805e5739444e54f6129ef8e77a29ee30356d813ba2e690",
     "skills/content-strategy.md": "2858e710f5c6bc34e3ea90d04ee5d1e1765dda64f298f0d123eedca2ccb9362d",
-    "skills/github-explorer.md": "47475a80e3a60d413824c321935117a9cd128c3dd1ac15d8e813e8d8c3bdec53",
     "skills/input-collector.md": "90448c2074950470ce11710f9d7c30c75e57ecaaa19828ce2badb12de56f8d24",
     "skills/job-analyzer.md": "04690e23cf522475b34a42430e76bd44c4465a9d9c66d5d6692fc19c772a50c6",
     "skills/pdf-publisher.md": "95393101037b4f438316649d8ec53bcc3e9d9055a400d90a44c444d5f6d4ff7d",

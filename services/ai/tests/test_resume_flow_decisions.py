@@ -377,7 +377,7 @@ async def test_fit_quick_start_copies_context_document_id(monkeypatch):
         "user_id": "88888888-8888-4888-8888-888888888888",
         "conversation_id": str(CONV),
         "job_id": "99999999-9999-4999-8999-999999999999",
-        "access_mode": "AUTO",
+        "access_mode": "ALWAYS_ASK",
         "ai": None,
         "context": {"documentId": _DOC},
         "intent": "fit",
@@ -391,3 +391,133 @@ async def test_fit_quick_start_copies_context_document_id(monkeypatch):
     assert saved["scenario"] == "E"
     assert saved["phase"] == "craft"
     assert UUID(saved["inputs"]["documentId"])
+
+
+_BOARD_PAGE = (
+    "자격요건 Kotlin 서버 개발 경험이 있으신 분 Spring 기반 주문 API 설계 경험이 있으신 분 "
+    "우대사항 배송 추적 시스템을 운영해 보신 분 혜택 점심 지원"
+)
+
+
+async def test_readable_page_skips_read_failed_gate_despite_read_error(monkeypatch):
+    _flat(monkeypatch)
+    model = _PhaseModel({"analyze": {"jobs": {"read_error": "로그인이 필요한 영역"}}})
+    graph = _graph(_Approvals(), model=model)
+    config = _config()
+    events = await _events(graph, _base(
+        phase="analyze", inputs={"pages": {"https://www.jobboard.com/positions/1": _BOARD_PAGE}},
+    ), config)
+    assert not any(event.get("gate") == "read_failed" for event in events)
+    jobs = (await graph.aget_state(config)).values["analysis"]["jobs"]
+    assert "read_error" not in jobs
+    assert jobs["required"][1] == "Spring 기반 주문 API 설계 경험이 있으신 분"
+    assert jobs["preferred"] == ["배송 추적 시스템을 운영해 보신 분"]
+
+
+def test_normalize_analysis_coerces_every_job_shape():
+    from app.harness.personal.resume.graph import normalize_analysis
+
+    one = {"company": "잡보드", "title": "FE", "requirements": ["React"], "preferred": ["Next.js"]}
+    shapes = [
+        {"jobs": one},
+        {"job": one},
+        {"posting": one},
+        {"jobs": [one]},
+        {"jobs": {"postings": [one]}},
+        {"jobs": {"jobboard": one}},
+    ]
+    for output in shapes:
+        jobs = normalize_analysis({}, output)["jobs"]
+        assert jobs["company"] == "잡보드", output
+        assert jobs["required"] == ["React"], output
+        assert jobs["preferred"] == ["Next.js"], output
+        assert "requirements" not in jobs
+    fixed = normalize_analysis({}, {"job": one, "message": "ok"})
+    assert set(fixed) == {"jobs", "message"}
+
+
+def test_normalize_analysis_fills_terms_from_what_we_hold():
+    from app.harness.personal.resume.graph import normalize_analysis, posting_unreadable
+
+    posting = {"company": "모아페이", "title": "백엔드", "requirements": ["Kotlin"]}
+    filled = normalize_analysis({"posting": posting}, {"jobs": {"read_error": "차단"}})
+    assert filled["jobs"]["required"] == ["Kotlin"]
+    assert filled["jobs"]["company"] == "모아페이"
+    assert "read_error" not in filled["jobs"]
+    pages = {"https://github.com/me": "자격요건 남의 글 분", "https://a.kr/1": _BOARD_PAGE}
+    paged = normalize_analysis({"pages": pages}, {})
+    assert "남의 글 분" not in paged["jobs"]["required"]
+    assert not posting_unreadable({"pages": pages}, paged)
+    blank = {"pages": {"https://a.kr/1": "공고 본문"}}
+    failed = normalize_analysis(blank, {"jobs": {"read_error": "차단"}})
+    assert failed["jobs"]["read_error"] == "차단"
+    assert posting_unreadable(blank, failed)
+    assert normalize_analysis({}, {"summary": "x"}) == {"summary": "x"}
+
+
+def test_only_user_named_sections_that_the_plan_cuts_or_condenses_are_asked():
+    from app.harness.personal.resume.graph import strategy_asks
+
+    output = {"sections": [
+        {"section": "프로젝트", "action": "remove", "reason": "공고와 멀어요"},
+        {"section": "자격증", "action": "remove", "reason": "공고와 멀어요"},
+        {"section": "경력", "action": "condense", "reason": "길어요"},
+        {"section": "학력", "action": "keep", "reason": ""},
+    ]}
+    said = ["프로젝트 섹션은 꼭 살려 주세요", "경력  위주로, 학력도 넣어 주세요"]
+    assert strategy_asks(output, said) == [
+        {"what": "프로젝트", "why": "공고와 멀어요"},
+        {"what": "경력", "why": "길어요"},
+    ]
+    assert strategy_asks(output, []) == []
+
+
+async def test_the_strategy_gate_carries_the_ask_once(monkeypatch):
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from app.harness.personal.resume.graph import build_resume_graph
+    from tests.test_resume_agentic_flow import _ANALYSIS, _Files, _FlowModel, _until_stop, _waiting
+
+    _flat(monkeypatch)
+    cut = {"message": "전략", "sections": [
+        {"section": "프로젝트", "action": "remove", "reason": "공고와 멀어요"},
+        {"section": "자격증", "action": "remove", "reason": "공고와 멀어요"}]}
+    model = _FlowModel({"strategy": cut})
+    graph = build_resume_graph(MemorySaver(), model=model, db=_Files())
+    config = _config()
+    snap, events = await _until_stop(graph, _base(
+        phase="strategy", access_mode="AUTO", analysis=_ANALYSIS,
+        inputs={"steer": ["프로젝트는 빼지 말아 주세요"], "pages": {"https://jobs.example/1": "React"}}), config)
+    assert _waiting(snap) == "strategy"
+    card = next(event for event in events if event.get("type") == "choice" and event.get("gate") == "strategy")
+    assert card["detail"].split("\n") == [
+        "이렇게 정했어요. 괜찮으면 '그대로', 다시 넣을 게 있으면 알려 주세요.",
+        "1. 프로젝트 — 공고와 멀어요",
+    ]
+    assert [option["id"] for option in card["options"]] == ["continue", "restore", "2-B", "cancel"]
+    assert card["recommended"] == "continue"
+    # 다시 넣기 steers strategy to run again, and the same cut does not ask a second time.
+    snap, events = await _until_stop(graph, Command(resume={"option_id": "restore"}), config)
+    assert "다시 넣기: 프로젝트" in snap.values["inputs"]["steer"]
+    assert model.calls.count("strategy") == 2
+    assert _waiting(snap) == "strategy"
+    card = next(event for event in events if event.get("type") == "choice" and event.get("gate") == "strategy")
+    assert "detail" not in card
+    assert [option["id"] for option in card["options"]] == ["continue", "2-B", "cancel"]
+
+
+async def test_no_ask_when_the_user_named_nothing_the_plan_drops(monkeypatch):
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from app.harness.personal.resume.graph import build_resume_graph
+    from tests.test_resume_agentic_flow import _ANALYSIS, _Files, _FlowModel, _until_stop
+
+    _flat(monkeypatch)
+    model = _FlowModel({"strategy": {"message": "전략", "sections": [
+        {"section": "자격증", "action": "remove", "reason": "공고와 멀어요"}]}})
+    graph = build_resume_graph(MemorySaver(), model=model, db=_Files())
+    _snap, events = await _until_stop(graph, _base(
+        phase="strategy", access_mode="AUTO", analysis=_ANALYSIS,
+        inputs={"pages": {"https://jobs.example/1": "React"}}), _config())
+    card = next(event for event in events if event.get("type") == "choice" and event.get("gate") == "strategy")
+    assert "detail" not in card

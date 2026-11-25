@@ -64,6 +64,7 @@ class PostingReview(BaseModel):
     notes: list[str] = []
     draft: PostingDraft
     ask_salary: bool = False
+    removed: list[str] = []  # lines code cut after the review; set by code, not the model
 
 
 class Match(BaseModel):

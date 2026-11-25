@@ -17,7 +17,7 @@ from app.harness.model import GateModel, settle_turn
 from app.harness.registry import REGISTRY
 from app.harness.runtime import HarnessRuntime
 from app.queue.worker import JobCancelled
-from tests.harness_fakes import CONV, USER, Gate, ScriptedLC, managed_ai, run, service
+from tests.harness_fakes import CONV, USER, Gate, Rows, ScriptedLC, managed_ai, run, service
 
 
 def _payload(text: str = "안녕", **extra) -> dict:
@@ -238,7 +238,7 @@ async def test_boost_choice_answer_resumes_the_cycle(monkeypatch):
         "inputs": {"pages": {"https://jobs.example/1": "백엔드 공고"}},
     }})
     runtime = HarnessRuntime(service(rows))
-    first = await run(runtime, _payload("점수 올려줘", ai=None, intent="boost"))
+    first = await run(runtime, _payload("점수 올려줘", ai=None, intent="boost", access_mode="ALWAYS_ASK"))
     boost = next(
         chunk for mode, chunk in first
         if mode == "custom" and chunk.get("gate") == "boost"
@@ -520,3 +520,253 @@ async def test_queue_turn_stores_status_and_notice_frames_whole():
         ("status", {key: value for key, value in status.items() if key != "type"}),
         ("notice", {"text": notice["text"]}),
     ]
+
+
+async def test_turn_inputs_keep_github_links_out_of_the_page_reads(monkeypatch):
+    fetched = []
+
+    async def fetch(url):
+        fetched.append(url)
+        return "공고 본문"
+
+    monkeypatch.setattr(runtime_module, "fetch_page_text", fetch)
+    inputs = await runtime_module._turn_inputs({
+        "text": "https://github.com/me https://a.example/1 https://b.example/2",
+        "context": {"urls": ["https://github.com/me/repo"]},
+    })
+    assert inputs["github"] == ["https://github.com/me", "https://github.com/me/repo"]
+    assert list(inputs["pages"]) == fetched == ["https://a.example/1", "https://b.example/2"]
+
+
+async def test_turn_inputs_keep_links_past_the_prefetch_for_open_page(monkeypatch):
+    async def fetch(url):
+        return "본문"
+
+    monkeypatch.setattr(runtime_module, "fetch_page_text", fetch)
+    inputs = await runtime_module._turn_inputs(
+        {"text": "https://a.example/1 https://b.example/2 https://c.example/3"})
+    assert list(inputs["pages"]) == ["https://a.example/1", "https://b.example/2"]
+    assert inputs["links"] == ["https://c.example/3"]
+
+
+def test_merge_inputs_unions_links():
+    from app.harness.personal.resume.graph import merge_inputs
+
+    merged = merge_inputs({"links": ["https://a.example"]}, {"links": ["https://b.example", "https://a.example"]})
+    assert merged["links"] == ["https://a.example", "https://b.example"]
+
+
+def _saved_flow(rows) -> dict:
+    saved = rows.conversation["resume_state"]
+    return json.loads(saved) if isinstance(saved, str) else saved
+
+
+async def _plain_request(monkeypatch, intent):
+    from tests.harness_fakes import Rows
+
+    async def fetch(url):
+        return "공고 본문"
+
+    monkeypatch.setattr(runtime_module, "fetch_page_text", fetch)
+    rows = Rows({"company_id": None, "resume_state": None})
+    context = {"evidenceIds": ["e1", "e2", "e3"]}
+    text = "공고 맞춤 이력서 만들어줘 https://jobs.example/1 https://github.com/me"
+    payload = _payload(text, ai=None, intent=intent, context=context)
+    await run(HarnessRuntime(service(rows)), payload)
+    return _saved_flow(rows)
+
+
+async def test_plain_resume_request_with_attachments_starts_the_posting_flow(monkeypatch):
+    saved = await _plain_request(monkeypatch, None)
+    assert (saved["status"], saved["scenario"], saved["phase"]) == ("active", "A", "intake")
+    assert saved["inputs"]["attachments"] == ["e1", "e2", "e3"]
+    assert list(saved["inputs"]["pages"]) == ["https://jobs.example/1"]
+
+
+async def test_a_set_intent_wins_over_the_plain_request(monkeypatch):
+    saved = await _plain_request(monkeypatch, "fit")
+    assert saved["scenario"] == "E"
+
+
+async def _steer_state(monkeypatch, *, resume, tasks=(), text="회사 기술 위주로 봐줘"):
+    from tests.harness_fakes import Rows
+
+    snapshot = SimpleNamespace(values={"resume": resume}, tasks=tasks, next=())
+
+    class FakeGraph:
+        async def aget_state(self, config, subgraphs=False):
+            return snapshot
+
+    sent = []
+
+    async def stream(self, graph, state, config, stream_mode):
+        sent.append(state)
+        return
+        yield
+
+    async def persist(self, *args):
+        return None
+
+    monkeypatch.setattr(HarnessRuntime, "_stream_graph", stream)
+    monkeypatch.setattr(HarnessRuntime, "_persist", persist)
+    runtime = HarnessRuntime(service(Rows({"company_id": None, "resume_state": resume})))
+    _ = [item async for item in runtime._chat_turn(
+        FakeGraph(), _payload(text, ai=None), {"resume_state": resume}, {}, None, None, {},
+        REGISTRY["personal"])]
+    return sent[0]
+
+
+async def test_text_mid_flow_with_no_gate_open_steers_the_flow(monkeypatch):
+    state = await _steer_state(monkeypatch, resume={"status": "active", "phase": "analyze"})
+    assert state["steer"] == "회사 기술 위주로 봐줘"
+
+
+async def test_no_steer_outside_a_flow_or_for_blank_text(monkeypatch):
+    assert "steer" not in await _steer_state(monkeypatch, resume={"status": "done"})
+    assert "steer" not in await _steer_state(
+        monkeypatch, resume={"status": "active"}, text="  ")
+
+
+async def test_text_at_a_resume_gate_still_answers_it_not_steers(monkeypatch):
+    from langgraph.types import Command
+
+    gate = SimpleNamespace(interrupts=[SimpleNamespace(value={
+        "kind": "RESUME_GATE", "approval_id": "11111111-1111-4111-8111-111111111111"})])
+    state = await _steer_state(monkeypatch, resume={"status": "active"}, tasks=(gate,))
+    assert isinstance(state, Command)
+    assert state.resume["text"] == "회사 기술 위주로 봐줘"
+
+
+@pytest.mark.parametrize(("model", "cached"), [
+    ("anthropic/claude-sonnet-5-5", True),
+    ("anthropic/claude-sonnet-5-5:online", True),
+    ("deepseek/deepseek-v4.1-flash", False),
+])
+def test_prompt_caching_is_asked_only_for_anthropic_models(model, cached):
+    from app.framework.llm import chat_model_for
+
+    config = SimpleNamespace(managed_ai_key="k", ai_base_url="https://openrouter.ai/api/v1")
+    chat = chat_model_for(SimpleNamespace(model=model, effort=""), config=config)
+    assert ("cache_control" in chat.extra_body) is cached
+    if cached:
+        assert chat.extra_body["cache_control"] == {"type": "ephemeral"}
+    assert chat.model_name == model
+
+
+# ---- employer flow events through the runtime stream ---------------------------------------------
+_COMPANY = "3c000000-0000-4000-8000-000000000003"
+_POSTING_SCRIPT = {
+    "CompanyProfile": {"name": "회사 C", "summary": "창고 재고 웹 서비스"},
+    "RoleOptions": {"options": [{"id": "fe", "label": "재고 화면 개발자"}]},
+    "RoleSpec": {"need": "재고 화면 개발", "career_min": 1, "career_max": 3},
+    "PostingDraft": {"title": "프론트엔드 개발자", "description": ["재고 화면을 만들어요"],
+                     "requirements": ["웹 화면 개발 경험"], "preferred": []},
+    "PostingReview": {"draft": {"title": "프론트엔드 개발자", "description": ["재고 화면"],
+                                "requirements": ["웹 화면 개발 경험"], "preferred": []}},
+}
+
+
+def _employer(script: dict):
+    from tests.loop.scripted import model_cls
+    from tests.loop.scripted import service as loop_service
+
+    svc = loop_service({"conversation": {"company_id": _COMPANY, "resume_state": None}})
+    return svc, HarnessRuntime(svc, model_cls=model_cls(script))
+
+
+def _custom(items, kind: str) -> list[dict]:
+    return [chunk for mode, chunk in items if mode == "custom" and chunk.get("type") == kind]
+
+
+def _answer(card: dict, option: str, job: str) -> dict:
+    return _payload("", job_id=job, resume={"approvalId": card["id"], "optionId": option})
+
+
+async def test_an_employer_gate_streams_its_card_once_and_the_answer_turn_does_not_resend_it():
+    _svc, runtime = _employer(dict(_POSTING_SCRIPT))
+    first = await run(runtime, _payload("공고 초안 만들어 줘", intent="posting"))
+    cards = _custom(first, "choice")
+    assert [card["gate"] for card in cards] == ["pf_role"]
+    assert [chunk["awaiting"] for chunk in _custom(first, "done")] == ["choice"]
+    second = await run(runtime, _answer(cards[0], "fe", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))
+    assert [card["gate"] for card in _custom(second, "choice")] == ["pf_confirm_1"]
+    assert len(_custom(second, "done")) == 1
+
+
+class _ReviewStore:
+    async def application(self, app_id, company_id):
+        return {"user_id": "u9", "job_category": "", "title": "주문 백엔드",
+                "description": "주문 API", "requirements": [], "preferred": []}
+
+    async def snapshots(self, app_id, company_id):
+        return [{"title": "이력서", "content": "주문 API를 3년 운영했어요."}]
+
+    async def applicant_context(self, user_id):
+        return None
+
+    async def save_review(self, *args, **kwargs):
+        return "rev-1"
+
+
+async def test_a_review_reply_said_before_its_gate_is_stored_once_on_that_turn(monkeypatch):
+    from app.harness.employer import flows as flows_module
+
+    monkeypatch.setattr(flows_module, "EmployerStore", lambda _db: _ReviewStore())
+    svc, runtime = _employer({
+        "Matches": {"matches": [
+            {"requirement": "API 운영", "status": "MET", "evidence": "주문 API를 3년 운영했어요"}]},
+        "ReviewReport": {"summary": "", "flags": [
+            {"title": "역할", "level": "CHECK", "reason": "직접 한 일이 짧아요."}]},
+        "서류 주장 읽기": {"claims": []},
+    })
+    first = await run(runtime, _payload(
+        "서류 봐 줘", intent="review", application_id="a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1"))
+    said = "".join(chunk["token"] for mode, chunk in first if mode == "custom" and "token" in chunk)
+    [card] = _custom(first, "choice")
+    [done] = _custom(first, "done")
+    assert card["gate"] == "rv_report" and done.get("operation") is not None
+    assert said.startswith("만든 것\n• 요건 1개") and svc.messages[-1].text == said
+    second = await run(runtime, _answer(card, "later", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))
+    assert _custom(second, "choice") == []
+    assert svc.messages[-1].text == "서류 검토를 마쳤어요." != said
+
+
+async def test_a_personal_resume_turn_still_streams_each_event_once():
+    rows = Rows({"company_id": None, "resume_state": {"status": "active", "phase": "mode_select"}})
+    items = await run(HarnessRuntime(service(rows)), _payload("서류 만들어줘", ai=None))
+    custom = [json.dumps(chunk, sort_keys=True, default=str)
+              for mode, chunk in items if mode == "custom"]
+    assert len(custom) == len(set(custom))
+    assert len(_custom(items, "choice")) == len(_custom(items, "done")) == 1
+
+
+# ---- the notes ledger lives as long as the flow's posting ----------------------------------------
+_POSTING_A = "a0000000-0000-4000-8000-00000000000a"
+_POSTING_B = "b0000000-0000-4000-8000-00000000000b"
+
+
+class _FileRows(Rows):
+    """Rows that keep workspace_files, seeded with what a finished flow for posting A left."""
+
+    def __init__(self):
+        super().__init__({"company_id": None, "resume_state": json.dumps({
+            "status": "done", "phase": "done", "inputs": {"postingId": _POSTING_A}})})
+        self.files = {"00_notes.json": "posting-a ledger",
+                      "01_agent_company.json": "posting-a company", "resume.md": "draft"}
+
+    async def execute(self, sql, *args):
+        if sql.lstrip().startswith("DELETE FROM workspace_files"):
+            self.files = {name: body for name, body in self.files.items()
+                          if name != args[1] and not name.startswith("01_agent_")}
+        return await super().execute(sql, *args)
+
+
+@pytest.mark.parametrize(("posting", "kept"), [(_POSTING_B, False), (_POSTING_A, True)])
+async def test_a_quick_start_on_another_posting_starts_with_an_empty_ledger(posting, kept):
+    rows = _FileRows()
+    await run(HarnessRuntime(service(rows)), _payload(
+        "이 공고로 이력서 만들어줘", ai=None, intent="match_posting",
+        context={"postingId": posting}))
+    left = {name for name, body in rows.files.items() if body.startswith("posting-a")}
+    assert left == ({"00_notes.json", "01_agent_company.json"} if kept else set())
+    assert "resume.md" in rows.files

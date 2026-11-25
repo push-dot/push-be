@@ -1,0 +1,67 @@
+{
+  "surface": "employer",
+  "domain": "물류 SaaS",
+  "seniority": "주니어",
+  "intent": "posting",
+  "text": "공고 초안 만들어 줘",
+  "conversation": {
+    "company_id": "3c000000-0000-4000-8000-000000000003",
+    "resume_state": null
+  },
+  "max_turns": 5,
+  "script": {
+    "입장의 검토자": {
+      "objections": []
+    },
+    "CompanyProfile": {
+      "name": "회사 C",
+      "summary": "창고 재고를 관리하는 웹 서비스를 만드는 회사"
+    },
+    "RoleOptions": {
+      "options": [
+        {
+          "id": "fe",
+          "label": "재고 화면을 만들 프론트엔드 개발자"
+        },
+        {
+          "id": "ops",
+          "label": "고객 문의를 맡을 운영 담당자"
+        }
+      ]
+    },
+    "RoleSpec": {
+      "need": "재고 화면 개발",
+      "career_min": 1,
+      "career_max": 3
+    },
+    "PostingDraft": {
+      "title": "프론트엔드 개발자 (재고 화면)",
+      "description": [
+        "재고 현황 화면을 만들어요"
+      ],
+      "requirements": [
+        "TypeScript로 웹 화면을 만든 경험 1년 이상"
+      ],
+      "preferred": [
+        "표 컴포넌트 성능 개선 경험"
+      ]
+    },
+    "PostingReview": {
+      "draft": {
+        "title": "프론트엔드 개발자 (재고 화면)",
+        "description": [
+          "재고 현황 화면을 만들어요"
+        ],
+        "requirements": [
+          "TypeScript로 웹 화면을 만든 경험 1년 이상"
+        ],
+        "preferred": [
+          "표 컴포넌트 성능 개선 경험"
+        ]
+      }
+    },
+    "": [
+      "공고 초안을 저장했어요."
+    ]
+  }
+}

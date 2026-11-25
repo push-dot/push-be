@@ -72,7 +72,7 @@ def _base(**extra):
     state = {
         "status": "active",
         "phase": "mode_select",
-        "access_mode": "AUTO",
+        "access_mode": "ALWAYS_ASK",
         "conversation_id": "conv-1",
         "user_id": "user-1",
         "job_id": "job-1",
@@ -828,3 +828,36 @@ async def test_craft_body_is_what_gets_saved_and_linked(monkeypatch):
     tokens = [e["token"] for events, _snap in seen for e in events if "token" in e]
     assert kept["body"] == body
     assert any("/docs/push/doc-1" in t for t in tokens)
+
+
+def test_merge_inputs_keeps_github_and_drops_stale_fit_terms():
+    from app.harness.personal.resume.graph import merge_inputs
+
+    held = {"github": ["https://github.com/a"], "fit_posting": {"required": ["x"]}}
+    kept = merge_inputs(held, {"attachments": []})
+    assert kept["github"] == ["https://github.com/a"]
+    assert kept["fit_posting"] == {"required": ["x"]}
+    merged = merge_inputs(held, {"github": ["https://github.com/b", "https://github.com/a"],
+                                 "pages": {"https://a.kr/1": "본문"}})
+    assert merged["github"] == ["https://github.com/a", "https://github.com/b"]
+    assert "fit_posting" not in merged
+
+
+async def test_fit_posting_is_frozen_once_and_feeds_every_score(monkeypatch):
+    calls = []
+
+    async def fake(requirements, keywords, *_args, **_kwargs):
+        calls.append((requirements, keywords))
+        return {"fitScore": 5.0, "parts": {}, "topGap": "도메인", "plan": "FREE"}
+
+    monkeypatch.setattr("app.framework.fit_judge.judge_fit", fake)
+    job = {"company": "잡보드", "required": ["React"], "preferred": ["Next.js"], "keywords": ["FE"]}
+    graph = _graph(_Approvals(), model=_PhaseModel({"analyze": {"scenario": "E", "jobs": job}}))
+    config = _config()
+    await _run(graph, _base(phase="analyze", scenario="E", inputs={"document": "본문"}), config)
+    snap = await graph.aget_state(config)
+    frozen = {"required": ["React"], "preferred": ["Next.js"], "keywords": ["FE"]}
+    assert snap.values["inputs"]["fit_posting"] == frozen
+    await _run(graph, {}, config)
+    assert calls
+    assert all(call == (["React"], ["FE"]) for call in calls)

@@ -429,7 +429,7 @@ async def test_resume_fit_tool_bills_the_running_job(monkeypatch):
     ctx = ToolContext("00000000-0000-4000-8000-000000000001", None, "c", "old", "call", None, None)
     token = current_run.set(SimpleNamespace(job_id="new"))
     try:
-        await resume_tools._fit(ctx, resume_tools.FitArgs())
+        await resume_tools._fit(ctx, resume_tools.FitArgs(content="React 3년"))
     finally:
         current_run.reset(token)
     assert seen["job_id"] == "new"
@@ -569,3 +569,190 @@ def test_a_url_only_a_tool_result_listed_is_not_user_dictated():
     seen = _seen_text(state)
     assert _dictated(typed, Exposure.RUN, seen, False) is False
     assert _dictated(listed, Exposure.RUN, seen, False) is True
+
+
+def test_steer_joins_the_flow_inputs_once():
+    state = {"job_id": "j", "steer": "회사 기술 위주로 봐줘",
+             "resume": {"status": "active", "inputs": {"steer": ["회사 기술 위주로 봐줘"]}}}
+    assert _child_resume(state)["inputs"]["steer"] == ["회사 기술 위주로 봐줘"]
+    state["steer"] = "백엔드만"
+    assert _child_resume(state)["inputs"]["steer"] == ["회사 기술 위주로 봐줘", "백엔드만"]
+    assert "steer" not in _child_resume({"resume": {"status": "active"}}).get("inputs", {})
+
+
+async def test_resume_flow_hands_steer_over_once_across_its_loop(monkeypatch):
+    from app.harness.personal.resume import graph as resume_graph
+
+    seen = []
+
+    class FakeFlow:
+        async def astream(self, child, config, stream_mode=None):
+            seen.append(list((child.get("inputs") or {}).get("steer") or []))
+            # First pass stays active so _after_resume loops back; the second finishes.
+            status = "active" if len(seen) == 1 else "cancelled"
+            yield "values", {**child, "status": status}
+
+    monkeypatch.setattr(resume_graph, "build_resume_graph", lambda *a, **k: FakeFlow())
+    graph = build_harness_graph(
+        _spec([]), MemorySaver(), model=ScriptedChat([{"content": "네"}]), db=None, core=None)
+    config = {"configurable": {"thread_id": "steer"}}
+    await graph.ainvoke({
+        "messages": [HumanMessage(content="회사 기술 위주로 봐줘")],
+        "resume": {"status": "active", "phase": "analyze", "inputs": {}},
+        "steer": "회사 기술 위주로 봐줘",
+    }, config)
+    assert seen == [["회사 기술 위주로 봐줘"], ["회사 기술 위주로 봐줘"]]
+    assert (await graph.aget_state(config)).values.get("steer") is None
+
+
+def _read_graph(model, runs, *, gate: int = 0):
+    """Three READ tools and a write. With gate=n, each read waits until n reads have started, so the
+    test hangs (and times out) unless they run together."""
+    import asyncio
+
+    started = {"n": 0}
+    ready = asyncio.Event()
+
+    def read(name):
+        async def run(ctx: ToolContext, args: IdArgs) -> dict:
+            runs.append((name, args.id))
+            started["n"] += 1
+            if gate and started["n"] >= gate:
+                ready.set()
+            if gate:
+                await asyncio.wait_for(ready.wait(), 1)
+            return {"read": args.id}
+        return run
+
+    async def bookmark(ctx: ToolContext, args: IdArgs) -> dict:
+        runs.append(("bookmark", args.id))
+        return {"bookmarked": True}
+
+    spec = HarnessSpec(id="personal", prompt="help", tools=[
+        ToolSpec("get_posting", Tier.READ, IdArgs, read("get_posting"), lambda _a: "공고"),
+        ToolSpec("list_documents", Tier.READ, IdArgs, read("list_documents"), lambda _a: "서류"),
+        ToolSpec("get_document", Tier.READ, IdArgs, read("get_document"), lambda _a: "서류 내용"),
+        ToolSpec("bookmark_posting", Tier.SAFE_WRITE, IdArgs, bookmark, lambda _a: "저장"),
+    ])
+    return build_harness_graph(spec, MemorySaver(), model=model, db=MemApprovals(), core=object())
+
+
+async def _tool_steps(graph) -> int:
+    return sum([snap.next == ("tools",) async for snap in graph.aget_state_history(_config())])
+
+
+async def test_independent_reads_in_one_reply_run_together_in_one_step():
+    runs = []
+    calls = [_call("get_posting", "r1", "a"), _call("list_documents", "r2", "b"),
+             _call("get_document", "r3", "c")]
+    model = ScriptedChat([{"tool_calls": calls}, {"content": "끝"}])
+    graph = _read_graph(model, runs, gate=3)
+    events = await _events(graph, _input("AUTO"))
+    lines = [(e["name"], e["state"]) for e in events if e.get("type") == "tool"]
+    assert [state for _name, state in lines] == ["run", "run", "run", "ok", "ok", "ok"]
+    answers = [m for m in model.seen[-1] if isinstance(m, ToolMessage)]
+    assert [m.tool_call_id for m in answers] == ["r1", "r2", "r3"]
+    assert [data_json(m.content) for m in answers] == [{"read": "a"}, {"read": "b"}, {"read": "c"}]
+    assert await _tool_steps(graph) == 1
+    state = await graph.aget_state(_config())
+    assert state.values["tool_calls_used"] == 3
+
+
+async def test_reads_before_a_write_run_together_then_the_write_runs_alone():
+    runs = []
+    calls = [_call("get_posting", "r1", "a"), _call("get_document", "r2", "b"),
+             _call("bookmark_posting", "w1", "a"), _call("list_documents", "r3", "c")]
+    model = ScriptedChat([{"tool_calls": calls}, {"content": "끝"}])
+    graph = _read_graph(model, runs, gate=2)
+    await _events(graph, _input("BYPASS"))
+    assert sorted(runs) == [("get_document", "b"), ("get_posting", "a")]
+    # The reads' results are untrusted, so the write after them waits for the user, as before.
+    await _events(graph, Command(resume={"option_id": "approve"}))
+    assert runs[2:] == [("bookmark", "a"), ("list_documents", "c")]
+
+
+async def test_a_write_still_asks_with_reads_in_the_same_reply():
+    runs = []
+    calls = [_call("get_posting", "r1", "a"), _call("list_documents", "r2", "b"),
+             _call("bookmark_posting", "w1", "a")]
+    model = ScriptedChat([{"tool_calls": calls}, {"content": "끝"}])
+    graph = _read_graph(model, runs)
+    events = await _events(graph, _input("ALWAYS_ASK"))
+    assert sorted(runs) == [("get_posting", "a"), ("list_documents", "b")]
+    approval = next(event for event in events if event.get("type") == "approval")
+    assert approval["toolName"] == "bookmark_posting"
+
+
+async def test_the_cap_holds_inside_a_batch():
+    runs = []
+    calls = [_call("get_posting", f"r{i}", f"p{i}") for i in range(10)]
+    model = ScriptedChat([{"tool_calls": calls}, {"content": "한도"}])
+    graph = _read_graph(model, runs)
+    await _events(graph, _input("AUTO"))
+    state = await graph.aget_state(_config())
+    answers = [m for m in state.values["messages"] if isinstance(m, ToolMessage)]
+    assert len(runs) == 8
+    assert sum(m.content == "도구 호출 한도" for m in answers) == 2
+    assert state.values["tool_calls_used"] == 8
+
+
+async def test_a_read_that_opens_a_flow_inside_a_batch_still_enters_it():
+    from app.harness.graph import enter_flow
+
+    async def read(ctx, args):
+        return {"read": args.id}
+
+    async def opens(ctx, args):
+        return enter_flow("agent", bot=None)
+
+    spec = HarnessSpec(id="employer_test", prompt="help", tools=[
+        ToolSpec("get_posting", Tier.READ, IdArgs, read, lambda _a: "공고"),
+        ToolSpec("review_applicant", Tier.READ, IdArgs, opens, lambda _a: "검토"),
+    ])
+    model = ScriptedChat([
+        {"tool_calls": [_call("get_posting", "r1"), _call("review_applicant", "r2")]},
+        {"content": "끝"},
+    ])
+    graph = build_harness_graph(spec, MemorySaver(), model=model, db=MemApprovals(), core=object())
+    events = await _events(graph, _input("AUTO"))
+    seen = [(e["name"], e["state"], e.get("result")) for e in events if e.get("type") == "tool"]
+    assert ("review_applicant", "ok", {"entered": "agent"}) in seen
+    answers = [m for m in model.seen[-1] if isinstance(m, ToolMessage)]
+    assert [m.tool_call_id for m in answers] == ["r1", "r2"]
+
+
+@pytest.mark.parametrize(("reply_job", "said"), [
+    ("job-old", "서류 작업을 마쳤어요."), ("job-new", "old")])
+async def test_a_flow_ending_on_a_gate_answer_says_only_this_turns_reply(
+        monkeypatch, reply_job, said):
+    from app.harness.personal.resume import graph as resume_graph
+
+    class FakeFlow:
+        async def astream(self, child, config, stream_mode=None):
+            yield "values", {**child, "status": "done", "reply": "old", "reply_job": reply_job}
+
+    monkeypatch.setattr(resume_graph, "build_resume_graph", lambda *a, **k: FakeFlow())
+    graph = build_harness_graph(
+        _spec([]), MemorySaver(), model=ScriptedChat([{"content": "네"}]), db=None, core=None)
+    events = await _events(graph, {**_input("AUTO"), "job_id": "job-new",
+                                   "resume": {"status": "active", "phase": "feedback"}})
+    assert (await graph.aget_state(_config())).values["messages"][-1].content == said
+    tokens = [event["token"] for event in events if "token" in event]
+    # A reply of this job was streamed by the flow itself; the closing line is streamed here.
+    assert tokens == ([] if said == "old" else [said])
+
+
+async def test_a_tool_checks_against_every_message_the_user_sent():
+    seen = []
+
+    async def echo(ctx: ToolContext, args: IdArgs) -> dict:
+        seen.append(ctx.user_text)
+        return {"ok": True}
+
+    spec = HarnessSpec(id="personal", prompt="help", tools=[
+        ToolSpec("bookmark_posting", Tier.SAFE_WRITE, IdArgs, echo, lambda _a: "저장")])
+    model = ScriptedChat([{"tool_calls": [_call("bookmark_posting", "c1")]}, {"content": "네"}])
+    graph = build_harness_graph(spec, MemorySaver(), model=model, db=MemApprovals(), core=object())
+    await _events(graph, {**_input("AUTO", "경력 첫 줄에 넣어줘"), "messages": [
+        HumanMessage(content="전환율 30% 올렸어"), HumanMessage(content="경력 첫 줄에 넣어줘")]})
+    assert "30%" in seen[0] and "경력 첫 줄에 넣어줘" in seen[0]
