@@ -241,14 +241,14 @@ async function listProfiles(ctx: Ctx): Promise<Response> {
     rank = relevance("u.display_name", "p.headline", "$" + raw, "$" + cho, "$" + hangul) + ", ";
   }
   if (sort === "latest") {rank = "";}
-  const total = await countWhere(ctx, sql, " FROM profiles p", params.slice());
+  const counted = countWhere(ctx, sql, " FROM profiles p", params.slice());
   if (page.cursor) {
     params.push(page.cursor.createdAt, page.cursor.id);
     sql += ` AND (p.updated_at, p.user_id) < ($${params.length - 1}, $${params.length})`;
   }
   params.push(page.limit + 1);
   sql += ` ORDER BY ${rank}p.updated_at DESC, p.user_id DESC LIMIT $${params.length}`;
-  const rows = await query(ctx.deps.query, sql, params);
+  const [total, rows] = await Promise.all([counted, query(ctx.deps.query, sql, params)]);
   const mapped = rows.rows.map((row) => ({
     item: profileDto(row, ctx.user.id, viewer),
     createdAt: row.updated_at,

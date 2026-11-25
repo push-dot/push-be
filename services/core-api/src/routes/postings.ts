@@ -173,6 +173,12 @@ const deadlineWindow = (ctx: Ctx, params: Array<unknown>, where: string): string
   return where + ` AND p.deadline IS NOT NULL AND p.deadline >= $${params.length - 1}::date AND p.deadline <= $${params.length}::date`;
 };
 
+// The view count is bookkeeping: with waitUntil it runs after the response so the detail is not held behind two writes.
+const afterResponse = async (ctx: Ctx, work: Promise<void>): Promise<void> => {
+  if (!ctx.deps.waitUntil) {return work;}
+  ctx.deps.waitUntil(work.catch(() => undefined));
+};
+
 const recordPostingView = async (ctx: Ctx, postingId: string): Promise<void> => {
   // posting_views.user_id references users; the guest id has no row there.
   if (ctx.user.id === GUEST_ID) {return;}
@@ -328,7 +334,7 @@ const listPostingFacets = async (ctx: Ctx): Promise<Response> => {
 
 async function getPosting(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "id");
-  const open = await withPublicStatus((withStatus) => one(ctx.deps.query,
+  const opened = withPublicStatus((withStatus) => one(ctx.deps.query,
     detailSql(withStatus, `p.id = $1 AND ${openClause(withStatus)}`),
     [id, ctx.user.id]));
   const memberOf = async (): Promise<boolean> => {
@@ -337,16 +343,15 @@ async function getPosting(ctx: Ctx, idRaw: string): Promise<Response> {
       [id, ctx.user.id]);
     return Boolean(member);
   };
+  const [open, member] = await Promise.all([opened, ctx.user.id === GUEST_ID ? false : memberOf()]);
   if (open) {
-    const member = ctx.user.id !== GUEST_ID && await memberOf();
-    await recordPostingView(ctx, id);
+    await afterResponse(ctx, recordPostingView(ctx, id));
     return data(200, postingDto(open, true, member), ctx.rid);
   }
-  if (ctx.user.id === GUEST_ID) {throw notFound();}
-  if (!(await memberOf())) {throw notFound();}
+  if (!member) {throw notFound();}
   const closed = await withPublicStatus((withStatus) => one(ctx.deps.query, detailSql(withStatus, "p.id = $1"), [id, ctx.user.id]));
   if (!closed) {throw notFound();}
-  await recordPostingView(ctx, id);
+  await afterResponse(ctx, recordPostingView(ctx, id));
   return data(200, postingDto(closed, true, true), ctx.rid);
 }
 

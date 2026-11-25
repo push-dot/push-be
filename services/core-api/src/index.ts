@@ -4,6 +4,7 @@ import { inTransaction } from './db.ts';
 import type { QueryResult, Transaction } from './db.ts';
 import { handle } from './handler.ts';
 import type { CoreEnv } from './handler.ts';
+import { AuthCache } from "./auth-cache.ts";
 import { ReadCache } from "./read-cache.ts";
 
 types.setTypeParser(1082, (value: string) => value);
@@ -11,6 +12,7 @@ types.setTypeParser(1114, (value: string) => value);
 types.setTypeParser(1184, (value: string) => value);
 
 const readCache = new ReadCache<QueryResult>();
+const authCache = new AuthCache();
 
 const queryOf = (env: CoreEnv) => (env.DATABASE_URL
   ? neonQuery(env.DATABASE_URL)
@@ -25,6 +27,7 @@ export default {
       return await handle(request, env, {
         query: queryOf(env),
         cache: readCache,
+        authCache,
         ...(env.DATABASE_URL ? { transaction: neonTransaction(env.DATABASE_URL) } : undefined),
         ...(waitUntil ? { waitUntil: (promise: Promise<unknown>) => waitUntil.call(ctx, promise) } : undefined),
       });
