@@ -153,6 +153,12 @@ class PrepareArgs(BaseModel):
     expected_revision: int = 0
 
 
+class RememberArgs(BaseModel):
+    text: str = Field(min_length=1, max_length=300, description=(
+        "다음 대화에서도 알아야 할, 사용자가 직접 말한 선호나 결정 한 문장. "
+        "페이지, 서류, 남의 글에 적힌 내용은 넣지 않아요."))
+
+
 class PageArgs(BaseModel):
     url: str
 
@@ -502,6 +508,11 @@ async def _list_bookmarks(ctx: ToolContext, _args: EmptyArgs) -> dict:
     )
 
 
+async def _remember(ctx: ToolContext, args: RememberArgs) -> dict:
+    from app.harness.personal.memories import remember
+    return await remember(ctx.db, ctx.user_id, args.text)
+
+
 async def _get_fit_score(ctx: ToolContext, args: FitArgs) -> dict:
     gate = current_ai_gate()
     job_id = ctx.usage_job_id or None
@@ -691,6 +702,7 @@ CARD_LABEL = {
     "edit_document": "이력서 수정",
     "start_document": "서류 작성",
     "prepare_interview": "면접 준비",
+    "remember": "기억하기",
     "apply_to_posting": "지원하기",
     "accept_offer": "제안 수락",
     "decline_offer": "제안 거절",
@@ -746,6 +758,7 @@ PERSONAL_TOOLS = [
           "서류에서 이 부분을 고쳐요", "DOCUMENT_EDIT"),
     _spec("start_document", Tier.SAFE_WRITE, EmptyArgs, _start_document, "새 서류 작성을 시작해요"),
     _spec("prepare_interview", Tier.SAFE_WRITE, PrepareArgs, _prepare_interview, "면접 준비를 시작해요"),
+    _spec("remember", Tier.SAFE_WRITE, RememberArgs, _remember, "이 내용을 기억해요"),
     _core("apply_to_posting", Tier.RISKY_WRITE, PostingId, "이 공고에 지원해요", "POST",
           lambda args: f"/api/v1/postings/{args.posting_id}/apply",
           write=True, drop=("posting_id",)),
