@@ -26,6 +26,7 @@ async def test_get_allows_owner_or_company_member_only():
     _, sql, args = conn.last
     assert_scoped(conn.last, USER)
     assert "m.company_id = conversations.company_id" in sql and args == (r["id"], USER)
+    assert "(company_id IS NULL AND user_id = $2)" in sql
     with pytest.raises(NotFoundError):
         await s.get(OTHER, r["id"])
 
@@ -84,15 +85,16 @@ async def test_message_writes():
     assert conn.last[2] == (m.id,)
 
 
-async def test_list_messages_scoped_to_owner_or_company():
+async def test_list_messages_scoped_to_personal_owner_or_current_member():
     r = row(_MSG_COLS, Message, user_id=USER, attachments=None)
     db, conn = fake_db([r])
     conv = uuid4()
     p = await ConversationStore(db).list_messages(USER, conv, page())
     _, sql, args = conn.last
-    assert "conversation_id = $1" in sql and "(user_id = $2 OR EXISTS" in sql
-    assert "m.user_id = $3 WHERE cv.id = $4" in sql
-    assert args == (conv, USER, USER, conv, 51)
+    assert "conversation_id = $1" in sql
+    assert "((user_id = $2 AND EXISTS (SELECT 1 FROM conversations pv WHERE pv.id = $3 AND pv.company_id IS NULL))" in sql
+    assert "m.user_id = $4 WHERE cv.id = $5" in sql
+    assert args == (conv, USER, conv, USER, conv, 51)
     assert p.items[0].attachments == []
 
 

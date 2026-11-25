@@ -116,7 +116,7 @@ const memberOfCaller = (companyExpr: string, userParam: string): string =>
   `${companyExpr} IS NOT NULL AND ${companyExpr} = (SELECT company_id FROM company_members WHERE user_id = ${userParam})`;
 
 const visibleConversation = (idParam: string, userParam: string): string =>
-  `id = ${idParam} AND (user_id = ${userParam} OR (${memberOfCaller("company_id", userParam)}))`;
+  `id = ${idParam} AND ((company_id IS NULL AND user_id = ${userParam}) OR (${memberOfCaller("company_id", userParam)}))`;
 
 const COMPANY_APPLICATION = "SELECT a.id FROM applications a JOIN jobs j ON j.id = a.job_id JOIN job_postings p ON p.id = j.source_posting_id WHERE a.id = $1 AND p.company_id = $2";
 

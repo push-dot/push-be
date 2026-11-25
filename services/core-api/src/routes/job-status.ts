@@ -54,7 +54,7 @@ export const getQueueJob = async (ctx: Ctx, idRaw: string): Promise<Response> =>
   const id = requireUuid(idRaw, "id");
   const row = await one(
     ctx.deps.query,
-    "SELECT id, type, status, result, error, payload, created_at, updated_at FROM ai_jobs WHERE id = $1 AND (user_id = $2 OR (company_id IS NOT NULL AND company_id = (SELECT company_id FROM company_members WHERE user_id = $2)))",
+    "SELECT id, type, status, result, error, payload, created_at, updated_at FROM ai_jobs WHERE id = $1 AND ((company_id IS NULL AND user_id = $2) OR (company_id IS NOT NULL AND company_id = (SELECT company_id FROM company_members WHERE user_id = $2)))",
     [id, ctx.user.id],
   );
   if (!row) {throw notFound();}
