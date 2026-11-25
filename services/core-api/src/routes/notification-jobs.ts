@@ -24,13 +24,16 @@ export const requireJob = async (ctx: Ctx): Promise<void> => {
   if (!(await sameSecret(token, expected))) {throw new HttpError(401, "UNAUTHENTICATED", "missing bearer token");}
 };
 
-const THREAD = `SELECT c.bot_id, b.notifications_muted, COALESCE(b.display_name, s.display_name) AS display_name,
+// $2 is the member whose job ran: in a company conversation that may be any member, and the
+// notice and its opt-out are theirs.
+const THREAD = `SELECT c.bot_id, c.company_id, b.notifications_muted, COALESCE(b.display_name, s.display_name) AS display_name,
     s.last_message_preview, s.card_title, s.unread, COALESCE(us.notify_ai_done, true) AS allowed
   FROM conversations c
   LEFT JOIN bots b ON b.id = c.bot_id AND b.deleted_at IS NULL
   LEFT JOIN bot_state_v s ON s.bot_id = b.id
-  LEFT JOIN user_settings us ON us.user_id = c.user_id
-  WHERE c.id = $1 AND c.user_id = $2`;
+  LEFT JOIN user_settings us ON us.user_id = $2
+  WHERE c.id = $1 AND (c.user_id = $2 OR (c.company_id IS NOT NULL
+    AND EXISTS (SELECT 1 FROM company_members m WHERE m.company_id = c.company_id AND m.user_id = $2)))`;
 
 const CLAIM = `INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ($1, $2::timestamptz)
   ON CONFLICT (dedupe_key) DO NOTHING RETURNING dedupe_key`;
@@ -41,6 +44,11 @@ const OUTCOMES: Record<Outcome, { title: string; tail: string }> = {
   done: { title: "Bot 작업 완료", tail: "작업을 마쳤어요" },
   waiting: { title: "확인이 필요해요", tail: "확인을 기다려요" },
   failed: { title: "작업을 마치지 못했어요", tail: "작업을 마치지 못했어요" },
+};
+
+const AGENT_TITLES: Record<Exclude<Outcome, "done">, string> = {
+  waiting: "에이전트가 확인을 기다려요",
+  failed: "에이전트가 작업을 마치지 못했어요",
 };
 
 const outcomeOf = (value: unknown): Outcome => {
@@ -90,11 +98,14 @@ export const recordAiDone = async (ctx: Ctx): Promise<Response> => {
     return data(201, { id: null }, ctx.rid);
   }
   const botId = (row.bot_id === null || row.bot_id === undefined) || row.bot_id === "" ? "" : String(row.bot_id);
-  if (!botId && outcome !== "done") {return data(201, { id: null }, ctx.rid);}
+  const company = row.company_id !== null && row.company_id !== undefined;
+  if (!botId && !company && outcome !== "done") {return data(201, { id: null }, ctx.rid);}
   const key = outcome === "done" ? `ai-done:${jobId}` : `ai-${outcome}:${jobId}`;
   const claim = await one(ctx.deps.query, CLAIM, [key, ctx.now.toISOString()]);
   if (!claim) {return data(201, { id: null }, ctx.rid);}
-  const title = botId ? OUTCOMES[outcome].title : ((body.title === null || body.title === undefined) || body.title === "" ? "AI 작업이 끝났어요" : String(body.title));
+  const title = botId ? OUTCOMES[outcome].title
+    : outcome !== "done" ? AGENT_TITLES[outcome]
+    : ((body.title === null || body.title === undefined) || body.title === "" ? "AI 작업이 끝났어요" : String(body.title));
   if (title.length > 200) {throw fieldError("title", "must be at most 200 characters");}
   const notice: Notice = {
     userId,
