@@ -307,6 +307,22 @@ export const schemas = {
       profileSource: { ...enumOf("SUBMITTED", "CURRENT"), description: "SUBMITTED is the profile captured at apply time. CURRENT is the live profile, for an application with no snapshot." },
       capturedAt: { ...nullable(dateTime), description: "When the submitted profile was captured. Null when profileSource is CURRENT." },
     }),
+    aiReview: { ...nullable(ref("ApplicantAiReview")), description: "The latest AI document review of this application by the company's agent, or null. It marks what to check in an interview; it never decides." },
+    interviewKit: { ...nullable(ref("ApplicantInterviewKit")), description: "The latest AI interview kit for this application, or null." },
+  }),
+  ApplicantAiReview: obj({
+    id: uuid,
+    conversationId: { ...uuid, description: "The agent conversation that made it" },
+    createdAt: dateTime,
+    summary: str,
+    matches: arr(obj({ requirement: str, status: enumOf("MET", "PARTIAL", "MISSING"), evidence: nullable(str) })),
+    flags: arr(obj({ title: str, level: enumOf("CHECK", "SUPPORTED", "UNKNOWN"), reason: str, quote: nullable(str) })),
+  }),
+  ApplicantInterviewKit: obj({
+    id: uuid,
+    conversationId: uuid,
+    createdAt: dateTime,
+    questions: arr(obj({ text: str, verify: str, goodSignals: arr(str), cautionSignals: arr(str), fromFlag: nullable(str) })),
   }),
   SearchResult: {
     oneOf: [ref("Posting"), ref("Profile"), ref("Post")],
