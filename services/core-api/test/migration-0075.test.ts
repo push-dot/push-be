@@ -8,7 +8,7 @@ const sql = readFileSync(resolve(
   "../../../db/migrations/0075_reset_posting_fit_cache.sql",
 ), "utf8");
 
-const statements = sql.replace(/--.*$/gm, "").split(";").map((part) => part.trim()).filter(Boolean);
+const statements = sql.replaceAll(/--.*$/gm, "").split(";").map((part) => part.trim()).filter(Boolean);
 
 test("migration 0075 empties the fit cache and touches nothing else", () => {
   assert.deepEqual(statements, ["DELETE FROM posting_fit_cache"]);

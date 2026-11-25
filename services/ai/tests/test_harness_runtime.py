@@ -643,6 +643,7 @@ async def test_text_at_a_resume_gate_still_answers_it_not_steers(monkeypatch):
     ("deepseek/deepseek-v4.1-flash", False),
 ])
 def test_prompt_caching_is_asked_only_for_anthropic_models(model, cached):
+    pytest.importorskip("langchain_openai")
     from app.framework.llm import chat_model_for
 
     config = SimpleNamespace(managed_ai_key="k", ai_base_url="https://openrouter.ai/api/v1")
