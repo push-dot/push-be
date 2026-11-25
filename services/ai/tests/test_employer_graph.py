@@ -319,7 +319,8 @@ async def test_late_research_continues_and_the_save_reply_says_so(monkeypatch):
     assert "대신 정한 것\n• 경력은 3~5년으로 잡았어요" in reply
     assert "확인이 필요한 점\n• 연봉 범위가 비어 있어요" in reply
     assert "회사 조사: 시간 안에 끝나지 않아 빼고 진행했어요" in reply
-    assert "다음\n• 아직 저장하지 않았어요. 공고 편집에서 열기를 눌러 저장하고 게시해 주세요\n\n```posting-draft" in reply
+    assert ("다음\n• 아직 저장하지 않았어요. 공고 편집에서 열기를 눌러 저장하고 게시해 주세요"
+            "\n\n```posting-draft") in reply
 
 
 async def test_review_cutting_a_named_requirement_asks_once_in_the_confirm_title():
