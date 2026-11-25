@@ -1,10 +1,26 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, releaseExpired, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
+import { handle, releaseExpired, resetLimits } from '../src/handler.ts';
+import type { Deps, FrontEnv, Query } from '../src/handler.ts';
+import type { Row } from '../src/types.ts';
 import { ownerOf } from "../src/routes/owner.ts";
 import { complete, STORED } from "./fakes.ts";
 import { decodeCursor, encodeCursor, formatCursorTimestamp, formatJsonTimestamp } from "../src/time.ts";
+
+function assertBody<T>(_value: unknown): asserts _value is T { /* the test's own assertions check the shape it reads */ }
+
+const readJson = async <T>(res: Response): Promise<T> => {
+  const body: unknown = await res.json();
+  assertBody<T>(body);
+  return body;
+};
+
+const parseJson = <T>(text: string): T => {
+  const body: unknown = JSON.parse(text);
+  assertBody<T>(body);
+  return body;
+};
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const NOW = new Date("2026-10-18T00:00:00Z");
@@ -64,44 +80,46 @@ test("healthz echoes x-request-id and does not touch the database", async () => 
   assert.equal(queries, 0);
 });
 
+const validTokenQuery: Query = async (sql) => {
+  if (sql.includes("access_tokens")) {
+    return [{
+      id: USER, display_name: "Ada", locale: "ko",
+      created_at: "2026-01-02T03:04:05.000001Z",
+      expires_at: "2099-01-01T00:00:00Z",
+    }];
+  }
+  return [];
+};
+
+const expiredTokenQuery: Query = async (sql) => {
+  if (sql.includes("access_tokens")) {
+    return [{
+      id: USER, display_name: "Ada", locale: "ko",
+      created_at: "2026-01-02T03:04:05.000001Z",
+      expires_at: "2020-01-01T00:00:00Z",
+    }];
+  }
+  return [];
+};
+
 test("auth/me preserves unauthenticated, expired, and success bodies", async () => {
   resetLimits();
   const missing = await handle(new Request("https://push-be.example/api/v1/auth/me"), env(), deps(async () => []));
   assert.equal(missing.status, 401);
-  const missingBody = await missing.json() as { error: { code: string; details: null; requestId: string } };
+  const missingBody = await readJson<{ error: { code: string; details: null; requestId: string } }>(missing);
   assert.equal(missingBody.error.code, "UNAUTHENTICATED");
   assert.equal(missingBody.error.details, null);
   assert.match(missing.headers.get("x-request-id") || "", /^req_/);
 
-  const query: Query = async (sql) => {
-    if (sql.includes("access_tokens")) {
-      return [{
-        id: USER, display_name: "Ada", locale: "ko",
-        created_at: "2026-01-02T03:04:05.000001Z",
-        expires_at: "2020-01-01T00:00:00Z",
-      }];
-    }
-    return [];
-  };
   const expired = await handle(new Request("https://push-be.example/api/v1/auth/me", {
     headers: { authorization: "Bearer secret-token" },
-  }), env(), deps(query));
+  }), env(), deps(expiredTokenQuery));
   assert.equal(expired.status, 401);
-  assert.equal((await expired.json() as { error: { code: string } }).error.code, "TOKEN_EXPIRED");
+  assert.equal((await readJson<{ error: { code: string } }>(expired)).error.code, "TOKEN_EXPIRED");
 
-  const okQuery: Query = async (sql) => {
-    if (sql.includes("access_tokens")) {
-      return [{
-        id: USER, display_name: "Ada", locale: "ko",
-        created_at: "2026-01-02T03:04:05.000001Z",
-        expires_at: "2099-01-01T00:00:00Z",
-      }];
-    }
-    return [];
-  };
   const ok = await handle(new Request("https://push-be.example/api/v1/auth/me", {
     headers: { authorization: "Bearer secret-token", "x-request-id": "req_me" },
-  }), env(), deps(okQuery));
+  }), env(), deps(validTokenQuery));
   assert.equal(ok.status, 200);
   assert.equal(await ok.text(),
     '{"data": {"id": "12345678-1234-5678-1234-567812345678", "displayName": "Ada", "locale": "ko", "createdAt": "2026-01-02T03:04:05.000001Z", "accountType": "PERSONAL", "companyId": null, "companyRole": null, "email": "", "provider": "", "plan": "FREE"}}');
@@ -109,7 +127,7 @@ test("auth/me preserves unauthenticated, expired, and success bodies", async () 
 
 test("auth/me still works when company_members is missing", async () => {
   resetLimits();
-  const seen: string[] = [];
+  const seen: Array<string> = [];
   const query: Query = async (sql) => {
     seen.push(sql);
     if (sql.includes("company_members")) {
@@ -143,7 +161,7 @@ test("conversation list pages with a Python-compatible cursor", async () => {
     created_at: i === 0 ? "2026-10-17T21:57:28.172000Z" : "2026-10-17T21:57:27Z",
     updated_at: "2026-10-17T21:57:28Z",
   }));
-  const seen: unknown[][] = [];
+  const seen: Array<Array<unknown>> = [];
   const res = await handle(new Request("https://push-be.example/api/v1/conversations?limit=1", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), deps(async (sql, params) => {
@@ -158,7 +176,7 @@ test("conversation list pages with a Python-compatible cursor", async () => {
     return rows;
   }));
   assert.equal(res.status, 200);
-  const body = JSON.parse(await res.text()) as { data: { title: string }[]; page: { hasMore: boolean; nextCursor: string } };
+  const body = parseJson<{ data: Array<{ title: string }>; page: { hasMore: boolean; nextCursor: string } }>(await res.text());
   assert.equal(body.data.length, 1);
   assert.equal(body.data[0].title, "채팅");
   assert.equal(body.page.hasMore, true);
@@ -175,7 +193,7 @@ test("conversation list pages with a Python-compatible cursor", async () => {
 
 test("conversation list archived=true returns only archived rows", async () => {
   resetLimits();
-  const seen: unknown[][] = [];
+  const seen: Array<Array<unknown>> = [];
   const res = await handle(new Request("https://push-be.example/api/v1/conversations?archived=true", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), deps(async (sql, params) => {
@@ -207,7 +225,7 @@ test("message reads 404 when the conversation is missing and omit null attachmen
     headers: { authorization: "Bearer secret-token" },
   }), env(), deps(auth));
   assert.equal(missing.status, 404);
-  assert.equal((await missing.json() as { error: { code: string } }).error.code, "NOT_FOUND");
+  assert.equal((await readJson<{ error: { code: string } }>(missing)).error.code, "NOT_FOUND");
 
   const message = {
     id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
@@ -229,13 +247,13 @@ test("message reads 404 when the conversation is missing and omit null attachmen
     if (sql.includes("access_tokens")) {
       return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
     }
-    if (sql.includes("FROM conversations")) return [{ id: USER }];
+    if (sql.includes("FROM conversations")) {return [{ id: USER }];}
     return [message];
   };
   const ok = await handle(new Request(`https://push-be.example/api/v1/conversations/${USER}/messages`, {
     headers: { authorization: "Bearer secret-token" },
   }), env(), deps(found));
-  const body = JSON.parse(await ok.text()) as { data: { attachments: Record<string, unknown>[] }[] };
+  const body = parseJson<{ data: Array<{ attachments: Array<object> }> }>(await ok.text());
   assert.deepEqual(body.data[0].attachments[0], { type: "EVIDENCE", id: USER, title: "이력" });
 });
 
@@ -243,9 +261,9 @@ test("SSE replay returns 204 or the stored chat_events", async () => {
   resetLimits();
   const authRow = { id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z", hits: 1 };
   const empty: Query = async (sql) => {
-    if (sql.includes("chat_events")) return [];
-    if (sql.includes("access_tokens")) return [{ ...authRow, conversation_id: USER, job_id: null }];
-    if (sql.includes("FROM conversations")) return [{ id: USER }];
+    if (sql.includes("chat_events")) {return [];}
+    if (sql.includes("access_tokens")) {return [{ ...authRow, conversation_id: USER, job_id: null }];}
+    if (sql.includes("FROM conversations")) {return [{ id: USER }];}
     return [];
   };
   const none = await handle(new Request(`https://push-be.example/api/v1/conversations/${USER}/messages/stream/active`, {
@@ -254,15 +272,15 @@ test("SSE replay returns 204 or the stored chat_events", async () => {
   assert.equal(none.status, 204);
   assert.equal(await none.text(), "");
 
-  const live: Query = async (sql) => {
+  const live: Query = async (sql): Promise<Array<Row>> => {
     if (sql.includes("chat_events")) {
       return [{ id: 7, type: "token", payload: { text: "안녕" } }, { id: 8, type: "done", payload: { operation: { status: "SUCCEEDED" } } }];
     }
     if (sql.includes("access_tokens")) {
       return [{ ...authRow, conversation_id: USER, job_id: "cccccccc-cccc-cccc-cccc-cccccccccccc" }];
     }
-    if (sql.includes("FROM conversations")) return [{ id: USER }];
-    if (sql.includes("FROM chat_jobs")) return [{ id: "cccccccc-cccc-cccc-cccc-cccccccccccc" }];
+    if (sql.includes("FROM conversations")) {return [{ id: USER }];}
+    if (sql.includes("FROM chat_jobs")) {return [{ id: "cccccccc-cccc-cccc-cccc-cccccccccccc" }];}
     return [];
   };
   const res = await handle(new Request(`https://push-be.example/api/v1/conversations/${USER}/messages/stream/active?after=3`, {
@@ -278,19 +296,20 @@ test("SSE replay returns 204 or the stored chat_events", async () => {
   assert.ok(text.includes(`id: 8\ndata: {"type": "done", "operation": {"status": "SUCCEEDED"}, "seq": 8, ${stamp}}`));
 });
 
+const modelCatalogQuery: Query = async (sql) => {
+  if (sql.includes("access_tokens")) {
+    return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
+  }
+  return [];
+};
+
 test("model catalog follows the deployed flags and validates provider", async () => {
   resetLimits();
-  const query: Query = async (sql) => {
-    if (sql.includes("access_tokens")) {
-      return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
-    }
-    return [];
-  };
-  const d = deps(query);
+  const d = deps(modelCatalogQuery);
   const first = await handle(new Request("https://push-be.example/api/v1/ai/models", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
-  const body = JSON.parse(await first.text()) as { data: { model: string; available: boolean }[] };
+  const body = parseJson<{ data: Array<{ model: string; available: boolean }> }>(await first.text());
   assert.equal(body.data.length, 1);
   assert.equal(body.data.some((m) => m.model.startsWith("opencode-go/") || m.model.startsWith("openai/")), false);
   assert.equal(body.data.find((m) => m.model === "deepseek/deepseek-v4.1-flash")?.available, true);
@@ -298,13 +317,13 @@ test("model catalog follows the deployed flags and validates provider", async ()
     headers: { authorization: "Bearer secret-token" },
   }), { ...env(), MANAGED_AI: "0" }, d);
   assert.equal(second.status, 200);
-  const flagged = JSON.parse(await second.text()) as typeof body;
+  const flagged = parseJson<typeof body>(await second.text());
   assert.equal(flagged.data.every((m) => !m.available), true);
   const bad = await handle(new Request("https://push-be.example/api/v1/ai/models?provider=NOPE", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
   assert.equal(bad.status, 400);
-  assert.equal((await bad.json() as { error: { details: { field: string } } }).error.details.field, "provider");
+  assert.equal((await readJson<{ error: { details: { field: string } } }>(bad)).error.details.field, "provider");
 
 });
 
@@ -315,7 +334,7 @@ test("job sites are built without any query beyond auth", async () => {
     if (sql.includes("access_tokens")) {
       return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
     }
-    if (sql.includes("rate_limits")) return [{ hits: 1 }];
+    if (sql.includes("rate_limits")) {return [{ hits: 1 }];}
     keyQueries += 1;
     return [];
   };
@@ -323,7 +342,7 @@ test("job sites are built without any query beyond auth", async () => {
   const first = await handle(new Request("https://push-be.example/api/v1/integrations/job-sites", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
-  const body = JSON.parse(await first.text()) as { data: { provider: string; enabled: boolean; checklist: string[] }[] };
+  const body = parseJson<{ data: Array<{ provider: string; enabled: boolean; checklist: Array<string> }> }>(await first.text());
   assert.deepEqual(body.data.map((s) => s.provider), ["WANTED", "JUMPIT", "JOBKOREA"]);
   assert.equal(body.data[0].enabled, false);
   assert.equal(body.data[0].checklist.length, 5);
@@ -335,7 +354,7 @@ test("job sites are built without any query beyond auth", async () => {
 
 test("chat enqueue and other writes are proxied", async () => {
   resetLimits();
-  const calls: string[] = [];
+  const calls: Array<string> = [];
   const query: Query = async (sql) => {
     calls.push(sql);
     if (sql.includes("access_tokens")) {
@@ -348,7 +367,7 @@ test("chat enqueue and other writes are proxied", async () => {
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
   const before = calls.length;
-  const forwarded: string[] = [];
+  const forwarded: Array<string> = [];
   const core = {
     async fetch(request: Request) {
       forwarded.push("core " + request.method + " " + new URL(request.url).pathname);
@@ -390,7 +409,7 @@ test("chat enqueue and other writes are proxied", async () => {
 
 test("shared rate limit is one query with auth and a full bucket is not written again", async () => {
   resetLimits();
-  const seen: string[] = [];
+  const seen: Array<string> = [];
   const query: Query = async (sql) => {
     seen.push(sql);
     if (sql.includes("access_tokens")) {
@@ -414,7 +433,7 @@ test("shared rate limit is one query with auth and a full bucket is not written 
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
   assert.equal(denied.status, 429);
-  assert.equal((await denied.json() as { error: { code: string } }).error.code, "RATE_LIMITED");
+  assert.equal((await readJson<{ error: { code: string } }>(denied)).error.code, "RATE_LIMITED");
   assert.equal(seen.length, 1);
 });
 
@@ -444,25 +463,26 @@ test("a counter another isolate already filled does not increment", async () => 
   assert.equal(calls, 1);
 });
 
+const authFailsCounterQuery: Query = async (sql) => {
+  if (sql.includes("rate_limits")) {throw new Error("undefined_table");}
+  if (sql.includes("access_tokens")) {
+    return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
+  }
+  return [];
+};
+
 test("auth still succeeds when the shared counter query fails", async () => {
   resetLimits();
-  const query: Query = async (sql) => {
-    if (sql.includes("rate_limits")) throw new Error("undefined_table");
-    if (sql.includes("access_tokens")) {
-      return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
-    }
-    return [];
-  };
   const res = await handle(new Request("https://push-be.example/api/v1/auth/me", {
     headers: { authorization: "Bearer secret-token" },
-  }), env(), deps(query));
+  }), env(), deps(authFailsCounterQuery));
   assert.equal(res.status, 200);
   assert.match(await res.text(), /"displayName": "Ada"/);
 });
 
 test("api healthz uses the shared public counter", async () => {
   resetLimits();
-  const seen: { sql: string; params: unknown[] }[] = [];
+  const seen: Array<{ sql: string; params: Array<unknown> }> = [];
   const res = await handle(new Request("https://push-be.example/api/v1/healthz", {
     headers: { "cf-connecting-ip": "203.0.113.5" },
   }), env(), deps(async (sql, params) => {
@@ -501,7 +521,7 @@ test("a rejected python proxy still returns a response", async () => {
     if (sql.includes("access_tokens")) {
       return [{ id: USER, display_name: "Ada", locale: "ko", created_at: "2026-01-02T03:04:05Z", expires_at: "2099-01-01T00:00:00Z" }];
     }
-    if (sql.includes("rate_limits")) return [{ hits: 1 }];
+    if (sql.includes("rate_limits")) {return [{ hits: 1 }];}
     return [];
   };
   const failed = await handle(new Request("https://push-be.example/api/v1/conversations", {
@@ -510,12 +530,12 @@ test("a rejected python proxy still returns a response", async () => {
     body: "{}",
   }), env({ async fetch() { throw new Error("socket stolen"); } }), deps(auth));
   assert.equal(failed.status, 500);
-  assert.equal((await failed.json() as { error: { code: string } }).error.code, "INTERNAL");
+  assert.equal((await readJson<{ error: { code: string } }>(failed)).error.code, "INTERNAL");
 
   const empty = await handle(new Request(`https://push-be.example/api/v1/conversations/${USER}/messages/stream/active`, {
     headers: { authorization: "Bearer secret-token", origin: "http://localhost:5173" },
   }), { ...env(), APP_ENV: "development" }, deps(async (sql) => {
-    if (sql.includes("chat_events")) return [];
+    if (sql.includes("chat_events")) {return [];}
     if (sql.includes("access_tokens")) {
       return [{
         id: USER, display_name: "Ada", locale: "ko",
@@ -523,8 +543,8 @@ test("a rejected python proxy still returns a response", async () => {
         hits: 1, conversation_id: USER, job_id: null,
       }];
     }
-    if (sql.includes("rate_limits")) return [{ hits: 1 }];
-    if (sql.includes("FROM conversations")) return [{ id: USER }];
+    if (sql.includes("rate_limits")) {return [{ hits: 1 }];}
+    if (sql.includes("FROM conversations")) {return [{ id: USER }];}
     return [];
   }));
   assert.equal(empty.status, 204);
@@ -534,11 +554,11 @@ test("a rejected python proxy still returns a response", async () => {
 
 test("auth cache skips Neon until logout or the TTL", async () => {
   resetLimits();
-  const seen: string[] = [];
+  const seen: Array<string> = [];
   let revoked = false;
   const query: Query = async (sql) => {
     seen.push(sql);
-    if (revoked) return [];
+    if (revoked) {return [];}
     if (sql.includes("access_tokens")) {
       return [{
         id: USER, display_name: "Ada", locale: "ko",
@@ -594,7 +614,7 @@ test("auth cache expires and the next request syncs Neon", async () => {
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
   assert.equal(ok.status, 200);
-  now = new Date(NOW.getTime() + 6_000);
+  now = new Date(NOW.getTime() + 6000);
   const again = await handle(new Request("https://push-be.example/api/v1/auth/me", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
@@ -612,7 +632,7 @@ test("many isolates each serving a few requests stay near the cap", async () => 
       counter = Math.max(0, counter - Number(params[1]));
       return [{ hits: counter }];
     }
-    if (!sql.includes("access_tokens")) return [];
+    if (!sql.includes("access_tokens")) {return [];}
     assert.match(sql, /\$7::int > 0 OR rate_limits\.hits < \$4/);
     assert.match(sql, /LEAST\(\$6::int/);
     assert.match(sql, /EXTRACT\(EPOCH FROM expires_at\)/);
@@ -645,8 +665,8 @@ test("many isolates each serving a few requests stay near the cap", async () => 
     const d = deps(query, { limits });
     for (let n = 0; n < 3; n += 1) {
       const res = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
-      if (res.status === 200) ok += 1;
-      else assert.equal(res.status, 429);
+      if (res.status === 200) {ok += 1;}
+      else {assert.equal(res.status, 429);}
     }
   }
   assert.ok(ok >= Math.floor(limit * 0.9));
@@ -655,7 +675,7 @@ test("many isolates each serving a few requests stay near the cap", async () => 
 });
 
 function shrunkGrant(batch: number, room: number): number {
-  if (room <= 0) return 0;
+  if (room <= 0) {return 0;}
   return Math.min(batch, room, Math.max(1, Math.floor(room / 16)));
 }
 
@@ -665,7 +685,7 @@ function leasedQuery(counter: { hits: number }, cap: number): Query {
       counter.hits = Math.max(0, counter.hits - Number(params[1]));
       return [{ hits: counter.hits }];
     }
-    if (!sql.includes("access_tokens")) return [];
+    if (!sql.includes("access_tokens")) {return [];}
     const batch = Number(params[5]);
     const release = Number(params[6]);
     const after = Math.max(0, counter.hits - release);
@@ -696,22 +716,22 @@ test("a spread burst returns unused leases and serves at least 90% of 540", asyn
   let ok = 0;
   for (let isolate = 0; isolate < 400 && ok < cap; isolate += 1) {
     resetLimits();
-    const tasks: Promise<unknown>[] = [];
+    const tasks: Array<Promise<unknown>> = [];
     const gates: Array<() => void> = [];
     const d = deps(leasedQuery(counter, cap), {
       limits,
       sleep: (ms) => new Promise((resolve) => {
-        if (ms <= 0) resolve();
-        else gates.push(resolve);
+        if (ms <= 0) {resolve();}
+        else {gates.push(resolve);}
       }),
       waitUntil: (promise) => { tasks.push(promise); },
     });
     for (let n = 0; n < 2; n += 1) {
       const res = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
-      if (res.status === 200) ok += 1;
-      else assert.equal(res.status, 429);
+      if (res.status === 200) {ok += 1;}
+      else {assert.equal(res.status, 429);}
     }
-    for (const open of gates.splice(0)) open();
+    for (const open of gates.splice(0)) {open();}
     await Promise.all(tasks);
   }
   assert.ok(ok >= Math.floor(cap * 0.9), `served ${ok} of ${cap}`);
@@ -728,15 +748,15 @@ test("fifty fresh leases and 300 requests do not false-429", async () => {
   const cap = limit - Math.floor(limit / 10);
   const counter = { hits: 0 };
   const limits = { user: limit, public: 60, windowMs: 60_000 };
-  const tasks: Promise<unknown>[] = [];
+  const tasks: Array<Promise<unknown>> = [];
   const gates: Array<() => void> = [];
-  const slept: number[] = [];
+  const slept: Array<number> = [];
   const d = deps(leasedQuery(counter, cap), {
     limits,
     sleep: (ms) => new Promise((resolve) => {
       slept.push(ms);
-      if (ms <= 0) resolve();
-      else gates.push(resolve);
+      if (ms <= 0) {resolve();}
+      else {gates.push(resolve);}
     }),
     waitUntil: (promise) => { tasks.push(promise); },
   });
@@ -746,7 +766,7 @@ test("fifty fresh leases and 300 requests do not false-429", async () => {
     const headers = { authorization: `Bearer fresh-token-${isolate}` };
     for (let n = 0; n < 6; n += 1) {
       const res = await handle(new Request("https://push-be.example/api/v1/auth/me", { headers }), env(), d);
-      if (res.status === 200) ok += 1;
+      if (res.status === 200) {ok += 1;}
       else {
         assert.equal(res.status, 429);
         denied += 1;
@@ -757,7 +777,7 @@ test("fifty fresh leases and 300 requests do not false-429", async () => {
   assert.equal(denied, 0);
   assert.ok(counter.hits <= cap);
   assert.ok(counter.hits > ok);
-  for (const open of gates.splice(0)) open();
+  for (const open of gates.splice(0)) {open();}
   await Promise.all(tasks);
   assert.ok(counter.hits >= ok);
   assert.ok(counter.hits - ok <= Math.floor(cap / 4));
@@ -770,8 +790,8 @@ test("a mostly unused lease near the cap returns immediately", async () => {
   const cap = limit - Math.floor(limit / 10);
   const counter = { hits: 500 };
   const limits = { user: limit, public: 60, windowMs: 60_000 };
-  const slept: number[] = [];
-  const tasks: Promise<unknown>[] = [];
+  const slept: Array<number> = [];
+  const tasks: Array<Promise<unknown>> = [];
   const d = deps(leasedQuery(counter, cap), {
     limits,
     sleep: async (ms) => { slept.push(ms); },
@@ -787,12 +807,12 @@ test("a mostly unused lease near the cap returns immediately", async () => {
   assert.equal(counter.hits, 502);
 });
 
-async function settle(gates: Array<() => void>, tasks: Promise<unknown>[]): Promise<void> {
+async function settle(gates: Array<() => void>, tasks: Array<Promise<unknown>>): Promise<void> {
   for (let turn = 0; turn < 8; turn += 1) {
     const pending = tasks.splice(0);
     const open = gates.splice(0);
-    if (pending.length === 0 && open.length === 0) return;
-    for (const release of open) release();
+    if (pending.length === 0 && open.length === 0) {return;}
+    for (const release of open) {release();}
     await Promise.all(pending);
   }
 }
@@ -807,7 +827,7 @@ test("concurrent requests in one isolate return the whole unused pool", async ()
   const waiting: Array<() => void> = [];
   const query: Query = async (sql, params) => {
     if (hold && sql.includes("access_tokens")) {
-      await new Promise<void>((resolve) => waiting.push(resolve));
+      await new Promise<void>((resolve) => { waiting.push(resolve); });
     }
     if (sql.includes("GREATEST(0, hits")) {
       releases += 1;
@@ -817,13 +837,13 @@ test("concurrent requests in one isolate return the whole unused pool", async ()
     return leasedQuery(counter, cap)(sql, params);
   };
   const limits = { user: limit, public: 60, windowMs: 60_000 };
-  const tasks: Promise<unknown>[] = [];
+  const tasks: Array<Promise<unknown>> = [];
   const gates: Array<() => void> = [];
   const d = deps(query, {
     limits,
     sleep: (ms) => new Promise((resolve) => {
-      if (ms <= 0) resolve();
-      else gates.push(resolve);
+      if (ms <= 0) {resolve();}
+      else {gates.push(resolve);}
     }),
     waitUntil: (promise) => { tasks.push(promise); },
   });
@@ -836,10 +856,10 @@ test("concurrent requests in one isolate return the whole unused pool", async ()
   hold = true;
   const burstPromise = Promise.all(Array.from({ length: 40 }, () => one()));
   for (let spin = 0; waiting.length < 40 && spin < 1000; spin += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
   }
   assert.equal(waiting.length, 40);
-  for (const go of waiting.splice(0)) go();
+  for (const go of waiting.splice(0)) {go();}
   const burst = await burstPromise;
   const ok = burst.filter((res) => res.status === 200).length + 7;
   assert.equal(ok, 47);
@@ -862,13 +882,13 @@ test("one unused hit far from the cap skips the return query", async () => {
     }
     return leasedQuery(counter, cap)(sql, params);
   };
-  const tasks: Promise<unknown>[] = [];
+  const tasks: Array<Promise<unknown>> = [];
   const gates: Array<() => void> = [];
   const d = deps(query, {
     limits: { user: 600, public: 60, windowMs: 60_000 },
     sleep: (ms) => new Promise((resolve) => {
-      if (ms <= 0) resolve();
-      else gates.push(resolve);
+      if (ms <= 0) {resolve();}
+      else {gates.push(resolve);}
     }),
     waitUntil: (promise) => { tasks.push(promise); },
   });
@@ -892,7 +912,7 @@ test("an idle isolate returns the unused lease", async () => {
       counter = Math.max(0, counter - Number(params[1]));
       return [{ hits: counter }];
     }
-    if (!sql.includes("access_tokens")) return [];
+    if (!sql.includes("access_tokens")) {return [];}
     const batch = Number(params[5]);
     const release = Number(params[6]);
     const after = Math.max(0, counter - release);
@@ -914,7 +934,7 @@ test("an idle isolate returns the unused lease", async () => {
   assert.equal(first.status, 200);
   assert.equal(second.status, 200);
   assert.equal(counter, 3);
-  now = new Date(NOW.getTime() + 6_000);
+  now = new Date(NOW.getTime() + 6000);
   await releaseExpired(d, now.getTime());
   assert.equal(counter, 2);
 
@@ -936,7 +956,7 @@ test("per-user reads are fresh and isolated", async () => {
   const hashA = await sha256Hex("token-a");
   const hashB = await sha256Hex("token-b");
   let wrote = false;
-  const seen: string[] = [];
+  const seen: Array<string> = [];
   const query: Query = async (sql, params) => {
     seen.push(sql);
     const key = String(params[0]);
@@ -954,7 +974,7 @@ test("per-user reads are fresh and isolated", async () => {
         hits: 1, rows: [row],
       }];
     }
-    if (sql.includes("FROM conversations")) return [row];
+    if (sql.includes("FROM conversations")) {return [row];}
     return [];
   };
   const d = deps(query);
@@ -963,14 +983,14 @@ test("per-user reads are fresh and isolated", async () => {
   }), env(), d);
   const first = await list("token-a");
   assert.equal(first.status, 200);
-  assert.equal((await first.json() as { data: { title: string }[] }).data[0].title, "A의 채팅");
+  assert.equal((await readJson<{ data: Array<{ title: string }> }>(first)).data[0].title, "A의 채팅");
   wrote = true;
   const fresh = await list("token-a");
-  assert.equal((await fresh.json() as { data: { title: string }[] }).data[0].title, "A의 새 채팅");
+  assert.equal((await readJson<{ data: Array<{ title: string }> }>(fresh)).data[0].title, "A의 새 채팅");
   assert.equal(seen.length, 2);
 
   const other = await list("token-b");
-  const otherBody = await other.json() as { data: { title: string }[] };
+  const otherBody = await readJson<{ data: Array<{ title: string }> }>(other);
   assert.equal(otherBody.data[0].title, "B의 채팅");
   assert.equal(seen.length, 3);
   assert.equal(hashB.length, 64);
@@ -998,8 +1018,8 @@ test("message reads stay on that user and refresh after a write", async () => {
         hits: 1, conversation_id: USER, rows: [message],
       }];
     }
-    if (sql.includes("FROM conversations")) return [{ id: USER }];
-    if (sql.includes("FROM messages")) return [message];
+    if (sql.includes("FROM conversations")) {return [{ id: USER }];}
+    if (sql.includes("FROM messages")) {return [message];}
     return [];
   };
   const d = deps(query);
@@ -1007,10 +1027,10 @@ test("message reads stay on that user and refresh after a write", async () => {
     headers: { authorization: "Bearer secret-token" },
   }), env(), d);
   const first = await read();
-  assert.equal((await first.json() as { data: { text: string }[] }).data[0].text, "안녕");
+  assert.equal((await readJson<{ data: Array<{ text: string }> }>(first)).data[0].text, "안녕");
   wrote = true;
   const fresh = await read();
-  assert.equal((await fresh.json() as { data: { text: string }[] }).data[0].text, "다음");
+  assert.equal((await readJson<{ data: Array<{ text: string }> }>(fresh)).data[0].text, "다음");
   assert.equal(calls, 2);
 });
 
@@ -1069,6 +1089,11 @@ test("the web app may send x-csrf and credentials, and the cookie reaches core a
     headers: { origin, "access-control-request-method": "POST", "access-control-request-headers": "content-type, x-csrf" },
   }), env({ async fetch() { return new Response(""); } }), deps(async () => []));
   assert.match(pre.headers.get("access-control-allow-headers") || "", /x-csrf/);
+  const a2ui = await handle(new Request("https://push-be.example/api/v1/bots/push/stream", {
+    method: "OPTIONS",
+    headers: { origin, "access-control-request-method": "GET", "access-control-request-headers": "authorization, a2ui-version" },
+  }), env({ async fetch() { return new Response(""); } }), deps(async () => []));
+  assert.match(a2ui.headers.get("access-control-allow-headers") || "", /a2ui-version/);
   assert.equal(pre.headers.get("access-control-allow-credentials"), "true");
   assert.equal(pre.headers.get("access-control-allow-origin"), origin);
 
@@ -1091,7 +1116,7 @@ test("the web app may send x-csrf and credentials, and the cookie reaches core a
 
 test("recruiting stays on core and AI_ORIGIN is an opt-in HTTPS target", async () => {
   resetLimits();
-  const forwarded: string[] = [];
+  const forwarded: Array<string> = [];
   const core = {
     async fetch(request: Request) {
       forwarded.push("core " + new URL(request.url).pathname);
@@ -1213,7 +1238,7 @@ const COMPANY = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 test("personal conversation list sql excludes company rows", async () => {
   resetLimits();
-  const seen: string[] = [];
+  const seen: Array<string> = [];
   const res = await handle(new Request("https://push-be.example/api/v1/conversations", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), deps(async (sql) => {
@@ -1234,7 +1259,7 @@ test("personal conversation list sql excludes company rows", async () => {
 
 test("employer conversation list sql filters by the caller company", async () => {
   resetLimits();
-  const seen: Array<[string, unknown[]]> = [];
+  const seen: Array<[string, Array<unknown>]> = [];
   const res = await handle(new Request("https://push-be.example/api/v1/conversations?audience=EMPLOYER", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), deps(async (sql, params) => {
@@ -1266,7 +1291,7 @@ const SHARED_CONV = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 
 test("company message reads include a teammate and ignore the author filter", async () => {
   resetLimits();
-  const seen: string[] = [];
+  const seen: Array<string> = [];
   const message = {
     id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
     conversation_id: SHARED_CONV,
@@ -1294,13 +1319,13 @@ test("company message reads include a teammate and ignore the author filter", as
   const sql = seen.find((item) => item.includes("FROM messages")) ?? "";
   assert.match(sql, /company_id = \(SELECT company_id FROM auth\)/);
   assert.match(sql, /found\.company_id IS NOT NULL/);
-  const body = await res.json() as { data: { text: string }[] };
+  const body = await readJson<{ data: Array<{ text: string }> }>(res);
   assert.equal(body.data[0].text, "팀 메시지");
 });
 
 test("an active company job is visible to a teammate", async () => {
   resetLimits();
-  const seen: string[] = [];
+  const seen: Array<string> = [];
   const res = await handle(new Request("https://push-be.example/api/v1/conversations/" + SHARED_CONV + "/messages/stream/active", {
     headers: { authorization: "Bearer secret-token" },
   }), env(), deps(async (sql) => {

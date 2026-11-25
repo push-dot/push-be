@@ -20,7 +20,7 @@ _MAX_RETRIES: Final = 1
 
 def chat_model(*, api_key: str, model: str, base_url: str,
                reasoning: str = "", headers: dict | None = None,
-               cls=None, streaming: bool = True):
+               cls=None, streaming: bool = True, temperature: float | None = None):
     """OpenAI-compatible chat model. Tools are not bound to this call."""
     if cls is None and not (api_key or "").strip():
         from app.domain.errors import not_configured
@@ -38,6 +38,8 @@ def chat_model(*, api_key: str, model: str, base_url: str,
         "timeout": _TIMEOUT_SECONDS,
         "max_retries": _MAX_RETRIES,
     }
+    if temperature is not None:
+        kwargs["temperature"] = temperature
     # The same provider pins and web engine as OpenAIClient's raw requests.
     extra_body: dict = openrouter_route(model)
     if reasoning:

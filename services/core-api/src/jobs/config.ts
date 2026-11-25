@@ -43,8 +43,8 @@ const REQUIRED_PLAN: Record<Gate, { plan: Plan; message: string }> = {
 };
 
 export const planTier = (value: unknown): Plan => {
-  const raw = value == null ? "" : String(value).trim().toUpperCase();
-  if (raw === "BASIC" || raw === "PRO" || raw === "ULTRA" || raw === "FREE") return raw;
+  const raw = (value === null || value === undefined) ? "" : String(value).trim().toUpperCase();
+  if (raw === "BASIC" || raw === "PRO" || raw === "ULTRA" || raw === "FREE") {return raw;}
   return "FREE";
 };
 
@@ -57,8 +57,8 @@ export const assertPlanAllows = (plan: unknown, gate: Gate): void => {
 
 export const estimateMicro = (type: JobType, plan: Plan): bigint => {
   const base = ESTIMATE_MICRO[type];
-  if (plan === "ULTRA") return base * 2n;
-  if (plan === "PRO") return base + base / 2n;
+  if (plan === "ULTRA") {return base * 2n;}
+  if (plan === "PRO") {return base + base / 2n;}
   return base;
 };
 
@@ -67,9 +67,9 @@ export const queueDepthLimit = (plan: Plan): number => DEPTH_LIMIT[plan];
 export const maxAttempts = (type: JobType): number => MAX_ATTEMPTS[type];
 
 export const queueFor = (type: JobType, plan: Plan, audience: Audience): QueueName => {
-  if (type === "notify") return "q:notify";
-  if (type === "ingest") return "q:ingest";
-  if (type === "document" || type === "fit") return "q:document";
+  if (type === "notify") {return "q:notify";}
+  if (type === "ingest") {return "q:ingest";}
+  if (type === "document" || type === "fit") {return "q:document";}
   const priority = (audience === "EMPLOYER" && (plan === "PRO" || plan === "ULTRA"))
     || (audience === "PERSONAL" && plan === "ULTRA");
   return priority ? "q:chat:priority" : "q:chat";

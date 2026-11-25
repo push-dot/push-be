@@ -1,9 +1,12 @@
 import { signPendingSignup } from "../auth/pending-signup.ts";
 import { verifyPkce } from "../crypto.ts";
 import { isMissingRelation, isUndefinedColumn, isUnique, query, one } from "../db.ts";
-import { HttpError, asBool, data, randomToken, requireUuid, sha256Hex } from "../http.ts";
+import type { Row } from "../db.ts";
+import { HttpError, asBool, data, randomToken, sha256Hex } from "../http.ts";
+import type { JsonObject } from "../json.ts";
 import { ts } from "../page.ts";
 import type { Ctx, UserRow } from "../types.ts";
+import { revokeAppleGrant } from "./apple-auth.ts";
 import { cancelSubscriptions } from "./billing.ts";
 import { readObject } from "./recruiting-shared.ts";
 
@@ -23,19 +26,26 @@ const ROTATE_REFRESH = "WITH revoked AS (UPDATE refresh_tokens SET revoked_at = 
 // Logout deletes the device's push token ($3); without one it deletes all of the user's, since the device is unknown.
 const LOGOUT = "WITH target AS (SELECT id, user_id FROM refresh_tokens WHERE token_hash = $1), revoked AS (UPDATE refresh_tokens SET revoked_at = $2 WHERE id IN (SELECT id FROM target) AND revoked_at IS NULL), devices AS (DELETE FROM user_devices WHERE user_id IN (SELECT user_id FROM target) AND ($3::text IS NULL OR token = $3::text)) UPDATE access_tokens SET expires_at = $2 WHERE refresh_token_id IN (SELECT id FROM target)";
 
-const userBy = async (ctx: Omit<Ctx, "user">, sql: string, fallback: string, params: unknown[]): Promise<Record<string, unknown> | null> => {
+const userBy = async (ctx: Omit<Ctx, "user">, sql: string, fallback: string, params: Array<unknown>): Promise<Row | null> => {
   try {
     return await one(ctx.deps.query, sql, params);
-  } catch (err) {
-    if (!isMissingRelation(err) && !isUndefinedColumn(err)) throw err;
+  } catch (error) {
+    if (!isMissingRelation(error) && !isUndefinedColumn(error)) {throw error;}
     return one(ctx.deps.query, fallback, params);
   }
 };
 
-const textOrNull = (value: unknown): string | null =>
-  value == null || value === "" ? null : String(value);
+const asRecord = (value: unknown): JsonObject =>
+  typeof value === "object" && value !== null ? Object.fromEntries(Object.entries(value)) : {};
 
-export const emailTaken = (row: Record<string, unknown>): HttpError => {
+const textOf = (value: unknown): string => (typeof value === "string" ? value : "");
+
+const toDate = (value: unknown): Date => (value instanceof Date ? value : new Date(String(value)));
+
+const textOrNull = (value: unknown): string | null =>
+  (value === null || value === undefined) || value === "" ? null : String(value);
+
+export const emailTaken = (row: Row): HttpError => {
   const employer = asBool(row.is_employer);
   const accountType = employer ? "EMPLOYER" : "PERSONAL";
   const message = employer
@@ -45,16 +55,16 @@ export const emailTaken = (row: Record<string, unknown>): HttpError => {
 };
 
 const allowedRedirect = (redirect: string, origins: string | undefined, dev: boolean): boolean => {
-  if (redirect === "push://auth/callback") return true;
+  if (redirect === "push://auth/callback") {return true;}
   const local = dev ? LOCAL_CALLBACK.exec(redirect) : null;
   if (local) {
     const port = Number(local[1]);
-    return port >= 1 && port <= 65535;
+    return port >= 1 && port <= 65_535;
   }
   let target: URL;
   try { target = new URL(redirect); } catch { return false; }
-  if (target.protocol !== "http:" && target.protocol !== "https:") return false;
-  if (target.pathname !== "/auth/callback" || target.search || target.hash || target.username || target.password) return false;
+  if (target.protocol !== "http:" && target.protocol !== "https:") {return false;}
+  if (target.pathname !== "/auth/callback" || target.search || target.hash || target.username || target.password) {return false;}
   return (origins ?? "").split(",").map((item) => item.trim()).filter(Boolean).some((origin) => {
     try {
       const base = new URL(origin);
@@ -66,8 +76,8 @@ const allowedRedirect = (redirect: string, origins: string | undefined, dev: boo
 };
 
 const accountTypeFrom = (value: string | null): "PERSONAL" | "EMPLOYER" => {
-  if (value == null || value === "" || value === "PERSONAL") return "PERSONAL";
-  if (value === "EMPLOYER") return "EMPLOYER";
+  if ((value === null || value === undefined) || value === "" || value === "PERSONAL") {return "PERSONAL";}
+  if (value === "EMPLOYER") {return "EMPLOYER";}
   throw new HttpError(400, "VALIDATION_ERROR", "must be PERSONAL or EMPLOYER", { field: "accountType" });
 };
 
@@ -76,12 +86,12 @@ const githubPrimaryEmail = async (fetchImpl: typeof fetch, access: string): Prom
     const res = await fetchImpl("https://api.github.com/user/emails", {
       headers: { authorization: "Bearer " + access, accept: "application/json", "user-agent": "push-be" },
     });
-    if (!res.ok) return { email: null, verified: false };
-    const body = await res.json() as unknown;
-    if (!Array.isArray(body)) return { email: null, verified: false };
+    if (!res.ok) {return { email: null, verified: false };}
+    const body: unknown = await res.json();
+    if (!Array.isArray(body)) {return { email: null, verified: false };}
     for (const item of body) {
-      if (!item || typeof item !== "object") continue;
-      const row = item as { primary?: unknown; verified?: unknown; email?: unknown };
+      if (!item || typeof item !== "object") {continue;}
+      const row = asRecord(item);
       if (row.primary && row.verified && typeof row.email === "string" && row.email.trim()) {
         return { email: row.email.trim().toLowerCase(), verified: true };
       }
@@ -92,28 +102,29 @@ const githubPrimaryEmail = async (fetchImpl: typeof fetch, access: string): Prom
   }
 };
 
-const PROVIDERS: Record<string, { auth: string; token: string; user: string }> = {
-  google: {
+const PROVIDERS = new Map([
+  ["google", {
     auth: "https://accounts.google.com/o/oauth2/v2/auth",
     token: "https://oauth2.googleapis.com/token",
     user: "https://openidconnect.googleapis.com/v1/userinfo",
-  },
-  github: {
+  }],
+  ["github", {
     auth: "https://github.com/login/oauth/authorize",
     token: "https://github.com/login/oauth/access_token",
     user: "https://api.github.com/user",
-  },
-};
+  }],
+]);
 
-function providerCfg(env: Ctx["env"], provider: string): { id: string; secret: string; auth: string; token: string; user: string } {
-  if (!PROVIDERS[provider]) throw new HttpError(404, "NOT_FOUND", "resource not found");
+function providerCfg(env: Ctx["env"], provider: string) {
+  const endpoints = PROVIDERS.get(provider);
+  if (!endpoints) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   const id = provider === "google" ? env.GOOGLE_CLIENT_ID : env.GITHUB_CLIENT_ID;
   const secret = provider === "google" ? env.GOOGLE_CLIENT_SECRET : env.GITHUB_CLIENT_SECRET;
-  if (!id || !secret) throw new HttpError(503, "NOT_CONFIGURED", `oauth provider ${provider} is not configured`);
-  return { id, secret, ...PROVIDERS[provider] };
+  if (!id || !secret) {throw new HttpError(503, "NOT_CONFIGURED", `oauth provider ${provider} is not configured`);}
+  return { id, secret, ...endpoints };
 }
 
-function appleCfg(env: Ctx["env"]): { id: string; secret: string; auth: string; token: string; user: string } {
+function appleCfg(env: Ctx["env"]) {
   const id = env.APPLE_CLIENT_ID || "";
   if (!id || !env.APPLE_TEAM_ID || !env.APPLE_KEY_ID || !env.APPLE_PRIVATE_KEY) {
     throw new HttpError(503, "NOT_CONFIGURED", "oauth provider apple is not configured");
@@ -121,17 +132,17 @@ function appleCfg(env: Ctx["env"]): { id: string; secret: string; auth: string; 
   return { id, secret: "form-post", auth: "https://appleid.apple.com/auth/authorize", token: "", user: "" };
 }
 
-function userFrom(row: Record<string, unknown>): UserRow {
+function userFrom(row: Row): UserRow {
   return {
     id: String(row.id),
     displayName: String(row.display_name ?? ""),
     locale: String(row.locale ?? "ko"),
-    email: row.email == null ? "" : String(row.email),
-    provider: row.provider == null ? "" : String(row.provider),
+    email: (row.email === null || row.email === undefined) ? "" : String(row.email),
+    provider: (row.provider === null || row.provider === undefined) ? "" : String(row.provider),
     plan: String(row.plan ?? "FREE"),
     subscriptionStatus: String(row.subscription_status ?? "NONE"),
-    stripeCustomerId: row.stripe_customer_id == null ? null : String(row.stripe_customer_id),
-    periodEndsAt: row.period_ends_at == null ? null : String(row.period_ends_at),
+    stripeCustomerId: (row.stripe_customer_id === null || row.stripe_customer_id === undefined) ? null : String(row.stripe_customer_id),
+    periodEndsAt: (row.period_ends_at === null || row.period_ends_at === undefined) ? null : String(row.period_ends_at),
     createdAt: String(row.created_at),
     accountType: asBool(row.is_employer) ? "EMPLOYER" : "PERSONAL",
     companyId: textOrNull(row.company_id),
@@ -144,19 +155,19 @@ export async function resolveUser(ctx: Omit<Ctx, "user">, token: string): Promis
   if (env.APP_ENV === "development" && env.DEV_AUTH_TOKEN && token === env.DEV_AUTH_TOKEN) {
     const id = env.DEV_USER_ID || "";
     const row = await userBy(ctx, USER_BY_ID, USER_BY_ID_BASE, [id]);
-    if (!row) throw new HttpError(401, "UNAUTHENTICATED", "dev user not seeded");
+    if (!row) {throw new HttpError(401, "UNAUTHENTICATED", "dev user not seeded");}
     return userFrom(row);
   }
   const hash = await sha256Hex(token);
   const row = await userBy(ctx, USER_BY_TOKEN, USER_BY_TOKEN_BASE, [hash]);
-  if (!row) throw new HttpError(401, "UNAUTHENTICATED", "invalid access token");
+  if (!row) {throw new HttpError(401, "UNAUTHENTICATED", "invalid access token");}
   if (ctx.now.getTime() > Date.parse(String(row.token_expires_at))) {
     throw new HttpError(401, "TOKEN_EXPIRED", "access token expired");
   }
   return userFrom(row);
 }
 
-function sessionBody(access: string, refresh: string, user: UserRow): Record<string, unknown> {
+function sessionBody(access: string, refresh: string, user: UserRow) {
   return {
     accessToken: access,
     refreshToken: refresh,
@@ -172,7 +183,7 @@ function sessionBody(access: string, refresh: string, user: UserRow): Record<str
   };
 }
 
-export async function issue(ctx: Ctx, userId: string, loginAt?: string): Promise<Record<string, unknown>> {
+export async function issue(ctx: Ctx, userId: string, loginAt?: string) {
   const access = randomToken();
   const refresh = randomToken();
   const accessHash = await sha256Hex(access);
@@ -188,19 +199,19 @@ export async function issue(ctx: Ctx, userId: string, loginAt?: string): Promise
       [refreshId, userId, refreshHash, refreshExp, created, accessId, accessHash, accessExp, loginAt ?? created]),
     userBy(ctx, USER_BY_ID, USER_BY_ID_BASE, [userId]),
   ]);
-  if (!row) throw new HttpError(500, "INTERNAL", "internal error");
+  if (!row) {throw new HttpError(500, "INTERNAL", "internal error");}
   return sessionBody(access, refresh, userFrom(row));
 }
 
-function requireString(body: Record<string, unknown>, key: string): string {
+function requireString(body: JsonObject, key: string): string {
   const value = body[key];
-  if (typeof value !== "string") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
+  if (typeof value !== "string") {throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");}
   return value;
 }
 
 export async function oauthStart(ctx: Ctx): Promise<Response> {
   const provider = ctx.url.pathname.split("/")[4] || "";
-  if (provider !== "apple" && !PROVIDERS[provider]) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (provider !== "apple" && !PROVIDERS.has(provider)) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   const accountType = accountTypeFrom(ctx.url.searchParams.get("accountType"));
   if ((provider === "github" || provider === "apple") && accountType === "EMPLOYER") {
     throw new HttpError(400, "VALIDATION_ERROR", "not allowed", { field: "accountType" });
@@ -209,8 +220,8 @@ export async function oauthStart(ctx: Ctx): Promise<Response> {
   const method = ctx.url.searchParams.get("codeChallengeMethod") || "";
   const challenge = ctx.url.searchParams.get("codeChallenge") || "";
   const redirect = ctx.url.searchParams.get("redirectUri") || "";
-  if (method !== "S256") throw new HttpError(400, "VALIDATION_ERROR", "must be S256", { field: "codeChallengeMethod" });
-  if (!challenge) throw new HttpError(400, "VALIDATION_ERROR", "required", { field: "codeChallenge" });
+  if (method !== "S256") {throw new HttpError(400, "VALIDATION_ERROR", "must be S256", { field: "codeChallengeMethod" });}
+  if (!challenge) {throw new HttpError(400, "VALIDATION_ERROR", "required", { field: "codeChallenge" });}
   if (!allowedRedirect(redirect, ctx.env.OAUTH_REDIRECT_ORIGINS, ctx.env.APP_ENV === "development")) {
     throw new HttpError(400, "VALIDATION_ERROR", "not allowed", { field: "redirectUri" });
   }
@@ -252,12 +263,12 @@ export async function oauthCallback(ctx: Ctx): Promise<Response> {
   const rec = await one(ctx.deps.query,
     "DELETE FROM oauth_states WHERE state = $1 RETURNING state, provider, code_challenge, redirect_uri, final_uri, expires_at, account_type",
     [state]);
-  if (!rec) throw new HttpError(401, "UNAUTHENTICATED", "invalid state");
+  if (!rec) {throw new HttpError(401, "UNAUTHENTICATED", "invalid state");}
   if (ctx.now.getTime() > Date.parse(String(rec.expires_at)) || String(rec.provider) !== provider) {
     throw new HttpError(401, "UNAUTHENTICATED", "state expired");
   }
   const fetchImpl = ctx.deps.fetch ?? fetch;
-  let access = "";
+  let access: string;
   try {
     const form = new URLSearchParams({
       client_id: cfg.id,
@@ -271,29 +282,29 @@ export async function oauthCallback(ctx: Ctx): Promise<Response> {
       headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
       body: form,
     });
-    const tokenBody = await tokenRes.json() as { access_token?: string };
-    if (!tokenRes.ok || !tokenBody.access_token) throw new Error("exchange");
-    access = tokenBody.access_token;
+    const token = asRecord(await tokenRes.json()).access_token;
+    if (!tokenRes.ok || typeof token !== "string" || !token) {throw new Error("exchange");}
+    access = token;
   } catch {
     throw new HttpError(502, "PROVIDER_ERROR", "provider token exchange failed");
   }
   const identityHeaders = { authorization: "Bearer " + access, accept: "application/json", "user-agent": "push-be" };
-  let subject = "";
-  let name = "";
+  let subject: string;
+  let name: string;
   let email: string | null = null;
   let emailVerified = false;
   try {
     // GitHub's API rejects requests without a User-Agent (403); Workers' fetch sends none by default.
     const ident = await fetchImpl(cfg.user, { headers: identityHeaders });
-    if (!ident.ok) throw new Error("identity");
-    const body = await ident.json() as { sub?: string; id?: string | number; name?: string; login?: string; email?: string; email_verified?: boolean };
-    subject = body.sub || (body.id != null ? String(body.id) : "");
-    if (!subject) throw new Error("subject");
-    name = body.name || body.login || body.email || "user";
+    if (!ident.ok) {throw new Error("identity");}
+    const body = asRecord(await ident.json());
+    subject = textOf(body.sub) || ((body.id !== null && body.id !== undefined) ? String(body.id) : "");
+    if (!subject) {throw new Error("subject");}
+    name = textOf(body.name) || textOf(body.login) || textOf(body.email) || "user";
     if (provider === "google") {
-      const raw = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+      const raw = textOf(body.email).trim().toLowerCase();
       email = raw || null;
-      emailVerified = body.email_verified === true && email != null;
+      emailVerified = body.email_verified === true && email !== null;
     }
   } catch {
     throw new HttpError(502, "PROVIDER_ERROR", "provider identity fetch failed");
@@ -318,36 +329,36 @@ export async function oauthCallback(ctx: Ctx): Promise<Response> {
 
 export const clearDeletion = async (ctx: Ctx, userId: string): Promise<void> => {
   await query(ctx.deps.query, "UPDATE users SET deletion_requested_at = NULL WHERE id = $1 AND deletion_requested_at IS NOT NULL", [userId])
-    .catch((err: unknown) => { if (!isUndefinedColumn(err)) throw err; });
+    .catch((error: unknown) => { if (!isUndefinedColumn(error)) {throw error;} });
   await query(ctx.deps.query, "UPDATE companies SET deletion_requested_at = NULL WHERE id IN (SELECT company_id FROM company_members WHERE user_id = $1 AND role = 'ADMIN')", [userId])
-    .catch((err: unknown) => { if (!isUndefinedColumn(err) && !isMissingRelation(err)) throw err; });
+    .catch((error: unknown) => { if (!isUndefinedColumn(error) && !isMissingRelation(error)) {throw error;} });
 };
 
-const accountLabel = (row: Record<string, unknown>): "PERSONAL" | "EMPLOYER" =>
+const accountLabel = (row: Row): "PERSONAL" | "EMPLOYER" =>
   asBool(row.is_employer) ? "EMPLOYER" : "PERSONAL";
 
-const resolveOAuthUser = async (ctx: Ctx, rec: Record<string, unknown>): Promise<string> => {
-  const provider = rec.provider == null || rec.provider === "" ? "" : String(rec.provider);
+const resolveOAuthUser = async (ctx: Ctx, rec: Row): Promise<string> => {
+  const provider = (rec.provider === null || rec.provider === undefined) || rec.provider === "" ? "" : String(rec.provider);
   if (!provider) {
-    if (rec.user_id == null || rec.user_id === "") throw new HttpError(400, "EMAIL_NOT_VERIFIED", "email is not verified");
+    if ((rec.user_id === null || rec.user_id === undefined) || rec.user_id === "") {throw new HttpError(400, "EMAIL_NOT_VERIFIED", "email is not verified");}
     return String(rec.user_id);
   }
-  const email = rec.email == null ? "" : String(rec.email).trim().toLowerCase();
-  if (!asBool(rec.email_verified) || !email) throw new HttpError(400, "EMAIL_NOT_VERIFIED", "email is not verified");
+  const email = (rec.email === null || rec.email === undefined) ? "" : String(rec.email).trim().toLowerCase();
+  if (!asBool(rec.email_verified) || !email) {throw new HttpError(400, "EMAIL_NOT_VERIFIED", "email is not verified");}
   const accountType = rec.account_type === "EMPLOYER" ? "EMPLOYER" : "PERSONAL";
   const byIdentity = await one(ctx.deps.query, "SELECT u.id, u.is_employer FROM user_identities i JOIN users u ON u.id = i.user_id WHERE i.provider = $1 AND i.provider_subject = $2", [provider, String(rec.provider_subject ?? "")]);
   if (byIdentity) {
-    if (accountLabel(byIdentity) !== accountType) throw emailTaken(byIdentity);
+    if (accountLabel(byIdentity) !== accountType) {throw emailTaken(byIdentity);}
     return String(byIdentity.id);
   }
   const byEmail = await one(ctx.deps.query, "SELECT id, is_employer FROM users WHERE lower(email) = lower($1)", [email]);
   if (byEmail) {
-    if (accountLabel(byEmail) !== accountType) throw emailTaken(byEmail);
+    if (accountLabel(byEmail) !== accountType) {throw emailTaken(byEmail);}
     return String(byEmail.id);
   }
   const byProvider = await one(ctx.deps.query, "SELECT id, is_employer FROM users WHERE provider = $1 AND provider_subject = $2", [provider, String(rec.provider_subject ?? "")]);
   if (byProvider) {
-    if (accountLabel(byProvider) !== accountType) throw emailTaken(byProvider);
+    if (accountLabel(byProvider) !== accountType) {throw emailTaken(byProvider);}
     return String(byProvider.id);
   }
   const userId = crypto.randomUUID();
@@ -356,11 +367,11 @@ const resolveOAuthUser = async (ctx: Ctx, rec: Record<string, unknown>): Promise
     await query(ctx.deps.query,
       "INSERT INTO users (id, provider, provider_subject, display_name, locale, created_at, email, email_verified_at, is_employer, password_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
       [userId, provider, String(rec.provider_subject ?? ""), String(rec.display_name || "user"), "ko", now, email, now, accountType === "EMPLOYER", null]);
-  } catch (err) {
-    if (!isUnique(err)) throw err;
+  } catch (error) {
+    if (!isUnique(error)) {throw error;}
     const taken = await one(ctx.deps.query, "SELECT id, is_employer FROM users WHERE lower(email) = lower($1)", [email]);
-    if (!taken) throw err;
-    if (accountLabel(taken) !== accountType) throw emailTaken(taken);
+    if (!taken) {throw error;}
+    if (accountLabel(taken) !== accountType) {throw emailTaken(taken);}
     return String(taken.id);
   }
   return userId;
@@ -369,21 +380,21 @@ const resolveOAuthUser = async (ctx: Ctx, rec: Record<string, unknown>): Promise
 const IDENTITY_USER = "SELECT u.id, u.is_employer FROM user_identities i JOIN users u ON u.id = i.user_id WHERE i.provider = $1 AND i.provider_subject = $2";
 const BY_PROVIDER = "SELECT id, is_employer FROM users WHERE provider = $1 AND provider_subject = $2";
 
-export const completePersonalSocial = async (ctx: Ctx, rec: Record<string, unknown>): Promise<Response> => {
+export const completePersonalSocial = async (ctx: Ctx, rec: Row): Promise<Response> => {
   const provider = String(rec.provider ?? "");
   const subject = String(rec.provider_subject ?? "");
   const wanted = rec.account_type === "EMPLOYER" ? "EMPLOYER" : "PERSONAL";
   const found = await one(ctx.deps.query, IDENTITY_USER, [provider, subject])
     ?? await one(ctx.deps.query, BY_PROVIDER, [provider, subject]);
   if (found) {
-    if (accountLabel(found) !== wanted) throw emailTaken(found);
+    if (accountLabel(found) !== wanted) {throw emailTaken(found);}
     const userId = String(found.id);
     await clearDeletion(ctx, userId);
     return data(200, await issue(ctx, userId), ctx.rid);
   }
-  const rawEmail = rec.email == null || String(rec.email).trim() === "" ? null : String(rec.email).trim().toLowerCase();
-  const verified = asBool(rec.email_verified) && rawEmail != null;
-  if (provider !== "apple" && !verified) throw new HttpError(400, "EMAIL_NOT_VERIFIED", "email is not verified");
+  const rawEmail = (rec.email === null || rec.email === undefined) || String(rec.email).trim() === "" ? null : String(rec.email).trim().toLowerCase();
+  const verified = asBool(rec.email_verified) && (rawEmail !== null && rawEmail !== undefined);
+  if (provider !== "apple" && !verified) {throw new HttpError(400, "EMAIL_NOT_VERIFIED", "email is not verified");}
   const signed = await signPendingSignup(ctx.env, { provider, subject, email: verified ? rawEmail : null }, ctx.now);
   return data(200, { pendingToken: signed.token, expiresIn: signed.expiresIn }, ctx.rid);
 };
@@ -395,8 +406,8 @@ export async function exchange(ctx: Ctx): Promise<Response> {
   const rec = await one(ctx.deps.query,
     "SELECT code, user_id, code_challenge, expires_at, used_at, provider, provider_subject, email, email_verified, display_name, account_type FROM exchange_codes WHERE code = $1",
     [code]);
-  if (!rec) throw new HttpError(401, "UNAUTHENTICATED", "invalid code");
-  if (rec.used_at != null || ctx.now.getTime() > Date.parse(String(rec.expires_at))) {
+  if (!rec) {throw new HttpError(401, "UNAUTHENTICATED", "invalid code");}
+  if ((rec.used_at !== null && rec.used_at !== undefined) || ctx.now.getTime() > Date.parse(String(rec.expires_at))) {
     throw new HttpError(401, "UNAUTHENTICATED", "code expired or already used");
   }
   if (!verifier || !(await verifyPkce(verifier, String(rec.code_challenge)))) {
@@ -405,10 +416,10 @@ export async function exchange(ctx: Ctx): Promise<Response> {
   const marked = await one(ctx.deps.query,
     "UPDATE exchange_codes SET used_at = $2 WHERE code = $1 AND used_at IS NULL RETURNING code",
     [code, ctx.now.toISOString()]);
-  if (!marked) throw new HttpError(401, "UNAUTHENTICATED", "code expired or already used");
-  const provider = rec.provider == null || rec.provider === "" ? "" : String(rec.provider);
+  if (!marked) {throw new HttpError(401, "UNAUTHENTICATED", "code expired or already used");}
+  const provider = (rec.provider === null || rec.provider === undefined) || rec.provider === "" ? "" : String(rec.provider);
   const accountType = rec.account_type === "EMPLOYER" ? "EMPLOYER" : "PERSONAL";
-  if (provider && accountType === "PERSONAL") return completePersonalSocial(ctx, rec);
+  if (provider && accountType === "PERSONAL") {return completePersonalSocial(ctx, rec);}
   const userId = await resolveOAuthUser(ctx, rec);
   await clearDeletion(ctx, userId);
   return data(200, await issue(ctx, userId), ctx.rid);
@@ -425,8 +436,8 @@ export async function refresh(ctx: Ctx): Promise<Response> {
   const rec = await one(ctx.deps.query,
     "SELECT id, user_id, expires_at, revoked_at, login_at FROM refresh_tokens WHERE token_hash = $1",
     [hash]);
-  if (!rec) throw new HttpError(401, "UNAUTHENTICATED", "invalid refresh token");
-  if (rec.revoked_at != null) {
+  if (!rec) {throw new HttpError(401, "UNAUTHENTICATED", "invalid refresh token");}
+  if ((rec.revoked_at !== null && rec.revoked_at !== undefined)) {
     await revokeAll(ctx, String(rec.user_id));
     throw new HttpError(401, "UNAUTHENTICATED", "refresh token revoked");
   }
@@ -438,26 +449,26 @@ export async function refresh(ctx: Ctx): Promise<Response> {
     await revokeAll(ctx, String(rec.user_id));
     throw new HttpError(401, "UNAUTHENTICATED", "refresh token revoked");
   }
-  return data(200, await issue(ctx, String(rec.user_id), rec.login_at == null ? undefined : new Date(rec.login_at as string | Date).toISOString()), ctx.rid);
+  return data(200, await issue(ctx, String(rec.user_id), (rec.login_at === null || rec.login_at === undefined) ? undefined : toDate(rec.login_at).toISOString()), ctx.rid);
 }
 
 export async function logout(ctx: Ctx): Promise<Response> {
   const body = await readObject(ctx.request);
   const token = requireString(body, "refreshToken");
   const pushToken = typeof body.pushToken === "string" && body.pushToken ? body.pushToken : null;
-  if (token) await query(ctx.deps.query, LOGOUT, [await sha256Hex(token), ctx.now.toISOString(), pushToken]);
+  if (token) {await query(ctx.deps.query, LOGOUT, [await sha256Hex(token), ctx.now.toISOString(), pushToken]);}
   return new Response(null, { status: 204, headers: { "x-request-id": ctx.rid } });
 }
 
 /** Marks the account for deletion; logging in within 30 days restores it, then the cron purges it. */
-const companyMembership = async (ctx: Ctx): Promise<Record<string, unknown> | null> => {
+const companyMembership = async (ctx: Ctx): Promise<Row | null> => {
   try {
     return await one(ctx.deps.query,
       "SELECT m.role, m.company_id, c.stripe_customer_id, (SELECT count(*) FROM company_members o WHERE o.company_id = m.company_id AND o.user_id <> m.user_id) AS others FROM company_members m JOIN companies c ON c.id = m.company_id WHERE m.user_id = $1",
       [ctx.user.id]);
-  } catch (err) {
-    if (isUndefinedColumn(err) || isMissingRelation(err)) return null;
-    throw err;
+  } catch (error) {
+    if (isUndefinedColumn(error) || isMissingRelation(error)) {return null;}
+    throw error;
   }
 };
 
@@ -465,35 +476,47 @@ const SESSION_LOGIN = "SELECT r.login_at FROM access_tokens a JOIN refresh_token
 
 const requireRecentLogin = async (ctx: Ctx): Promise<void> => {
   const token = (ctx.request.headers.get("authorization") || "").slice(7);
-  if (ctx.env.APP_ENV === "development" && ctx.env.DEV_AUTH_TOKEN && token === ctx.env.DEV_AUTH_TOKEN) return;
+  if (ctx.env.APP_ENV === "development" && ctx.env.DEV_AUTH_TOKEN && token === ctx.env.DEV_AUTH_TOKEN) {return;}
   const session = await one(ctx.deps.query, SESSION_LOGIN, [await sha256Hex(token)]);
-  const loginAt = session?.login_at == null ? Number.NaN : new Date(session.login_at as string | Date).getTime();
-  if (!(ctx.now.getTime() - loginAt <= REAUTH_MS)) throw new HttpError(403, "REAUTH_REQUIRED", "sign in again to delete the account");
+  const loginAt = (session?.login_at === null || session?.login_at === undefined) ? Number.NaN : toDate(session.login_at).getTime();
+  if (!(ctx.now.getTime() - loginAt <= REAUTH_MS)) {throw new HttpError(403, "REAUTH_REQUIRED", "sign in again to delete the account");}
 };
 
 export async function deleteAccount(ctx: Ctx): Promise<Response> {
   await requireRecentLogin(ctx);
   const membership = await companyMembership(ctx);
-  const soleAdmin = membership != null && String(membership.role) === "ADMIN" && Number(membership.others ?? 0) === 0;
-  if (membership != null && String(membership.role) === "ADMIN" && Number(membership.others ?? 0) > 0) {
+  const soleAdmin = (membership !== null && membership !== undefined) && String(membership.role) === "ADMIN" && Number(membership.others ?? 0) === 0;
+  if ((membership !== null && membership !== undefined) && String(membership.role) === "ADMIN" && Number(membership.others ?? 0) > 0) {
     throw new HttpError(409, "ADMIN_TRANSFER_REQUIRED", "transfer admin before deleting the account");
   }
   // Mark first so a missing migration fails before Stripe is touched; undo the mark if Stripe fails.
   await query(ctx.deps.query, "UPDATE users SET deletion_requested_at = $2 WHERE id = $1", [ctx.user.id, ctx.now.toISOString()]);
   try {
     await cancelSubscriptions(ctx);
-    const companyCustomer = soleAdmin && membership?.stripe_customer_id != null ? String(membership.stripe_customer_id) : "";
-    if (companyCustomer && companyCustomer !== (ctx.user.stripeCustomerId ?? "")) await cancelSubscriptions(ctx, companyCustomer);
-  } catch (err) {
+    const companyCustomer = soleAdmin && (membership?.stripe_customer_id !== null && membership?.stripe_customer_id !== undefined) ? String(membership.stripe_customer_id) : "";
+    if (companyCustomer && companyCustomer !== (ctx.user.stripeCustomerId ?? "")) {await cancelSubscriptions(ctx, companyCustomer);}
+  } catch (error) {
     await query(ctx.deps.query, "UPDATE users SET deletion_requested_at = NULL WHERE id = $1", [ctx.user.id]);
-    throw err;
+    throw error;
   }
   if (soleAdmin) {
     await query(ctx.deps.query, "UPDATE companies SET deletion_requested_at = $2 WHERE id = $1", [String(membership?.company_id), ctx.now.toISOString()]);
   }
   await revokeAll(ctx, ctx.user.id);
+  const appleCode = await appleCodeFrom(ctx.request);
+  // Best effort: the account is already marked for deletion, so a failed Apple call must not undo it.
+  if (appleCode) {await revokeAppleGrant(ctx, appleCode).catch((error: unknown) => console.error(`auth: apple revoke failed for ${ctx.user.id}`, error instanceof Error ? error.message : error));}
   return new Response(null, { status: 204, headers: { "x-request-id": ctx.rid } });
 }
+
+const appleCodeFrom = async (request: Request): Promise<string> => {
+  try {
+    const body: unknown = JSON.parse(await request.text() || "{}");
+    return textOf(asRecord(body).appleAuthorizationCode).trim();
+  } catch {
+    return "";
+  }
+};
 
 export async function me(ctx: Ctx): Promise<Response> {
   return data(200, {

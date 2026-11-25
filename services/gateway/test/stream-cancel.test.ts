@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, resetLimits, type Deps, type FrontEnv, type Query } from "../src/handler.ts";
+import { handle, resetLimits } from '../src/handler.ts';
+import type { Deps, FrontEnv, Query } from '../src/handler.ts';
+import type { JsonObject, Row } from "../src/types.ts";
 import { complete, STORED } from "./fakes.ts";
+
+const readJson = async <T>(res: Response): Promise<T> => {
+  const body: T = await res.json();
+  return body;
+};
+const parseJson = <T>(text: string): T => {
+  const value: T = JSON.parse(text);
+  return value;
+};
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const CONV = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
@@ -23,17 +34,17 @@ const deps = (query: Query): Deps => ({
   now: () => NOW,
 });
 
-const framesOf = (text: string): Record<string, unknown>[] => {
-  const frames: Record<string, unknown>[] = [];
+const framesOf = (text: string): Array<JsonObject> => {
+  const frames: Array<JsonObject> = [];
   for (const block of text.split("\n\n")) {
     const line = block.split("\n").find((item) => item.startsWith("data: "));
-    if (!line) continue;
-    frames.push(JSON.parse(line.slice("data: ".length)) as Record<string, unknown>);
+    if (!line) {continue;}
+    frames.push(parseJson<JsonObject>(line.slice("data: ".length)));
   }
   return frames;
 };
 
-const authRow = (job: boolean): Record<string, unknown> => ({
+const authRow = (job: boolean) => ({
   id: USER,
   display_name: "Ada",
   locale: "ko",
@@ -47,8 +58,8 @@ const authRow = (job: boolean): Record<string, unknown> => ({
 // The cancel is one statement: find the job and mark it. The job-end trigger records the event.
 // The fake applies both the way Postgres would for the given job state.
 const cancelQuery = (
-  sqls: string[],
-  events: Record<string, unknown>[],
+  sqls: Array<string>,
+  events: Array<Row>,
   selectJob: boolean,
   updateHits: boolean,
 ): Query => {
@@ -56,11 +67,11 @@ const cancelQuery = (
     sqls.push(sql);
     if (sql.includes("UPDATE chat_jobs")) {
       const cancelled = selectJob && updateHits;
-      if (cancelled) events.push({ id: 4, type: "cancelled", payload: { resumable: false } });
+      if (cancelled) {events.push({ id: 4, type: "cancelled", payload: { resumable: false } });}
       return [{ conversation_id: CONV, job_id: cancelled ? JOB : null, resumable: false }];
     }
-    if (sql.includes("chat_events")) return events.slice();
-    if (sql.includes("access_tokens")) return [authRow(selectJob)];
+    if (sql.includes("chat_events")) {return events.slice();}
+    if (sql.includes("access_tokens")) {return [authRow(selectJob)];}
     return [];
   };
 };
@@ -74,8 +85,8 @@ const cancel = async (query: Query): Promise<Response> => {
 
 test("active job cancels, records the event, and the next SSE read ends", async () => {
   resetLimits();
-  const sqls: string[] = [];
-  const events: Record<string, unknown>[] = [];
+  const sqls: Array<string> = [];
+  const events: Array<Row> = [];
   const res = await cancel(cancelQuery(sqls, events, true, true));
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { data: { jobId: JOB, status: "CANCELLED" } });
@@ -94,20 +105,20 @@ test("active job cancels, records the event, and the next SSE read ends", async 
 
 test("no active job is a conflict and records no event", async () => {
   resetLimits();
-  const sqls: string[] = [];
-  const events: Record<string, unknown>[] = [];
+  const sqls: Array<string> = [];
+  const events: Array<Row> = [];
   const res = await cancel(cancelQuery(sqls, events, false, false));
   assert.equal(res.status, 409);
-  assert.equal((await res.json() as { error: { code: string } }).error.code, "CONFLICT");
+  assert.equal((await readJson<{ error: { code: string } }>(res)).error.code, "CONFLICT");
   assert.equal(events.length, 0);
 });
 
 test("a job that is no longer pending or running is a conflict", async () => {
   resetLimits();
-  const sqls: string[] = [];
-  const events: Record<string, unknown>[] = [];
+  const sqls: Array<string> = [];
+  const events: Array<Row> = [];
   const res = await cancel(cancelQuery(sqls, events, true, false));
   assert.equal(res.status, 409);
-  assert.equal((await res.json() as { error: { code: string } }).error.code, "CONFLICT");
+  assert.equal((await readJson<{ error: { code: string } }>(res)).error.code, "CONFLICT");
   assert.equal(events.length, 0);
 });

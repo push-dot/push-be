@@ -4,6 +4,8 @@ import { pageOf, pageResult, revisionUpdate, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 import { readObject } from "./recruiting-shared.ts";
 
+type Row = NonNullable<Awaited<ReturnType<typeof one>>>;
+
 const TYPES = new Set(["INTERVIEW", "DEADLINE", "FOLLOW_UP", "CUSTOM", "COFFEE_CHAT"]);
 
 export const DEADLINE_EVENT_COLS = "id, user_id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, posting_id, created_at, updated_at";
@@ -22,32 +24,32 @@ export function validTz(tz: string): boolean {
   }
 }
 
-function eventDto(row: Record<string, unknown>): Record<string, unknown> {
+function eventDto(row: Row) {
   return {
     id: String(row.id),
     revision: Number(row.revision),
-    applicationId: row.application_id == null ? null : String(row.application_id),
+    applicationId: row.application_id === null || row.application_id === undefined ? null : String(row.application_id),
     type: String(row.type),
     title: String(row.title ?? ""),
     startsAt: ts(row.starts_at),
     endsAt: ts(row.ends_at),
     timeZone: String(row.time_zone ?? "UTC"),
     source: String(row.source ?? "LOCAL"),
-    externalId: row.external_id == null ? null : String(row.external_id),
+    externalId: row.external_id === null || row.external_id === undefined ? null : String(row.external_id),
     notes: String(row.notes ?? ""),
     remindAt: ts(row.remind_at),
-    location: row.location == null || row.location === "" ? null : String(row.location),
+    location: (row.location === null || row.location === undefined) || row.location === "" ? null : String(row.location),
     createdAt: ts(row.created_at),
     updatedAt: ts(row.updated_at),
   };
 }
 
 function locationOf(value: unknown): string | null {
-  if (value == null || value === "") return null;
-  if (typeof value !== "string") throw new HttpError(400, "VALIDATION_ERROR", "must be a string", { field: "location" });
+  if ((value === null || value === undefined) || value === "") {return null;}
+  if (typeof value !== "string") {throw new HttpError(400, "VALIDATION_ERROR", "must be a string", { field: "location" });}
   const trimmed = value.trim();
-  if (!trimmed) return null;
-  if (trimmed.length > 200) throw new HttpError(400, "VALIDATION_ERROR", "must be at most 200 characters", { field: "location" });
+  if (!trimmed) {return null;}
+  if (trimmed.length > 200) {throw new HttpError(400, "VALIDATION_ERROR", "must be at most 200 characters", { field: "location" });}
   return trimmed;
 }
 
@@ -61,17 +63,17 @@ function parseTime(value: unknown, field: string): string {
 export async function listEvents(ctx: Ctx): Promise<Response> {
   const from = ctx.url.searchParams.get("from");
   const to = ctx.url.searchParams.get("to");
-  if (!from || !to) throw new HttpError(400, "VALIDATION_ERROR", "from and to are required");
+  if (!from || !to) {throw new HttpError(400, "VALIDATION_ERROR", "from and to are required");}
   const fromMs = Date.parse(from);
   const toMs = Date.parse(to);
-  if (Number.isNaN(fromMs)) throw new HttpError(400, "VALIDATION_ERROR", "must be RFC3339", { field: "from" });
-  if (Number.isNaN(toMs)) throw new HttpError(400, "VALIDATION_ERROR", "must be RFC3339", { field: "to" });
-  if (toMs <= fromMs) throw new HttpError(400, "VALIDATION_ERROR", "must be after from", { field: "to" });
+  if (Number.isNaN(fromMs)) {throw new HttpError(400, "VALIDATION_ERROR", "must be RFC3339", { field: "from" });}
+  if (Number.isNaN(toMs)) {throw new HttpError(400, "VALIDATION_ERROR", "must be RFC3339", { field: "to" });}
+  if (toMs <= fromMs) {throw new HttpError(400, "VALIDATION_ERROR", "must be after from", { field: "to" });}
   if (toMs - fromMs > 366 * 24 * 60 * 60 * 1000) {
     throw new HttpError(400, "VALIDATION_ERROR", "range must be at most 366 days", { field: "to" });
   }
   const page = pageOf(ctx.url);
-  const params: unknown[] = [ctx.user.id, new Date(fromMs).toISOString(), new Date(toMs).toISOString()];
+  const params: Array<unknown> = [ctx.user.id, new Date(fromMs).toISOString(), new Date(toMs).toISOString()];
   let sql = "SELECT id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, created_at, updated_at, to_jsonb(calendar_events) ->> 'remind_at' AS remind_at, to_jsonb(calendar_events) ->> 'location' AS location FROM calendar_events WHERE user_id = $1 AND starts_at >= $2 AND starts_at <= $3";
   const app = ctx.url.searchParams.get("applicationId");
   if (app) {
@@ -94,7 +96,7 @@ export async function createEvent(ctx: Ctx): Promise<Response> {
   const body = await readObject(ctx.request);
   const type = String(body.type ?? "");
   const title = String(body.title ?? "");
-  if (!TYPES.has(type)) throw new HttpError(400, "VALIDATION_ERROR", "unsupported event type", { field: "type" });
+  if (!TYPES.has(type)) {throw new HttpError(400, "VALIDATION_ERROR", "unsupported event type", { field: "type" });}
   if (title.length < 1 || title.length > 300) {
     throw new HttpError(400, "VALIDATION_ERROR", "title must be 1-300 characters", { field: "title" });
   }
@@ -104,15 +106,15 @@ export async function createEvent(ctx: Ctx): Promise<Response> {
     throw new HttpError(400, "VALIDATION_ERROR", "must be after startsAt", { field: "endsAt" });
   }
   const tz = typeof body.timeZone === "string" && body.timeZone ? body.timeZone : "UTC";
-  if (!validTz(tz)) throw new HttpError(400, "VALIDATION_ERROR", "invalid IANA time zone", { field: "timeZone" });
+  if (!validTz(tz)) {throw new HttpError(400, "VALIDATION_ERROR", "invalid IANA time zone", { field: "timeZone" });}
   const notes = typeof body.notes === "string" ? body.notes : "";
-  const remindAt = body.remindAt == null || body.remindAt === "" ? null : parseTime(body.remindAt, "remindAt");
+  const remindAt = (body.remindAt === null || body.remindAt === undefined) || body.remindAt === "" ? null : parseTime(body.remindAt, "remindAt");
   const location = locationOf(body.location);
   let applicationId: string | null = null;
-  if (body.applicationId != null) {
+  if (body.applicationId !== null && body.applicationId !== undefined) {
     applicationId = requireUuid(String(body.applicationId), "applicationId");
     const app = await one(ctx.deps.query, "SELECT id FROM applications WHERE id = $1 AND user_id = $2", [applicationId, ctx.user.id]);
-    if (!app) throw new HttpError(404, "NOT_FOUND", "resource not found");
+    if (!app) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   }
   const id = crypto.randomUUID();
   const now = ctx.now.toISOString();
@@ -121,14 +123,14 @@ export async function createEvent(ctx: Ctx): Promise<Response> {
     await query(ctx.deps.query,
       "INSERT INTO calendar_events (id, user_id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, remind_at, location, created_at, updated_at) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,'LOCAL',NULL,$9,$10,$11,$12,$12)",
       [...base, remindAt, location, now]);
-  } catch (err) {
-    if (!isUndefinedColumn(err)) throw err;
+  } catch (error) {
+    if (!isUndefinedColumn(error)) {throw error;}
     try {
       await query(ctx.deps.query,
         "INSERT INTO calendar_events (id, user_id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, remind_at, created_at, updated_at) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,'LOCAL',NULL,$9,$10,$11,$11)",
         [...base, remindAt, now]);
-    } catch (err2) {
-      if (!isUndefinedColumn(err2)) throw err2;
+    } catch (error) {
+      if (!isUndefinedColumn(error)) {throw error;}
       await query(ctx.deps.query,
         "INSERT INTO calendar_events (id, user_id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, created_at, updated_at) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,'LOCAL',NULL,$9,$10,$10)",
         [...base, now]);
@@ -143,43 +145,43 @@ export async function createEvent(ctx: Ctx): Promise<Response> {
 export async function patchEvent(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "id");
   const body = await readObject(ctx.request);
-  if (typeof body.expectedRevision !== "number") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
+  if (typeof body.expectedRevision !== "number") {throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");}
   const current = await one(ctx.deps.query,
     "SELECT id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, created_at, to_jsonb(calendar_events) ->> 'location' AS location FROM calendar_events WHERE id = $1 AND user_id = $2",
     [id, ctx.user.id]);
-  if (!current) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (!current) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   if (Number(current.revision) !== body.expectedRevision) {
     throw new HttpError(409, "REVISION_CONFLICT", "resource was modified", { currentRevision: Number(current.revision) });
   }
-  if (body.title != null) {
+  if (body.title !== null && body.title !== undefined) {
     if (typeof body.title !== "string" || body.title.length < 1 || body.title.length > 300) {
       throw new HttpError(400, "VALIDATION_ERROR", "title must be 1-300 characters", { field: "title" });
     }
     current.title = body.title;
   }
-  if (body.startsAt != null) current.starts_at = parseTime(body.startsAt, "startsAt");
-  if (body.endsAt != null) current.ends_at = parseTime(body.endsAt, "endsAt");
+  if (body.startsAt !== null && body.startsAt !== undefined) {current.starts_at = parseTime(body.startsAt, "startsAt");}
+  if (body.endsAt !== null && body.endsAt !== undefined) {current.ends_at = parseTime(body.endsAt, "endsAt");}
   if (Date.parse(String(current.ends_at)) <= Date.parse(String(current.starts_at))) {
     throw new HttpError(400, "VALIDATION_ERROR", "must be after startsAt", { field: "endsAt" });
   }
-  if (body.timeZone != null) {
+  if (body.timeZone !== null && body.timeZone !== undefined) {
     if (typeof body.timeZone !== "string" || !validTz(body.timeZone)) {
       throw new HttpError(400, "VALIDATION_ERROR", "invalid IANA time zone", { field: "timeZone" });
     }
     current.time_zone = body.timeZone;
   }
-  if (body.notes != null) current.notes = String(body.notes);
-  if (body.location != null) current.location = locationOf(body.location);
+  if (body.notes !== null && body.notes !== undefined) {current.notes = String(body.notes);}
+  if (body.location !== null && body.location !== undefined) {current.location = locationOf(body.location);}
   const now = ctx.now.toISOString();
   const fields = [id, ctx.user.id, current.title, current.starts_at, current.ends_at, current.time_zone, current.notes];
-  let updated: Record<string, unknown>;
+  let updated: Row;
   try {
     updated = await revisionUpdate(ctx.deps.query, "calendar_events",
       "UPDATE calendar_events SET revision = revision + 1, title = $3, starts_at = $4, ends_at = $5, time_zone = $6, notes = $7, location = $8, updated_at = $9 WHERE id = $1 AND user_id = $2 AND revision = $10 RETURNING id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, remind_at, location, created_at, updated_at",
       [...fields, current.location ?? null, now, body.expectedRevision],
       id, ctx.user.id);
-  } catch (err) {
-    if (!isUndefinedColumn(err)) throw err;
+  } catch (error) {
+    if (!isUndefinedColumn(error)) {throw error;}
     updated = await revisionUpdate(ctx.deps.query, "calendar_events",
       "UPDATE calendar_events SET revision = revision + 1, title = $3, starts_at = $4, ends_at = $5, time_zone = $6, notes = $7, updated_at = $8 WHERE id = $1 AND user_id = $2 AND revision = $9 RETURNING id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, remind_at, created_at, updated_at",
       [...fields, now, body.expectedRevision],
@@ -192,12 +194,12 @@ export async function patchEvent(ctx: Ctx, idRaw: string): Promise<Response> {
 export async function deleteEvent(ctx: Ctx, idRaw: string): Promise<Response> {
   const id = requireUuid(idRaw, "id");
   const body = await readObject(ctx.request);
-  if (typeof body.expectedRevision !== "number") throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
+  if (typeof body.expectedRevision !== "number") {throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");}
   const gone = await one(ctx.deps.query,
     "DELETE FROM calendar_events WHERE id = $1 AND user_id = $2 AND revision = $3 RETURNING id",
     [id, ctx.user.id, body.expectedRevision]);
-  if (gone) return new Response(null, { status: 204, headers: { "x-request-id": ctx.rid } });
+  if (gone) {return new Response(null, { status: 204, headers: { "x-request-id": ctx.rid } });}
   const current = await one(ctx.deps.query, "SELECT revision FROM calendar_events WHERE id = $1 AND user_id = $2", [id, ctx.user.id]);
-  if (!current) throw new HttpError(404, "NOT_FOUND", "resource not found");
+  if (!current) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   throw new HttpError(409, "REVISION_CONFLICT", "resource was modified", { currentRevision: Number(current.revision) });
 }

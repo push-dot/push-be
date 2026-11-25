@@ -2,49 +2,54 @@ import { likeContains } from "../hangul.ts";
 import { enqueueIngest } from "../jobs/ingest.ts";
 import { strictBody } from "../body.ts";
 import { one, query } from "../db.ts";
+import type { DbValue, Row } from "../db.ts";
 import { HttpError, data, fieldError, pageBody, requireUuid, sha256Hex } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
+import type { Json, JsonObject } from "../json.ts";
 import type { Ctx } from "../types.ts";
 
 const KINDS = new Set(["RESUME", "GITHUB", "CAREER", "EDUCATION", "SKILL", "PROJECT"]);
 const COLS = "id, user_id, revision, kind, title, source_text, source_url, skills, verification_status, provenance, supersedes_id, archived, created_at, updated_at";
 
-type Row = Record<string, unknown>;
-
 const notFound = (): HttpError => new HttpError(404, "NOT_FOUND", "resource not found");
 const len = (value: string): number => Array.from(value).length;
 
-const pick = (obj: Row, camel: string, snake: string): unknown => (camel in obj ? obj[camel] : obj[snake]);
+const objectOf = (value: DbValue | undefined): JsonObject | null =>
+  typeof value === "object" && value !== null && !Array.isArray(value) && !(value instanceof Date) && !(value instanceof Uint8Array)
+    ? value
+    : null;
 
-const location = (value: unknown): Row | null => {
-  if (!value || typeof value !== "object") return null;
-  const loc = value as Row;
+const pick = (obj: JsonObject, camel: string, snake: string): Json | undefined => (camel in obj ? obj[camel] : obj[snake]);
+
+const location = (value: Json | undefined): JsonObject | null => {
+  const loc = objectOf(value);
+  if (!loc) {return null;}
   return { start: Number(loc.start), end: Number(loc.end), unit: String(loc.unit) };
 };
 
-const provenance = (value: unknown): Row => {
-  const p = (value && typeof value === "object" ? value : {}) as Row;
+const provenance = (value: DbValue) => {
+  const p = objectOf(value) ?? {};
   const sourceId = pick(p, "sourceId", "source_id");
   const projectEvidenceId = pick(p, "projectEvidenceId", "project_evidence_id");
   return {
-    sourceId: sourceId == null ? null : String(sourceId),
-    projectEvidenceId: projectEvidenceId == null ? null : String(projectEvidenceId),
+    sourceId: (sourceId === null || sourceId === undefined) ? null : String(sourceId),
+    projectEvidenceId: (projectEvidenceId === null || projectEvidenceId === undefined) ? null : String(projectEvidenceId),
     contentHash: String(pick(p, "contentHash", "content_hash") ?? ""),
     sourceLocation: location(pick(p, "sourceLocation", "source_location")),
   };
 };
 
-const evidenceDto = (row: Row): Row => ({
+const evidenceDto = (row: Row) => ({
   id: String(row.id),
   revision: Number(row.revision),
   kind: String(row.kind),
   title: String(row.title),
   sourceText: String(row.source_text),
-  sourceUrl: row.source_url == null ? null : String(row.source_url),
+  sourceUrl: (row.source_url === null || row.source_url === undefined) ? null : String(row.source_url),
   skills: Array.isArray(row.skills) ? row.skills.map(String) : [],
   verificationStatus: String(row.verification_status),
   provenance: provenance(row.provenance),
-  supersedesId: row.supersedes_id == null ? null : String(row.supersedes_id),
+  supersedesId: (row.supersedes_id === null || row.supersedes_id === undefined) ? null : String(row.supersedes_id),
   archived: Boolean(row.archived),
   createdAt: ts(row.created_at),
   updatedAt: ts(row.updated_at),
@@ -61,15 +66,15 @@ const httpUrl = (value: string): boolean => {
 
 const loadEvidence = async (ctx: Ctx, id: string): Promise<Row> => {
   const row = await one(ctx.deps.query, `SELECT ${COLS} FROM career_evidence WHERE id = $1 AND user_id = $2`, [id, ctx.user.id]);
-  if (!row) throw notFound();
+  if (!row) {throw notFound();}
   return row;
 };
 
 export const listEvidence = async (ctx: Ctx): Promise<Response> => {
   const page = pageOf(ctx.url);
   const kind = ctx.url.searchParams.get("kind") || null;
-  if (kind !== null && !KINDS.has(kind)) throw fieldError("kind", "unsupported kind");
-  const params: unknown[] = [ctx.user.id];
+  if (kind !== null && !KINDS.has(kind)) {throw fieldError("kind", "unsupported kind");}
+  const params: Array<unknown> = [ctx.user.id];
   const where = ["user_id = $1", "NOT archived"];
   if (kind) {
     params.push(kind);
@@ -106,21 +111,22 @@ export const createEvidence = async (ctx: Ctx): Promise<Response> => {
   const kind = String(values.kind);
   const title = String(values.title);
   const sourceText = String(values.sourceText);
-  const sourceUrl = values.sourceUrl == null ? null : String(values.sourceUrl);
-  const skills = (values.skills as string[] | undefined) ?? [];
-  const supersedesId = values.supersedesId == null ? null : String(values.supersedesId);
-  if (!KINDS.has(kind)) throw fieldError("kind", "unsupported kind");
-  if (len(title) < 1 || len(title) > 200) throw fieldError("title", "title must be 1-200 characters");
-  if (len(sourceText) < 1 || len(sourceText) > 100000) throw fieldError("sourceText", "sourceText must be 1-100000 characters");
-  if (skills.length > 100) throw fieldError("skills", "at most 100 skills");
-  if (skills.some((skill) => len(skill) < 1 || len(skill) > 100)) throw fieldError("skills", "each skill must be 1-100 characters");
-  if (sourceUrl !== null && !httpUrl(sourceUrl)) throw fieldError("sourceUrl", "must be an http(s) URL without credentials");
+  const sourceUrl = (values.sourceUrl === null || values.sourceUrl === undefined) ? null : String(values.sourceUrl);
+  const rawSkills = values.skills;
+  const skills = Array.isArray(rawSkills) ? rawSkills.map(String) : [];
+  const supersedesId = (values.supersedesId === null || values.supersedesId === undefined) ? null : String(values.supersedesId);
+  if (!KINDS.has(kind)) {throw fieldError("kind", "unsupported kind");}
+  if (len(title) < 1 || len(title) > 200) {throw fieldError("title", "title must be 1-200 characters");}
+  if (len(sourceText) < 1 || len(sourceText) > 100_000) {throw fieldError("sourceText", "sourceText must be 1-100000 characters");}
+  if (skills.length > 100) {throw fieldError("skills", "at most 100 skills");}
+  if (skills.some((skill) => len(skill) < 1 || len(skill) > 100)) {throw fieldError("skills", "each skill must be 1-100 characters");}
+  if (sourceUrl !== null && !httpUrl(sourceUrl)) {throw fieldError("sourceUrl", "must be an http(s) URL without credentials");}
   if (supersedesId !== null) {
     const prior = await one(ctx.deps.query, "SELECT id FROM career_evidence WHERE id = $1 AND user_id = $2", [supersedesId, ctx.user.id]);
-    if (!prior) throw fieldError("supersedesId", "referenced evidence not found");
+    if (!prior) {throw fieldError("supersedesId", "referenced evidence not found");}
   }
   const now = ts(ctx.now);
-  const row: Row = {
+  const row = {
     id: crypto.randomUUID(), revision: 1, kind, title, source_text: sourceText, source_url: sourceUrl, skills,
     verification_status: "USER_PROVIDED",
     provenance: { sourceId: null, projectEvidenceId: null, contentHash: await sha256Hex(sourceText), sourceLocation: null },
@@ -138,14 +144,14 @@ export const archiveEvidence = async (ctx: Ctx, idRaw: string): Promise<Response
   const { values } = await strictBody(ctx.request, { expectedRevision: { kind: "int", required: true } });
   const expected = Number(values.expectedRevision);
   const row = await loadEvidence(ctx, id);
-  if (row.archived) return data(200, evidenceDto(row), ctx.rid);
+  if (row.archived) {return data(200, evidenceDto(row), ctx.rid);}
   const now = ts(ctx.now);
   const updated = await one(ctx.deps.query,
     "UPDATE career_evidence SET revision = revision + 1, archived = true, updated_at = $3 WHERE id = $1 AND user_id = $2 AND revision = $4 RETURNING id",
     [id, ctx.user.id, now, expected]);
   if (!updated) {
     const current = await one(ctx.deps.query, "SELECT revision FROM career_evidence WHERE id = $1 AND user_id = $2", [id, ctx.user.id]);
-    if (!current) throw notFound();
+    if (!current) {throw notFound();}
     throw new HttpError(409, "REVISION_CONFLICT", "resource was modified", { currentRevision: Number(current.revision) });
   }
   return data(200, evidenceDto({ ...row, archived: true, updated_at: now, revision: expected + 1 }), ctx.rid);
@@ -154,14 +160,14 @@ export const archiveEvidence = async (ctx: Ctx, idRaw: string): Promise<Response
 export const dispatchEvidence = async (ctx: Ctx, path: string): Promise<Response | null> => {
   const method = ctx.request.method;
   if (path === "/api/v1/career-evidence") {
-    if (method === "GET") return listEvidence(ctx);
-    if (method === "POST") return createEvidence(ctx);
+    if (method === "GET") {return listEvidence(ctx);}
+    if (method === "POST") {return createEvidence(ctx);}
     return null;
   }
-  if (path === "/api/v1/career-evidence/import") return null;
+  if (path === "/api/v1/career-evidence/import") {return null;}
   const m = path.match(/^\/api\/v1\/career-evidence\/([^/]+)(\/archive)?$/);
-  if (!m) return null;
-  if (!m[2] && method === "GET") return getEvidence(ctx, m[1]);
-  if (m[2] && method === "POST") return archiveEvidence(ctx, m[1]);
+  if (!m) {return null;}
+  if (!m[2] && method === "GET") {return getEvidence(ctx, m[1]);}
+  if (m[2] && method === "POST") {return archiveEvidence(ctx, m[1]);}
   return null;
 };

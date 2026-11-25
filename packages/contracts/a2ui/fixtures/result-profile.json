@@ -1,0 +1,62 @@
+{
+  "type": "a2ui",
+  "kind": "result",
+  "surfaceId": "00000000-0000-4000-8000-0000000051d0",
+  "messages": [
+    {
+      "version": "v0.9.1",
+      "createSurface": {
+        "surfaceId": "00000000-0000-4000-8000-0000000051d0",
+        "catalogId": "https://push.app/a2ui/catalogs/push/v1/catalog.json"
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateComponents": {
+        "surfaceId": "00000000-0000-4000-8000-0000000051d0",
+        "components": [
+          {
+            "id": "root",
+            "component": "Column",
+            "children": [
+              "summary",
+              "document"
+            ]
+          },
+          {
+            "id": "summary",
+            "component": "Text",
+            "text": "다 됐어요! 프로필을 고쳤어요."
+          },
+          {
+            "id": "document",
+            "component": "PushDocument",
+            "status": "done",
+            "title": "Push 프로필에 저장했어요",
+            "name": "김푸시 · 백엔드 개발자",
+            "meta": "Push 프로필 · 방금 수정",
+            "documentId": "00000000-0000-4000-8000-00000000d0c2",
+            "share": false,
+            "actions": [
+              {
+                "id": "view",
+                "label": "프로필 보기"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateDataModel": {
+        "surfaceId": "00000000-0000-4000-8000-0000000051d0",
+        "path": "/",
+        "value": {}
+      }
+    }
+  ],
+  "seq": 1,
+  "at": "2026-11-23T00:00:00.000000Z",
+  "turn": "00000000-0000-4000-8000-00000000a001"
+}

@@ -6,4 +6,4 @@
 // Usage: SQL_CAPTURE=/tmp/sql.jsonl node --import <repo>/scripts/sql-check/register.mjs --test ...
 import { register } from "node:module";
 
-if (process.env.SQL_CAPTURE) register("./hooks.mjs", import.meta.url);
+if (process.env.SQL_CAPTURE) {register("./hooks.mjs", import.meta.url);}

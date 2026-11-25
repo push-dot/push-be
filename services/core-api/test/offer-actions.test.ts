@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 
 import type { Query } from "../src/db.ts";
-import { handle, type CoreEnv } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
+import { parseJson } from "../test-support/recorder.ts";
+import type { Row } from "../test-support/recorder.ts";
 
 const ME = "12345678-1234-4678-8234-567812345678";
 const OTHER = "bbbbbbbb-0000-4000-8000-000000000002";
@@ -12,22 +15,22 @@ const STRANGER = "aaaaaaaa-0000-4000-8000-000000000001";
 const NOW = new Date("2026-10-22T00:00:00Z");
 const env: CoreEnv = { APP_ENV: "production" };
 
-type Row = Record<string, unknown>;
-type Body = { data: Row & Row[]; page?: { nextCursor: string | null; hasMore: boolean; total?: number }; error?: { code: string; message: string; details: unknown } };
+type Body = { data: Row & Array<Row>; page?: { nextCursor: string | null; hasMore: boolean; total?: number }; error?: { code: string; message: string; details: unknown } };
 
-function world(reply: (sql: string, params: unknown[]) => Row[] | Error | undefined = () => undefined) {
-  const seen: { sql: string; params: unknown[] }[] = [];
+const rowsOf = (r: Array<Row>) => ({ rows: r, rowCount: r.length });
+
+function world(reply: (sql: string, params: Array<unknown>) => Array<Row> | Error | undefined = () => undefined) {
+  const seen: Array<{ sql: string; params: Array<unknown> }> = [];
   const query: Query = async (sql, params = []) => {
     seen.push({ sql, params });
-    const rows = (r: Row[]) => ({ rows: r, rowCount: r.length });
-    if (sql.includes("rate_limits")) return rows([{ hits: 1 }]);
+    if (sql.includes("rate_limits")) {return rowsOf([{ hits: 1 }]);}
     if (sql.includes("access_tokens")) {
-      return rows([{ id: ME, display_name: "Ada", locale: "ko", plan: "FREE", created_at: "2026-01-01T00:00:00Z", token_expires_at: "2099-01-01T00:00:00Z" }]);
+      return rowsOf([{ id: ME, display_name: "Ada", locale: "ko", plan: "FREE", created_at: "2026-01-01T00:00:00Z", token_expires_at: "2099-01-01T00:00:00Z" }]);
     }
-    if (sql.startsWith("INSERT INTO idempotency_keys")) return rows([{ id: "idem" }]);
+    if (sql.startsWith("INSERT INTO idempotency_keys")) {return rowsOf([{ id: "idem" }]);}
     const r = reply(sql, params);
-    if (r instanceof Error) throw r;
-    return rows(r ?? []);
+    if (r instanceof Error) {throw r;}
+    return rowsOf(r ?? []);
   };
   const call = async (method: string, path: string, body?: unknown) => {
     const res = await handle(new Request(`https://core.example${path}`, {
@@ -36,7 +39,7 @@ function world(reply: (sql: string, params: unknown[]) => Row[] | Error | undefi
       body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
     }), env, { query, now: () => NOW });
     const text = await res.text();
-    return { status: res.status, body: (text ? JSON.parse(text) : null) as Body };
+    return { status: res.status, body: parseJson<Body>(text || "null") };
   };
   return { seen, call };
 }
@@ -50,9 +53,9 @@ beforeEach(() => resetLimits());
 
 
 const archiveWorld = (stored: { at: string | null } = { at: null }) => world((sql, params) => {
-  if (sql.startsWith("SELECT oa.archived_at, o.id")) return params[1] === ME ? [offerRow({ archived_at: stored.at })] : [];
-  if (sql.startsWith("INSERT INTO offer_archives")) stored.at ??= String(params[2]);
-  if (sql.startsWith("DELETE FROM offer_archives")) stored.at = null;
+  if (sql.startsWith("SELECT oa.archived_at, o.id")) {return params[1] === ME ? [offerRow({ archived_at: stored.at })] : [];}
+  if (sql.startsWith("INSERT INTO offer_archives")) {stored.at ??= String(params[2]);}
+  if (sql.startsWith("DELETE FROM offer_archives")) {stored.at = null;}
   return undefined;
 });
 
@@ -191,8 +194,8 @@ test("the block list is newest first, paginates and reports the total", async ()
     { blocked_id: STRANGER, display_name: "Cy", created_at: "2026-10-01T00:00:00Z" },
   ];
   const w = world((sql, params) => {
-    if (sql.startsWith("SELECT count(*)")) return [{ total: 2 }];
-    if (sql.includes("FROM user_blocks b")) return rows.slice(0, Number(params.at(-1)));
+    if (sql.startsWith("SELECT count(*)")) {return [{ total: 2 }];}
+    if (sql.includes("FROM user_blocks b")) {return rows.slice(0, Number(params.at(-1)));}
     return undefined;
   });
   const res = await w.call("GET", "/api/v1/me/blocks?limit=1");
@@ -207,8 +210,8 @@ test("the block list is newest first, paginates and reports the total", async ()
 
 test("sending an offer to a user who blocked the sender is 403 BLOCKED and inserts nothing", async () => {
   const w = world((sql, params) => {
-    if (sql.includes("FROM profiles p LEFT JOIN user_settings")) return [{ user_id: OTHER, open_to_offers: true, profile_public: true }];
-    if (sql.includes("FROM user_blocks")) return params[0] === OTHER && params[1] === ME ? [{ blocked: 1 }] : [];
+    if (sql.includes("FROM profiles p LEFT JOIN user_settings")) {return [{ user_id: OTHER, open_to_offers: true, profile_public: true }];}
+    if (sql.includes("FROM user_blocks")) {return params[0] === OTHER && params[1] === ME ? [{ blocked: 1 }] : [];}
     return undefined;
   });
   const res = await w.call("POST", `/api/v1/profiles/${OTHER}/offer`, { message: "hi" });
@@ -218,8 +221,8 @@ test("sending an offer to a user who blocked the sender is 403 BLOCKED and inser
 });
 
 const messageWorld = (blockedBy: string | null) => world((sql, params) => {
-  if (sql.startsWith("SELECT oa.archived_at, o.id")) return [offerRow({ status: "ACCEPTED" })];
-  if (sql.includes("FROM user_blocks")) return params[0] === blockedBy && params[1] === ME ? [{ blocked: 1 }] : [];
+  if (sql.startsWith("SELECT oa.archived_at, o.id")) {return [offerRow({ status: "ACCEPTED" })];}
+  if (sql.includes("FROM user_blocks")) {return params[0] === blockedBy && params[1] === ME ? [{ blocked: 1 }] : [];}
   return undefined;
 });
 
@@ -238,9 +241,9 @@ test("messaging still works when only the sender blocked the other user", async 
 
 test("listing messages and deciding an offer ignore blocks", async () => {
   const w = world((sql) => {
-    if (sql.startsWith("SELECT oa.archived_at, o.id")) return [offerRow()];
-    if (sql.includes("FROM user_blocks")) return [{ blocked: 1 }];
-    if (sql.startsWith("UPDATE offers SET status = $2")) return [{ id: OFFER }];
+    if (sql.startsWith("SELECT oa.archived_at, o.id")) {return [offerRow()];}
+    if (sql.includes("FROM user_blocks")) {return [{ blocked: 1 }];}
+    if (sql.startsWith("UPDATE offers SET status = $2")) {return [{ id: OFFER }];}
     return undefined;
   });
   assert.equal((await w.call("GET", `/api/v1/me/offers/${OFFER}/messages`)).status, 200);
@@ -252,7 +255,7 @@ test("listing messages and deciding an offer ignore blocks", async () => {
 const detailWorld = (row: Row) => world((sql) => (sql.startsWith("SELECT oa.archived_at, o.id") ? [row] : undefined));
 
 test("offer detail reports respondedAt and predicts the message POST in canSend", async () => {
-  const cases: [Row, boolean][] = [
+  const cases: Array<[Row, boolean]> = [
     [{ status: "ACCEPTED", blocked_me: false }, true],
     [{ status: "ACCEPTED", blocked_me: true }, false],
     [{ status: "READ", blocked_me: false }, false],
@@ -285,8 +288,8 @@ test("accepting or declining stamps responded_at with the request time", async (
   for (const [action, status, canSend] of [["accept", "ACCEPTED", true], ["decline", "DECLINED", false]] as const) {
     resetLimits();
     const w = world((sql) => {
-      if (sql.startsWith("SELECT oa.archived_at, o.id")) return [offerRow({ blocked_me: false })];
-      if (sql.startsWith("UPDATE offers SET status")) return [{ id: OFFER }];
+      if (sql.startsWith("SELECT oa.archived_at, o.id")) {return [offerRow({ blocked_me: false })];}
+      if (sql.startsWith("UPDATE offers SET status")) {return [{ id: OFFER }];}
       return undefined;
     });
     const res = await w.call("POST", `/api/v1/me/offers/${OFFER}/${action}`);
@@ -302,8 +305,8 @@ test("accepting or declining stamps responded_at with the request time", async (
 
 test("accepting an offer from a user who blocked the caller answers canSend false", async () => {
   const w = world((sql) => {
-    if (sql.startsWith("SELECT oa.archived_at, o.id")) return [offerRow({ blocked_me: true })];
-    if (sql.startsWith("UPDATE offers SET status")) return [{ id: OFFER }];
+    if (sql.startsWith("SELECT oa.archived_at, o.id")) {return [offerRow({ blocked_me: true })];}
+    if (sql.startsWith("UPDATE offers SET status")) {return [{ id: OFFER }];}
     return undefined;
   });
   const res = await w.call("POST", `/api/v1/me/offers/${OFFER}/accept`);
@@ -314,9 +317,9 @@ test("accepting an offer from a user who blocked the caller answers canSend fals
 test("deciding an offer before migration 0040 falls back to the update without responded_at", async () => {
   const missing = Object.assign(new Error('column "responded_at" of relation "offers" does not exist'), { code: "42703" });
   const w = world((sql) => {
-    if (sql.startsWith("SELECT oa.archived_at, o.id")) return [offerRow()];
-    if (sql.includes("responded_at = $3")) return missing;
-    if (sql.startsWith("UPDATE offers SET status")) return [{ id: OFFER }];
+    if (sql.startsWith("SELECT oa.archived_at, o.id")) {return [offerRow()];}
+    if (sql.includes("responded_at = $3")) {return missing;}
+    if (sql.startsWith("UPDATE offers SET status")) {return [{ id: OFFER }];}
     return undefined;
   });
   const res = await w.call("POST", `/api/v1/me/offers/${OFFER}/decline`);

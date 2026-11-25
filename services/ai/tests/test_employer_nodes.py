@@ -59,10 +59,14 @@ async def test_research_drops_facts_without_a_source():
             facts=[
                 Fact(text="월 거래액 1조", sourceUrl="https://news.example/1"),
                 Fact(text="출처 없는 소문"),
+                Fact(text="모델이 만든 출처", sourceUrl="https://made-up.example/x"),
             ],
         )
     )
-    profile = await nodes.research_company(gen, "모아페이", "검색 결과 본문")
+    profile = await nodes.research_company(
+        gen, "모아페이", "검색 결과 본문 (출처: https://news.example/1/)"
+    )
+    # Only a URL the search really returned counts: a model-built one is unverified and dropped.
     assert [f.text for f in profile.facts] == ["월 거래액 1조"]
     assert "공정 채용 기준" not in gen.calls[0][1]
 
@@ -246,3 +250,77 @@ async def test_structured_generate_validates_dict_output():
     assert isinstance(profile, CompanyProfile) and profile.facts[0].source_url == "https://x"
     assert model.seen[0].content.startswith("sys\n\n")
     assert model.seen[1].content == as_data("user", "flow_input", None)
+
+
+async def test_flag_quote_with_different_whitespace_still_verifies():
+    flags = [Flag(title="규모", level="SUPPORTED", reason="수치가 있어요.",
+                  quote="p99 지연을   420ms에서\n180ms로")]
+    out = await nodes.verify_claims(
+        Script(ReviewReport(summary="", flags=flags)), DOC, "공고", "[]", {"used": False}
+    )
+    assert out[0].quote == "p99 지연을   420ms에서\n180ms로"
+
+
+def test_met_without_a_quote_from_the_documents_is_lowered():
+    from app.harness.employer.schemas import Match
+
+    matches = [
+        Match(requirement="지연 개선", status="MET", evidence="p99 지연을  420ms에서 180ms로"),
+        Match(requirement="정산", status="MET", evidence="정산 시스템 5년 운영"),
+        Match(requirement="Kafka", status="PARTIAL", evidence="Kafka 클러스터 직접 구축"),
+        Match(requirement="Go", status="MISSING"),
+    ]
+    out, lowered = nodes.check_matches(matches, DOC)
+    assert [(m.status, m.evidence) for m in out] == [
+        ("MET", "p99 지연을  420ms에서 180ms로"),
+        ("PARTIAL", None),
+        ("PARTIAL", None),
+        ("MISSING", None),
+    ]
+    assert lowered == ["정산"]
+
+
+async def test_review_cuts_lines_with_numbers_no_source_backs():
+    invented = _draft(requirements=["팀원 40명을 이끈 경험", "Kotlin 서버 개발 4년 이상"],
+                      description=["하루 2,000만 건 결제 승인 API를 설계해요"])
+    gen = Script(PostingReview(draft=invented), PostingReview(draft=invented))
+    review = await nodes.review_posting(
+        gen, invented, number_sources=("하루 2,000만 건을 처리해요",)
+    )
+    assert "40명" in gen.calls[0][2] and "근거 없는 숫자" in gen.calls[0][2]
+    assert review.draft.requirements == ["Kotlin 서버 개발 4년 이상"]
+    assert review.removed == ["팀원 40명을 이끈 경험"]
+    assert review.draft.description == ["하루 2,000만 건 결제 승인 API를 설계해요"]
+
+
+async def test_review_passes_reviewer_objections_once():
+    gen = Script(PostingReview(draft=_draft()))
+    await nodes.review_posting(
+        gen, _draft(), objections=[{"line": "Kafka 운영 경험", "objection": "필수 아님"}]
+    )
+    assert "검토자 반대 의견" in gen.calls[0][2] and "필수 아님" in gen.calls[0][2]
+
+
+_PLAIN = {"description": ["결제 API를 설계해요"], "requirements": ["Kotlin 서버 개발 경험"]}
+
+
+async def test_a_number_in_work_style_is_cut_and_one_in_the_title_is_reported():
+    invented = _draft(title="백엔드 (팀 8명)", work_style="주 2일 재택 · 50명 규모", **_PLAIN)
+    gen = Script(PostingReview(draft=invented), PostingReview(draft=invented))
+    review = await nodes.review_posting(gen, invented, number_sources=("주 2일 재택",))
+    assert review.draft.work_style == "" and review.removed == ["주 2일 재택 · 50명 규모"]
+    assert "제목에 근거 없는 숫자가 남아 있어요: 8명" in review.notes
+
+
+async def test_no_cut_note_when_only_the_title_holds_the_number():
+    invented = _draft(title="백엔드 (팀 8명)", work_style="재택", **_PLAIN)
+    gen = Script(PostingReview(draft=invented), PostingReview(draft=invented))
+    review = await nodes.review_posting(gen, invented, number_sources=("",))
+    assert review.removed == []
+    assert "근거를 찾지 못한 숫자가 있는 줄을 뺐어요." not in review.notes
+
+
+async def test_review_is_told_what_the_rewrites_asked_for():
+    gen = Script(PostingReview(draft=_draft()))
+    await nodes.review_posting(gen, _draft(), requests=["Kotlin 다시 넣어 줘"])
+    assert "Kotlin 다시 넣어 줘" in gen.calls[0][2]

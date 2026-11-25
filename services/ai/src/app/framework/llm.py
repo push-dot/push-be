@@ -12,20 +12,28 @@ def chat_model_for(
     streaming: bool = True,
     config,
     cls=None,
+    temperature: float | None = None,
 ):
     from app.framework.models import chat_model
 
     model = levers.model
     if web_search and not model.endswith(":online"):
         model += ":online"
-    return chat_model(
+    chat = chat_model(
         api_key=config.managed_ai_key,
         model=model,
         base_url=config.ai_base_url,
         reasoning=(levers.effort or "").lower(),
         streaming=streaming,
         cls=cls,
+        temperature=temperature,
     )
+    extra = getattr(chat, "extra_body", None)
+    if model.startswith("anthropic/") and isinstance(extra, dict):
+        # OpenRouter automatic caching: Anthropic caches the prompt prefix (system, tools,
+        # history), so tool rounds and gate loops resend it at 0.1x input instead of 1x.
+        extra["cache_control"] = {"type": "ephemeral"}
+    return chat
 
 
 async def astructured_reply(model, schema, messages, **invoke):
@@ -110,7 +118,8 @@ def _callback_type():
     from app.domain.entities.ai_usage import ai_cost_micro_credits
 
     class _AiUsageCallback(AsyncCallbackHandler):
-        def __init__(self, store, user_id, job_id, reservation_id, generation=None):
+        def __init__(self, store, user_id, job_id, reservation_id, generation=None,
+                     release_on_error=True):
             super().__init__()
             self.store = store
             self.user_id = user_id
@@ -119,6 +128,9 @@ def _callback_type():
             # The generation this attempt reserved. A retry of the same row bumps it,
             # and release matches only this value.
             self.generation = generation
+            # False when the reservation outlives one call (a turn whose subagent calls may
+            # fail): its owner settles or releases it, so one failed call must not free it.
+            self.release_on_error = release_on_error
             self._runs: dict = {}
 
         async def _finish(self, run_id, status: str) -> bool:
@@ -157,7 +169,7 @@ def _callback_type():
                 )
 
         async def on_llm_error(self, error, *, run_id, **kwargs):
-            if not await self._finish(run_id, "released"):
+            if not await self._finish(run_id, "released") or not self.release_on_error:
                 return
             await self._release()
 
@@ -166,5 +178,7 @@ def _callback_type():
 
 
 class AiUsageCallback:
-    def __new__(cls, store, user_id, job_id, reservation_id, generation=None):
-        return _callback_type()(store, user_id, job_id, reservation_id, generation)
+    def __new__(cls, store, user_id, job_id, reservation_id, generation=None,
+                release_on_error=True):
+        return _callback_type()(
+            store, user_id, job_id, reservation_id, generation, release_on_error)

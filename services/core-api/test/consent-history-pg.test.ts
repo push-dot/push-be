@@ -4,21 +4,30 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
 import type { Query } from "../src/db.ts";
-import { handle, type CoreEnv } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
-import { livePg, type LivePg } from "./parity/pg.ts";
+import { livePg } from './parity/pg.ts';
+import type { LivePg } from './parity/pg.ts';
 
 const URL_ = process.env.BILLING_PG_URL;
 const env: CoreEnv = { APP_ENV: "production" };
+type ConsentBody = { data: { terms: { version: string | null; age14At: string | null; marketing: boolean } } };
+
+const parseAs = <T>(text: string): T => {
+  const parsed: T = JSON.parse(text);
+  return parsed;
+};
+
 const NOW = "2026-11-10T00:00:00.000Z";
 const EARLIER = "2026-10-21T03:04:05.000Z";
 
 let pg: LivePg | undefined;
-before(async () => { if (URL_) pg = await livePg(URL_); });
+before(async () => { if (URL_) {pg = await livePg(URL_);} });
 after(async () => { await pg?.close(); });
 
 const dbFor = (userId: string): Query => async (sql, params = []) => {
-  if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
   if (sql.includes("access_tokens")) {
     return {
       rows: [{
@@ -40,13 +49,13 @@ const putTerms = async (userId: string, body: unknown) => {
     body: JSON.stringify(body),
   }), env, { query: dbFor(userId), now: () => new Date(NOW) });
   const text = await res.text();
-  return { status: res.status, body: text ? JSON.parse(text) as { data: { terms: { version: string | null; age14At: string | null; marketing: boolean } } } : null };
+  return { status: res.status, body: text ? parseAs<ConsentBody>(text) : null };
 };
 
 const agree = (termsVersion: string) => ({ age14: true, serviceTerms: true, privacy: true, termsVersion });
 
 test("the same terms version keeps the timestamps and a new version keeps one history row", async (t) => {
-  if (!pg) return t.skip("set BILLING_PG_URL to a migrated Postgres");
+  if (!pg) {return t.skip("set BILLING_PG_URL to a migrated Postgres");}
   const user = crypto.randomUUID();
   await pg.query(
     "INSERT INTO users (id, provider, provider_subject, display_name, plan, created_at) VALUES ($1::uuid, 'test', $1::uuid::text, 'consent fixture', 'FREE', $2::timestamptz)",
@@ -93,7 +102,7 @@ test("the same terms version keeps the timestamps and a new version keeps one hi
 });
 
 test("a stored placeholder version is archived when the user agrees to 1.0", async (t) => {
-  if (!pg) return t.skip("set BILLING_PG_URL to a migrated Postgres");
+  if (!pg) {return t.skip("set BILLING_PG_URL to a migrated Postgres");}
   const user = crypto.randomUUID();
   await pg.query(
     "INSERT INTO users (id, provider, provider_subject, display_name, plan, created_at) VALUES ($1::uuid, 'test', $1::uuid::text, 'legacy fixture', 'FREE', $2::timestamptz)",

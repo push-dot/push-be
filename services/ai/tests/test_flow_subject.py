@@ -8,7 +8,12 @@ from typing import ClassVar
 import pytest
 
 from app.harness import runtime as runtime_module
-from app.harness.personal.resume.subject import saved_for_turn, turn_links, turn_posting
+from app.harness.personal.resume.subject import (
+    resume_request,
+    saved_for_turn,
+    turn_links,
+    turn_posting,
+)
 from app.harness.runtime import HarnessRuntime
 from tests.fakes import data_json
 from tests.harness_fakes import CONV, USER, Rows, ScriptedLC, managed_ai, run, service
@@ -282,3 +287,55 @@ ABOUT_ATTACHED = {"tone": "담백하게", "inputs": {"postingId": ATTACHED_POSTI
 )
 def test_what_a_quick_start_keeps_of_the_saved_flow(saved, posting, links, kept):
     assert saved_for_turn(saved, posting, links) == kept
+
+
+ATTACHED = {"evidenceIds": ["e1", "e2", "e3"]}
+
+
+@pytest.mark.parametrize(
+    ("text", "context"),
+    [
+        (f"공고 맞춤 이력서 만들어줘 {A_URL} {GITHUB}", ATTACHED),
+        ("이 공고에 맞춰 자소서 고쳐 줘", ATTACHED),
+        ("포트폴리오 다듬어 주세요", {"documentId": "doc-1"}),
+        ("자기소개서 써줘", ATTACHED),
+        ("Tailor my resume to this posting", ATTACHED),
+        ("write a cover letter", ATTACHED),
+    ],
+)
+def test_a_plain_request_to_make_a_document_with_material_is_a_resume_request(text, context):
+    assert resume_request(text, context)
+
+
+@pytest.mark.parametrize(
+    ("text", "context"),
+    [
+        ("이력서 만들어줘", {}),
+        ("이력서 어떻게 써?", {}),
+        ("이력서 만들어줘", {"evidenceIds": [], "urls": [A_URL]}),
+        ("이력서 보여줘", ATTACHED),
+        ("맞춤 이력서 보여줘", ATTACHED),
+        ("이력서에 써 있는 경력 알려 줘", ATTACHED),
+        ("이 공고 요약해 줘", ATTACHED),
+        ("make it shorter", ATTACHED),
+        ("이력서 만들어줘", None),
+    ],
+)
+def test_questions_and_reads_are_not_resume_requests(text, context):
+    assert not resume_request(text, context)
+
+
+def test_github_links_accepts_a_list_or_an_older_lone_string():
+    from app.harness.personal.resume.subject import github_links
+
+    assert github_links(["https://github.com/a", " "]) == ["https://github.com/a"]
+    assert github_links("https://github.com/a") == ["https://github.com/a"]
+    assert github_links(None) == []
+
+
+def test_materials_card_labels_a_github_list_as_links():
+    from app.harness.personal.resume.progress import intake_panel
+
+    inputs = {"github": ["https://github.com/acme-labs", "https://github.com/a/b"]}
+    materials = next(s for s in intake_panel(inputs, {}) if s["id"] == "materials")
+    assert materials["options"][0]["label"] == "https://github.com/acme-labs, https://github.com/a/b"

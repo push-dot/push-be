@@ -1,5 +1,7 @@
-import { isMissingRelation, isUndefinedColumn, one, query } from "../db.ts";
-import { HttpError, asBool, codePoints, data, fieldError, jsonList } from "../http.ts";
+import { isMissingRelation, isUndefinedColumn, one } from "../db.ts";
+import type { Row } from "../db.ts";
+import { HttpError, asBool, codePoints, fieldError, jsonList } from "../http.ts";
+import type { JsonObject } from "../json.ts";
 import { ts } from "../page.ts";
 import { decodeCursor, encodeCursor } from "../time.ts";
 import { sendNotification } from "../push/notify.ts";
@@ -11,13 +13,13 @@ const IMAGE_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 
 export const GUEST_ID = "00000000-0000-0000-0000-000000000000";
 
-const NOTIFY_COLUMN: Record<string, string> = {
-  DEADLINE: "notify_deadline",
-  OFFER: "notify_offer",
-  COMMENT: "notify_comment",
-  AI_DONE: "notify_ai_done",
-  APPLICATION_STAGE: "notify_application_stage",
-};
+const NOTIFY_COLUMN = new Map([
+  ["DEADLINE", "notify_deadline"],
+  ["OFFER", "notify_offer"],
+  ["COMMENT", "notify_comment"],
+  ["AI_DONE", "notify_ai_done"],
+  ["APPLICATION_STAGE", "notify_application_stage"],
+]);
 
 export function unprocessable(field: string, message: string): HttpError {
   return new HttpError(422, "VALIDATION_ERROR", message, { field });
@@ -27,35 +29,33 @@ export function notFound(): HttpError {
   return new HttpError(404, "NOT_FOUND", "resource not found");
 }
 
-export async function readObject(request: Request): Promise<Record<string, unknown>> {
+// JSON.parse output is plain JSON, so a non-array object is a JsonObject.
+export const isJsonObject = (value: unknown): value is JsonObject => typeof value === "object" && value !== null && !Array.isArray(value);
+
+export async function readObject(request: Request): Promise<JsonObject> {
   const raw = await request.text();
-  if (!raw) throw new HttpError(400, "VALIDATION_ERROR", "request body required");
+  if (!raw) {throw new HttpError(400, "VALIDATION_ERROR", "request body required");}
   try {
-    const body = JSON.parse(raw) as unknown;
-    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("shape");
-    return body as Record<string, unknown>;
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
+    const body: unknown = JSON.parse(raw);
+    if (!isJsonObject(body)) {throw new Error("shape");}
+    return body;
+  } catch (error) {
+    if (error instanceof HttpError) {throw error;}
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
 }
 
-export function rejectFields(body: Record<string, unknown>, fields: string[]): void {
+export function rejectFields(body: JsonObject, fields: Array<string>): void {
   for (const field of fields) {
-    if (field in body) throw fieldError(field, "server-managed field");
+    if (field in body) {throw fieldError(field, "server-managed field");}
   }
 }
 
 export function textOf(value: unknown, field: string, min: number, max: number): string {
-  if (typeof value !== "string") throw fieldError(field, "must be a string");
+  if (typeof value !== "string") {throw fieldError(field, "must be a string");}
   const size = codePoints(value);
-  if (size < min || size > max) throw fieldError(field, `${field} must be ${min}-${max} characters`);
+  if (size < min || size > max) {throw fieldError(field, `${field} must be ${min}-${max} characters`);}
   return value;
-}
-
-function optionalText(value: unknown, field: string, max: number): string | null {
-  if (value == null) return null;
-  return textOf(value, field, 0, max);
 }
 
 export function intOf(value: unknown, field: string, min: number, max: number): number {
@@ -66,12 +66,12 @@ export function intOf(value: unknown, field: string, min: number, max: number): 
 }
 
 export function boolOf(value: unknown, field: string): boolean {
-  if (typeof value !== "boolean") throw fieldError(field, "must be a boolean");
+  if (typeof value !== "boolean") {throw fieldError(field, "must be a boolean");}
   return value;
 }
 
 export function dateOf(value: unknown, field: string): string | null {
-  if (value == null) return null;
+  if ((value === null || value === undefined)) {return null;}
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     throw fieldError(field, "must be YYYY-MM-DD");
   }
@@ -87,15 +87,15 @@ export function httpsUrl(value: string): boolean {
   }
 }
 
-export function stringList(value: unknown, field: string, maxItems: number, maxLen: number): string[] {
-  if (value == null) return [];
-  if (!Array.isArray(value)) throw fieldError(field, "must be an array");
-  if (value.length > maxItems) throw fieldError(field, "too many items");
+export function stringList(value: unknown, field: string, maxItems: number, maxLen: number): Array<string> {
+  if ((value === null || value === undefined)) {return [];}
+  if (!Array.isArray(value)) {throw fieldError(field, "must be an array");}
+  if (value.length > maxItems) {throw fieldError(field, "too many items");}
   return value.map((item) => textOf(item, field, 1, maxLen));
 }
 
 export function imageKeyOf(value: unknown, field: string): string | null {
-  if (value == null || value === "") return null;
+  if ((value === null || value === undefined) || value === "") {return null;}
   if (typeof value !== "string" || !IMAGE_KEY.test(value) || value.includes("..")) {
     throw fieldError(field, "invalid image key");
   }
@@ -103,34 +103,33 @@ export function imageKeyOf(value: unknown, field: string): string | null {
 }
 
 export function imageUrl(key: unknown): string | null {
-  if (key == null || key === "") return null;
+  if ((key === null || key === undefined) || key === "") {return null;}
   return "/api/v1/uploads/images/" + encodeURIComponent(String(key));
 }
 
-export function jsonObject(value: unknown): Record<string, unknown> {
+export function jsonObject(value: unknown): JsonObject {
   let raw = value;
   if (typeof raw === "string") {
     try { raw = JSON.parse(raw); } catch { return {}; }
   }
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-  return raw as Record<string, unknown>;
+  return isJsonObject(raw) ? raw : {};
 }
 
-export function splitList(url: URL, name: string): string[] {
+export function splitList(url: URL, name: string): Array<string> {
   const raw = url.searchParams.get(name);
-  if (!raw) return [];
+  if (!raw) {return [];}
   return raw.split(",").map((part) => part.trim()).filter((part) => part.length > 0);
 }
 
-export function enumList(url: URL, name: string, allowed: Set<string>, field: string): string[] {
+export function enumList(url: URL, name: string, allowed: Set<string>, field: string): Array<string> {
   const values = splitList(url, name);
   for (const value of values) {
-    if (!allowed.has(value)) throw unprocessable(field, "unsupported " + field);
+    if (!allowed.has(value)) {throw unprocessable(field, "unsupported " + field);}
   }
   return values;
 }
 
-export function pushArray(params: unknown[], values: string[]): number {
+export function pushArray(params: Array<unknown>, values: Array<string>): number {
   params.push(values.join("\u001f"));
   return params.length;
 }
@@ -139,8 +138,8 @@ export function anyOf(index: number): string {
   return `string_to_array($${index}, E'\\x1f')`;
 }
 
-export function postingDto(row: Record<string, unknown>, detail: boolean, member = false): Record<string, unknown> {
-  const dto: Record<string, unknown> = {
+export function postingDto(row: Row, detail: boolean, member = false): JsonObject {
+  const dto: JsonObject = {
     id: String(row.id),
     company: String(row.company ?? ""),
     title: String(row.title ?? ""),
@@ -148,13 +147,13 @@ export function postingDto(row: Record<string, unknown>, detail: boolean, member
     imageUrl: imageUrl(row.image_key),
     skills: jsonList(row.skills).map(String),
     careerMin: Number(row.career_min ?? 0),
-    careerMax: row.career_max == null ? null : Number(row.career_max),
+    careerMax: (row.career_max === null || row.career_max === undefined) ? null : Number(row.career_max),
     location: String(row.location ?? ""),
     employmentType: String(row.employment_type ?? ""),
-    deadline: row.deadline == null || row.deadline === "" ? null : String(row.deadline).slice(0, 10),
+    deadline: (row.deadline === null || row.deadline === undefined) || row.deadline === "" ? null : String(row.deadline).slice(0, 10),
     bookmarked: asBool(row.bookmarked),
     applied: asBool(row.applied),
-    sourceUrl: row.source_url == null ? null : String(row.source_url),
+    sourceUrl: (row.source_url === null || row.source_url === undefined) ? null : String(row.source_url),
     createdAt: ts(row.created_at),
     revision: Number(row.revision ?? 1),
     closedAt: ts(row.closed_at),
@@ -165,15 +164,15 @@ export function postingDto(row: Record<string, unknown>, detail: boolean, member
     dto.workConditions = jsonObject(row.work_conditions);
     dto.preferred = jsonList(row.preferred).map(String);
   }
-  if (detail || member) dto.applicantCount = Number(row.applicant_count ?? 0);
+  if (detail || member) {dto.applicantCount = Number(row.applicant_count ?? 0);}
   if (member) {
-    const stored = row.status == null || row.status === "" ? "" : String(row.status);
-    dto.status = stored || (row.closed_at != null ? "CLOSED" : "OPEN");
+    const stored = (row.status === null || row.status === undefined) || row.status === "" ? "" : String(row.status);
+    dto.status = stored || ((row.closed_at !== null && row.closed_at !== undefined) ? "CLOSED" : "OPEN");
     dto.newApplicantCount = Number(row.new_applicant_count ?? 0);
-    const createdName = row.created_by_name == null || row.created_by_name === "" ? "" : String(row.created_by_name);
+    const createdName = (row.created_by_name === null || row.created_by_name === undefined) || row.created_by_name === "" ? "" : String(row.created_by_name);
     dto.createdBy = createdName ? { displayName: createdName } : null;
-    dto.draftSource = row.draft_source == null || row.draft_source === "" ? null : String(row.draft_source);
-  } else if (row.status != null && row.status !== "") {
+    dto.draftSource = (row.draft_source === null || row.draft_source === undefined) || row.draft_source === "" ? null : String(row.draft_source);
+  } else if ((row.status !== null && row.status !== undefined) && row.status !== "") {
     dto.status = String(row.status);
   }
   return dto;
@@ -187,20 +186,20 @@ export const openClause = (withStatus: boolean): string =>
 export const withPublicStatus = async <T>(run: (withStatus: boolean) => Promise<T>): Promise<T> => {
   try {
     return await run(true);
-  } catch (err) {
-    if (!isUndefinedColumn(err)) throw err;
+  } catch (error) {
+    if (!isUndefinedColumn(error)) {throw error;}
     return run(false);
   }
 };
 
 const usesParam = (sql: string, index: number): boolean => new RegExp(`\\$${index}(?!\\d)`).test(sql);
 
-export const countWhere = async (ctx: Ctx, sql: string, marker: string, params: unknown[]): Promise<number> => {
+export const countWhere = async (ctx: Ctx, sql: string, marker: string, params: Array<unknown>): Promise<number> => {
   const at = sql.lastIndexOf(marker);
-  if (at < 0) return 0;
+  if (at < 0) {return 0;}
   let countSql = "SELECT count(*)::int AS total" + sql.slice(at);
   for (let index = 1; index <= params.length; index += 1) {
-    if (!usesParam(countSql, index)) countSql += ` AND $${index} IS NOT DISTINCT FROM $${index}`;
+    if (!usesParam(countSql, index)) {countSql += ` AND $${index} IS NOT DISTINCT FROM $${index}`;}
   }
   const read = async (statement: string): Promise<number> => {
     const row = await one(ctx.deps.query, statement, params);
@@ -208,8 +207,8 @@ export const countWhere = async (ctx: Ctx, sql: string, marker: string, params: 
   };
   try {
     return await read(countSql);
-  } catch (err) {
-    if (!(isMissingRelation(err) || isUndefinedColumn(err)) || !countSql.includes("company_members")) throw err;
+  } catch (error) {
+    if (!(isMissingRelation(error) || isUndefinedColumn(error)) || !countSql.includes("company_members")) {throw error;}
     const fallback = countSql
       .replaceAll(" LEFT JOIN company_members cm ON cm.user_id = u.id", "")
       .replaceAll(" LEFT JOIN company_members sm ON sm.user_id = o.sender_id", "")
@@ -225,21 +224,21 @@ export type SearchSort = "relevance" | "latest";
 
 export const searchSortMode = (url: URL): SearchSort => {
   const raw = url.searchParams.get("sort");
-  if (raw == null || raw === "relevance") return "relevance";
-  if (raw === "latest") return "latest";
+  if ((raw === null || raw === undefined) || raw === "relevance") {return "relevance";}
+  if (raw === "latest") {return "latest";}
   throw unprocessable("sort", "unsupported sort");
 };
 
 export const assertSearchCursor = (url: URL, sort: SearchSort): void => {
   const encoded = url.searchParams.get("cursor");
-  if (!encoded) return;
+  if (!encoded) {return;}
   const marked = decodeCursor(encoded).sort ?? "relevance";
-  if (sort === "latest" && marked !== "latest") throw fieldError("cursor", "cursor does not match sort");
-  if (sort === "relevance" && marked === "latest") throw fieldError("cursor", "cursor does not match sort");
+  if (sort === "latest" && marked !== "latest") {throw fieldError("cursor", "cursor does not match sort");}
+  if (sort === "relevance" && marked === "latest") {throw fieldError("cursor", "cursor does not match sort");}
 };
 
 export const stampSearchCursor = (cursor: string | null, sort: SearchSort): string | null => {
-  if (!cursor) return null;
+  if (!cursor) {return null;}
   const decoded = decodeCursor(cursor);
   return encodeCursor(decoded.createdAt, decoded.id, sort);
 };
@@ -257,37 +256,39 @@ export function relevance(title: string, extra: string, raw = "$2", cho = "$3", 
 // Hides accounts in the deletion grace period.
 export const NOT_DELETING = "u.deletion_requested_at IS NULL";
 
-export function person(row: Record<string, unknown>, idKey: string, nameKey: string): { id: string; displayName: string } {
+interface Person { id: string; displayName: string }
+
+export function person(row: Row, idKey: string, nameKey: string): Person {
   return { id: String(row[idKey] ?? ""), displayName: String(row[nameKey] ?? "") };
 }
 
-export function offerDto(row: Record<string, unknown>): Record<string, unknown> {
+export function offerDto(row: Row): JsonObject {
   return {
     id: String(row.id),
     sender: {
       ...person(row, "sender_id", "sender_name"),
-      kind: row.sender_company == null || row.sender_company === "" ? "PERSON" : "COMPANY",
-      companyName: row.sender_company == null || row.sender_company === "" ? null : String(row.sender_company),
-      headline: row.sender_headline == null ? "" : String(row.sender_headline),
+      kind: (row.sender_company === null || row.sender_company === undefined) || row.sender_company === "" ? "PERSON" : "COMPANY",
+      companyName: (row.sender_company === null || row.sender_company === undefined) || row.sender_company === "" ? null : String(row.sender_company),
+      headline: (row.sender_headline === null || row.sender_headline === undefined) ? "" : String(row.sender_headline),
       avatarUrl: imageUrl(row.sender_avatar),
     },
     recipient: {
       ...person(row, "profile_user_id", "recipient_name"),
-      kind: row.recipient_company == null || row.recipient_company === "" ? "PERSON" : "COMPANY",
-      companyName: row.recipient_company == null || row.recipient_company === "" ? null : String(row.recipient_company),
-      headline: row.recipient_headline == null ? "" : String(row.recipient_headline),
+      kind: (row.recipient_company === null || row.recipient_company === undefined) || row.recipient_company === "" ? "PERSON" : "COMPANY",
+      companyName: (row.recipient_company === null || row.recipient_company === undefined) || row.recipient_company === "" ? null : String(row.recipient_company),
+      headline: (row.recipient_headline === null || row.recipient_headline === undefined) ? "" : String(row.recipient_headline),
       avatarUrl: imageUrl(row.recipient_avatar),
     },
     message: String(row.message ?? ""),
-    posting: row.posting_id == null ? null : {
+    posting: (row.posting_id === null || row.posting_id === undefined) ? null : {
       id: String(row.posting_id),
       title: String(row.posting_title ?? ""),
       company: String(row.posting_company ?? ""),
       imageUrl: imageUrl(row.posting_image),
       location: String(row.posting_location ?? ""),
       careerMin: Number(row.posting_career_min ?? 0),
-      careerMax: row.posting_career_max == null ? null : Number(row.posting_career_max),
-      deadline: row.posting_deadline == null || row.posting_deadline === "" ? null : String(row.posting_deadline).slice(0, 10),
+      careerMax: (row.posting_career_max === null || row.posting_career_max === undefined) ? null : Number(row.posting_career_max),
+      deadline: (row.posting_deadline === null || row.posting_deadline === undefined) || row.posting_deadline === "" ? null : String(row.posting_deadline).slice(0, 10),
     },
     status: String(row.status ?? "SENT"),
     readAt: ts(row.read_at),
@@ -318,11 +319,11 @@ export const OFFER_FROM = `
 
 export const OFFER_SQL = OFFER_COLS + OFFER_FROM;
 
-export async function notify(ctx: Ctx, userId: string, type: string, title: string, body: string, target: Record<string, unknown>): Promise<void> {
-  if (userId === ctx.user.id) return;
-  const column = NOTIFY_COLUMN[type];
-  if (!column) return;
+export async function notify(ctx: Ctx, userId: string, type: string, title: string, body: string, target: JsonObject): Promise<void> {
+  if (userId === ctx.user.id) {return;}
+  const column = NOTIFY_COLUMN.get(type);
+  if (!column) {return;}
   const pref = await one(ctx.deps.query, `SELECT ${column} AS enabled FROM user_settings WHERE user_id = $1`, [userId]);
-  if (pref && !asBool(pref.enabled)) return;
+  if (pref && !asBool(pref.enabled)) {return;}
   await sendNotification(ctx, { userId, type, title, body, target });
 }

@@ -90,6 +90,13 @@ def test_personal_prompt_forbids_invented_experience():
     assert "바로 실행" in prompt
     assert "start_document" in prompt
     assert "마이 › 설정에서 할 수 있어요" in prompt
+    assert "질문을 하나만" in prompt
+    assert "read_sources" in prompt
+    assert "한 번에 불러요" in prompt
+    assert "정한 것을 한 줄로" in prompt
+    # The headings kstyle/final.py and scripts/kstyle_stats.py read.
+    assert "만든 것, 대신 정한 것, 확인이 필요한 점, 다음" in prompt
+    assert "NEEDS_READ_PAGE가 오면 그 주소는 read_page로" in prompt
     lowered = prompt.lower()
     assert "deepseek" not in lowered
     assert "claude" not in lowered

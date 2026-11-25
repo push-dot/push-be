@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
+from dataclasses import replace
 from typing import Literal
 from urllib.parse import urlencode
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from langgraph.types import interrupt
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
 from app.domain.access_mode import AccessMode
@@ -15,11 +17,15 @@ from app.domain.errors import DomainError
 from app.domain.pagination import PageRequest
 from app.domain.validators import validate_https_url
 from app.framework.fit_judge import judge_fit
-from app.harness.approval import approval_id_for, site_host, user_supplied
+from app.harness.approval import approval_id_for, site_granted, site_host, user_supplied
 from app.harness.approvals import insert_chat_approval
 from app.harness.core_client import idempotency_key
 from app.harness.document_edits import apply_edit
-from app.harness.graph import enter_flow
+from app.harness.graph import _dictated, drop_flow_notes, enter_flow, turn_model
+from app.harness.kstyle.ledger import add_evidence, empty_notes
+from app.harness.kstyle.stage import Task, run_stage
+from app.harness.kstyle.subagent import Corpus, light_model, single_call
+from app.harness.kstyle.verify import unsupported_numbers
 from app.harness.policy import ALWAYS_ASK_TOOLS, Decision, Tier, decide
 from app.harness.status import waiting
 from app.harness.tools import OptionalId, ToolContext, ToolSpec, emit
@@ -126,6 +132,12 @@ class EditDocumentArgs(BaseModel):
     before: str = ""
     after: str = ""
     instruction: str = ""
+
+
+class SourcesArgs(BaseModel):
+    question: str
+    urls: list[str] = Field(default_factory=list, max_length=4)
+    document_ids: list[UUID] = Field(default_factory=list, max_length=4)
 
 
 class FitArgs(BaseModel):
@@ -274,22 +286,29 @@ def _common(a: list, b: list) -> int:
     return next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
 
 
+async def _document_lines(ctx: ToolContext, document_id: UUID, version_id: UUID | None = None) -> list[str] | None:
+    """The document's lines, latest version unless one is named; None when it cannot be read."""
+    svc = _svc()
+    document_svc = getattr(svc, "document_svc", None) if svc else None
+    if document_svc is None:
+        return None
+    user_id = UUID(ctx.user_id)
+    try:
+        version_id = version_id or (await document_svc.get(user_id, document_id)).latest_version_id
+        version = await document_svc.get_version(user_id, document_id, version_id)
+    except DomainError:
+        return None
+    return [line for block in version.blocks for line in block.text.splitlines()]
+
+
 async def _page_hunks(ctx: ToolContext, args: EditDocumentArgs, hunks: list) -> list:
     """Every line of the document with the edited ones marked.
 
     The changed block alone when the document cannot be read or `before` is not in it.
     """
-    svc = _svc()
-    document_svc = getattr(svc, "document_svc", None) if svc else None
-    if document_svc is None or not args.before:
+    lines = await _document_lines(ctx, args.document_id, args.version_id) if args.before else None
+    if lines is None:
         return hunks
-    user_id = UUID(ctx.user_id)
-    try:
-        version_id = args.version_id or (await document_svc.get(user_id, args.document_id)).latest_version_id
-        version = await document_svc.get_version(user_id, args.document_id, version_id)
-    except DomainError:
-        return hunks
-    lines = [line for block in version.blocks for line in block.text.splitlines()]
     text = "\n".join(lines)
     if args.before not in text:
         return hunks
@@ -325,6 +344,13 @@ def _document_event(job_id: str, tool_call_id: str, document_id: str, hunks: lis
 async def _edit_document(ctx: ToolContext, args: EditDocumentArgs) -> dict:
     if args.before == args.after:
         return {"error": "NOTHING_TO_CHANGE"}
+    # A number in the new text must come from the old text, the document or what the user said.
+    invented = unsupported_numbers(args.after, args.before, ctx.user_text)
+    if invented:
+        lines = await _document_lines(ctx, args.document_id, args.version_id) or []
+        invented = unsupported_numbers(args.after, args.before, ctx.user_text, "\n".join(lines))
+    if invented:
+        return {"error": "UNSUPPORTED_NUMBER", "detail": invented}
     if decide(AccessMode(ctx.access_mode), Tier.SAFE_WRITE, "edit_document",
               exposure=ctx.exposure) is Decision.ASK:
         event = _document_event(
@@ -404,6 +430,14 @@ def _draft_offer(saved: dict) -> list[str]:
 
 async def _start_document(ctx: ToolContext, _args: EmptyArgs) -> dict:
     saved = _resume_saved(await _resume_row(ctx))
+    # The agent speaks once after a flow ends; the turn's old request must not restart it
+    # and wipe the result.
+    finished = saved.get("job_id")
+    if saved.get("status") == "done" and finished and finished == ctx.usage_job_id:
+        return {
+            "done": True,
+            "note": "이 턴에 서류 작성을 끝냈어요. 사용자가 새 서류를 요청할 때만 다시 시작해요.",
+        }
     if saved.get("status") == "active":
         choice = {
             "type": "choice",
@@ -428,6 +462,7 @@ async def _start_document(ctx: ToolContext, _args: EmptyArgs) -> dict:
         emit(choice)
         return {"choice": choice}
     state = {"status": "active", "phase": "mode_select"}
+    await drop_flow_notes(ctx.db, ctx.conversation_id)
     await ctx.db.q().execute(
         "UPDATE conversations SET resume_state = $2::jsonb WHERE id = $1",
         ctx.conversation_id,
@@ -479,7 +514,7 @@ async def _prepare_interview(ctx: ToolContext, args: PrepareArgs) -> dict:
     if interviews is None:
         return {"error": "UNAVAILABLE"}
     op = await interviews.prepare(
-        UUID(ctx.user_id), args.interview_id, args.expected_revision, None)
+        UUID(ctx.user_id), args.interview_id, args.expected_revision, None, model=turn_model.get())
     return to_jsonable(op)
 
 
@@ -535,6 +570,98 @@ async def _mark_link_check(ctx: ToolContext, url: str, ok: bool) -> None:
         "UPDATE user_links SET last_checked_at = now(), last_check_ok = $3 "
         "WHERE user_id = $1 AND url = $2 AND deleted_at IS NULL",
         UUID(ctx.user_id), url, ok)
+
+
+_SOURCE_SECONDS = 20
+_READ_SECONDS = 60
+_SOURCE_CAP = 12000
+_RAW_CAP = 4000
+_FINDINGS_PER_SOURCE = 8
+_READER = """너는 자료 하나만 읽는 하위 에이전트다.
+brief.text는 brief.source에서 읽은 원문이다. brief.question에 답하는 데 필요한 내용만 이 원문에서 찾는다.
+원문에 없는 내용은 쓰지 않는다. JSON 하나로 답한다:
+{"findings": [{"quote": 원문에서 그대로 복사한 한 줄, "claim": 그 줄이 말하는 것 한 문장}]}
+관련 내용이 없으면 빈 배열."""
+
+
+async def _open_source(ctx: ToolContext, url: str) -> tuple[dict | None, dict | None]:
+    """(source, unread): a URL read_page would open without a card is read here; any other comes back
+    as NEEDS_READ_PAGE, so the model calls read_page and the user sees the usual card."""
+    try:
+        PageArgs(url=url)
+    except ValueError:
+        return None, {"url": url, "error": "INVALID_URL"}
+    supplied = await user_supplied(ctx.db, ctx.conversation_id, ctx.user_id, url)
+    # A granted host is opened without a card when read_page would open it without one.
+    if not supplied and (_dictated(url, ctx.exposure, "", True)
+                         or not await site_granted(ctx.db, ctx.conversation_id, url)):
+        return None, {"url": url, "error": "NEEDS_READ_PAGE"}
+    page = await _read_page(replace(ctx, supplied=supplied), PageArgs(url=url))
+    if "error" in page:
+        return None, {"url": url, **page}
+    return {"source": url, "text": str(page.get("text") or "")[:_SOURCE_CAP]}, None
+
+
+async def _open_document(ctx: ToolContext, document_id: UUID) -> tuple[dict | None, dict | None]:
+    lines = await _document_lines(ctx, document_id)
+    if lines is None:
+        return None, {"documentId": str(document_id), "error": "NOT_FOUND"}
+    return {"source": f"document:{document_id}", "text": "\n".join(lines)[:_SOURCE_CAP]}, None
+
+
+async def _timed_open(opening, label: dict) -> tuple[dict | None, dict | None]:
+    try:
+        async with asyncio.timeout(_SOURCE_SECONDS):
+            return await opening
+    except TimeoutError:
+        return None, {**label, "error": "TIMEOUT"}
+    except Exception:
+        return None, {**label, "error": "TOOL_FAILED"}
+
+
+async def _read_sources(ctx: ToolContext, args: SourcesArgs) -> dict:
+    """Mechanical first: every source is opened at once. Then one light reader per source, all at once;
+    code keeps a finding only when its quote is in that source. Raw text never reaches the main model,
+    unless there is no light tier."""
+    opened = await asyncio.gather(
+        *(_timed_open(_open_source(ctx, url), {"url": url}) for url in dict.fromkeys(args.urls)),
+        *(_timed_open(_open_document(ctx, doc), {"documentId": str(doc)})
+          for doc in dict.fromkeys(args.document_ids)))
+    sources = [source for source, _ in opened if source and source["text"].strip()]
+    unread = [miss for _, miss in opened if miss]
+    unread += [{"source": source["source"], "error": "EMPTY"}
+               for source, _ in opened if source and not source["text"].strip()]
+    light = light_model(turn_model.get())
+    if light is None:
+        return {"sources": [{**item, "text": item["text"][:_RAW_CAP]} for item in sources], "unread": unread}
+    if not sources:
+        return {"findings": [], "late": [], "unread": unread}
+
+    def reader(item: dict):
+        return lambda: single_call(light, _READER, {"question": args.question, **item})
+
+    tasks = [Task(f"source_{index}", reader(item), seconds=_READ_SECONDS) for index, item in enumerate(sources)]
+    staged = await run_stage(tasks)
+    # Ids are per call: nothing reads them after this result, so nothing is stored.
+    notes = empty_notes()
+    findings, late = [], []
+    for task, item in zip(tasks, sources, strict=True):
+        if task.name in staged["late"]:
+            late.append(item["source"])
+            continue
+        if task.name in staged["failed"]:
+            unread.append({"source": item["source"], "error": "READ_FAILED"})
+            continue
+        corpus = Corpus({item["source"]: item["text"]})
+        found = staged["out"][task.name].get("findings") or []
+        found = found if isinstance(found, list) else []
+        for raw in [entry for entry in found if isinstance(entry, dict)][:_FINDINGS_PER_SOURCE]:
+            quote, claim = str(raw.get("quote") or ""), str(raw.get("claim") or "")
+            if not claim.strip() or not corpus.verified(item["source"], quote):
+                continue
+            evidence = add_evidence(notes, "source", item["source"], quote, claim, text=item["text"])
+            findings.append({key: evidence[key] for key in ("id", "source", "claim", "quote")})
+    return {"findings": findings, "late": late, "unread": unread}
 
 
 def _page_summary(args: PageArgs | None) -> str:
@@ -594,6 +721,7 @@ PERSONAL_TOOLS = [
     _spec("get_fit_score", Tier.READ, FitArgs, _get_fit_score, "공고와 얼마나 맞는지 봐요"),
     _spec("search_career_context", Tier.READ, CareerQuery, _search_career, "내 경력 자료를 찾아요"),
     ToolSpec("read_page", Tier.EXTERNAL_READ, PageArgs, _read_page, _page_summary),
+    _spec("read_sources", Tier.READ, SourcesArgs, _read_sources, "여러 자료를 함께 읽어요"),
     _core("bookmark_posting", Tier.SAFE_WRITE, PostingId, "공고를 저장해요", "POST",
           lambda args: f"/api/v1/postings/{args.posting_id}/bookmark",
           write=True, drop=("posting_id",)),

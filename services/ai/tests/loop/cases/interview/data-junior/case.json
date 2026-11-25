@@ -1,0 +1,121 @@
+{
+ "surface": "interview",
+ "domain": "데이터 분석",
+ "seniority": "주니어",
+ "text": "다음 주 면접 준비해 줘",
+ "max_turns": 3,
+ "interview": {
+  "id": "1a000000-0000-4000-8000-000000000001",
+  "title": "회사 A 데이터 분석가 면접",
+  "requirements": [
+   "SQL로 지표를 정의하고 집계한 경험",
+   "A/B 테스트 결과 해석"
+  ],
+  "evidence": [
+   {
+    "id": "1a000000-0000-4000-8000-0000000000e1",
+    "title": "주문 지표 대시보드",
+    "text": "주간 주문 지표를 SQL로 정의하고 대시보드로 만들어 팀이 매주 확인하게 했다."
+   },
+   {
+    "id": "1a000000-0000-4000-8000-0000000000e2",
+    "title": "가입 화면 실험",
+    "text": "가입 화면 문구 실험에서 두 안의 전환율 차이를 비교해 보고서로 정리했다."
+   }
+  ],
+  "company_sources": [
+   {
+    "url": "https://company-a.example.com/about",
+    "text": "회사 A는 동네 상점의 주문을 모아 배달하는 서비스를 운영한다."
+   }
+  ]
+ },
+ "script": {
+  "": [
+   {
+    "tool_calls": [
+     {
+      "name": "prepare_interview",
+      "id": "call-iv-1",
+      "args": {
+       "interview_id": "1a000000-0000-4000-8000-000000000001",
+       "expected_revision": 1
+      }
+     }
+    ]
+   },
+   "만든 것\n• 요구사항별 면접 질문 2개\n\n확인이 필요한 점\n• 실험 결과의 수치는 직접 채워 주세요"
+  ],
+  "evidence_reader": {
+   "findings": [
+    {
+     "evidenceId": "1a000000-0000-4000-8000-0000000000e1",
+     "quote": "주간 주문 지표를 SQL로 정의하고 대시보드로 만들어 팀이 매주 확인하게 했다.",
+     "claim": "SQL로 주간 주문 지표를 정의했다."
+    },
+    {
+     "evidenceId": "1a000000-0000-4000-8000-0000000000e2",
+     "quote": "이 문장은 근거에 없다.",
+     "claim": "지어낸 근거"
+    }
+   ]
+  },
+  "company_reader": {
+   "findings": [
+    {
+     "sourceId": "C1",
+     "quote": "회사 A는 동네 상점의 주문을 모아 배달하는 서비스를 운영한다.",
+     "claim": "동네 상점 주문을 모아 배달한다."
+    }
+   ]
+  },
+  "interview_writer": {
+   "questions": [
+    {
+     "requirement": "SQL로 지표를 정의하고 집계한 경험",
+     "question": "주간 주문 지표는 어떤 기준으로 정의했나요?",
+     "evidence": [
+      "E1"
+     ]
+    },
+    {
+     "requirement": "A/B 테스트 결과 해석",
+     "question": "실험 결과를 어떻게 해석했나요?",
+     "evidence": [
+      "E9"
+     ]
+    }
+   ],
+   "starAnswers": [
+    {
+     "evidenceId": "1a000000-0000-4000-8000-0000000000e1",
+     "situation": {
+      "text": "주문 지표 대시보드",
+      "evidence": [
+       "E1"
+      ]
+     },
+     "task": {
+      "text": "",
+      "evidence": []
+     },
+     "action": {
+      "text": "주간 주문 지표를 SQL로 정의했다.",
+      "evidence": [
+       "E1"
+      ]
+     },
+     "result": {
+      "text": "전환율을 30% 올렸다.",
+      "evidence": [
+       "E1"
+      ]
+     }
+    }
+   ]
+  },
+  "너는 완성된": {
+   "mismatches": []
+  }
+ }
+}

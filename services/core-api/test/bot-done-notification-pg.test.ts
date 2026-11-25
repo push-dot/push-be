@@ -4,9 +4,11 @@ import { after, before, test } from "node:test";
 import { promisify } from "node:util";
 
 import { enqueueResumeJob } from "../src/ai-jobs.ts";
-import { handle, type CoreEnv } from "../src/handler.ts";
-import { botsPg, type BotsPg, type Person } from "../test-support/bots-pg.ts";
-import type { Ctx } from "../src/types.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv } from '../src/handler.ts';
+import { botsPg } from '../test-support/bots-pg.ts';
+import type { BotsPg, Person } from '../test-support/bots-pg.ts';
+import { ctxFor, parseJson, readJson } from "../test-support/recorder.ts";
 
 const exec = promisify(execFile);
 const URL_ = process.env.BILLING_PG_URL;
@@ -14,7 +16,7 @@ const SKIP = "set BILLING_PG_URL to a migrated Postgres";
 const PREVIEW = `급여 명세는 비밀 ${crypto.randomUUID()}`;
 
 let db: BotsPg | undefined;
-before(async () => { if (URL_) db = await botsPg(URL_); });
+before(async () => { if (URL_) {db = await botsPg(URL_);} });
 after(async () => { await db?.close(); });
 
 const env = (backend: string): CoreEnv => ({
@@ -26,7 +28,7 @@ const env = (backend: string): CoreEnv => ({
 });
 
 const aiDone = async (userId: string, conversationId: string, jobId: string, backend: string) => {
-  const pushed: string[] = [];
+  const pushed: Array<string> = [];
   const res = await handle(new Request("https://core.example/api/v1/internal/notifications/ai-done", {
     method: "POST",
     headers: { authorization: "Bearer job-secret", "content-type": "application/json" },
@@ -40,7 +42,7 @@ const aiDone = async (userId: string, conversationId: string, jobId: string, bac
       return new Response("{}", { status: 200 });
     },
   });
-  const body = await res.json() as { data: { id: string | null } };
+  const body = await readJson<{ data: { id: string | null } }>(res);
   return { status: res.status, id: body.data.id, pushed };
 };
 
@@ -86,7 +88,7 @@ asyncio.run(main())
 };
 
 test("a muted bot sends nothing, one job sends once, and erase drops the row", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const bot = await db.call(user, "POST", "/bots", { postingId: await db.posting("모아페이") });
   assert.equal(bot.status, 201);
@@ -118,7 +120,7 @@ test("a muted bot sends nothing, one job sends once, and erase drops the row", a
 });
 
 test("a web conversation keeps the conversation target", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("FREE");
   const thread = crypto.randomUUID();
   await db.pg.query("INSERT INTO conversations (id, user_id, title) VALUES ($1::uuid, $2::uuid, '웹')", [thread, user.id]);
@@ -133,7 +135,7 @@ test("a web conversation keeps the conversation target", async (t) => {
 });
 
 test("redis stores the job, the worker row, and erase removes both", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const bot = await db.call(user, "POST", "/bots", { postingId: await db.posting("모아페이") });
   const botId = String(bot.data.id);
@@ -145,10 +147,13 @@ test("redis stores the job, the worker row, and erase removes both", async (t) =
     [chatId, user.id, JSON.stringify({ ai: "kept-marker", text: "old" }), thread]);
   const sent = await aiDone(user.id, thread, crypto.randomUUID(), "redis");
   assert.equal(sent.id !== null, true);
-  const job = (await db.pg.query(
-    "SELECT id, type, conversation_id, payload FROM ai_jobs WHERE conversation_id = $1::uuid AND type = 'notify'", [thread])).rows[0] as {
-    id: string; type: string; conversation_id: string;
-    payload: { body: string; pushBody: string; notificationId: string };
+  const jobRow = (await db.pg.query(
+    "SELECT id, type, conversation_id, payload FROM ai_jobs WHERE conversation_id = $1::uuid AND type = 'notify'", [thread])).rows[0];
+  const job = {
+    id: String(jobRow?.id),
+    type: String(jobRow?.type),
+    conversation_id: String(jobRow?.conversation_id),
+    payload: parseJson<{ body: string; pushBody: string; notificationId: string }>(JSON.stringify(jobRow?.payload)),
   };
   assert.equal(job.type, "notify");
   assert.equal(String(job.conversation_id), thread);
@@ -161,16 +166,10 @@ test("redis stores the job, the worker row, and erase removes both", async (t) =
     "SELECT id FROM chat_jobs WHERE user_id = $1::uuid AND conversation_id = $2::uuid AND status IN ('PENDING', 'RUNNING')",
     [user.id, thread]);
   assert.equal(active.rows.some((row) => String(row.id) === String(job.id)), false);
-  const ctx = {
-    request: new Request("https://core.example"),
-    env: env("redis"),
-    deps: { query: db.pg.query, transaction: db.pg.transaction },
-    rid: "r",
-    url: new URL("https://core.example"),
-    now: new Date("2026-11-13T00:00:00.000Z"),
-  } as Ctx;
+  const ctx = ctxFor({ query: db.pg.query, transaction: db.pg.transaction }, env("redis"), new Date("2026-11-13T00:00:00.000Z"));
   const resumed = await enqueueResumeJob(ctx, { conversationId: thread, userId: user.id, payload: { text: "" } });
-  const resumedPayload = (await db.pg.query("SELECT payload FROM ai_jobs WHERE id = $1::uuid", [resumed])).rows[0].payload as { ai: string };
+  const resumedRow = (await db.pg.query("SELECT payload FROM ai_jobs WHERE id = $1::uuid", [resumed])).rows[0];
+  const resumedPayload = parseJson<{ ai: string }>(JSON.stringify(resumedRow?.payload));
   assert.equal(resumedPayload.ai, "kept-marker");
   assert.equal(JSON.stringify(resumedPayload).includes(PREVIEW), false);
   await applyQueued(job.payload);

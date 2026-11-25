@@ -1,6 +1,7 @@
 import { one, query } from "../db.ts";
 import { HttpError, asBool, data, fieldError, requireUuid, sha256Hex } from "../http.ts";
 import { sendNotification } from "../push/notify.ts";
+import type { Notice } from "../push/notify.ts";
 import type { Ctx } from "../types.ts";
 import { plainLine } from "./bots.ts";
 import { readObject } from "./recruiting-shared.ts";
@@ -11,16 +12,16 @@ const sameSecret = async (left: string, right: string): Promise<boolean> => {
   const a = await sha256Hex(left);
   const b = await sha256Hex(right);
   let diff = 0;
-  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  for (let i = 0; i < a.length; i += 1) {diff |= a.charCodeAt(i) ^ b.charCodeAt(i);}
   return diff === 0;
 };
 
 export const requireJob = async (ctx: Ctx): Promise<void> => {
   const expected = ctx.env.INTERNAL_JOB_TOKEN?.trim() ?? "";
-  if (!expected) throw new HttpError(503, "NOT_CONFIGURED", "internal job token is not configured");
+  if (!expected) {throw new HttpError(503, "NOT_CONFIGURED", "internal job token is not configured");}
   const header = ctx.request.headers.get("authorization") || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (!(await sameSecret(token, expected))) throw new HttpError(401, "UNAUTHENTICATED", "missing bearer token");
+  if (!(await sameSecret(token, expected))) {throw new HttpError(401, "UNAUTHENTICATED", "missing bearer token");}
 };
 
 const THREAD = `SELECT c.bot_id, b.notifications_muted, COALESCE(b.display_name, s.display_name) AS display_name,
@@ -36,8 +37,8 @@ const CLAIM = `INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES 
 
 const pushSentence = (name: unknown): string => {
   const text = String(name ?? "").trim();
-  if (!text) return "Bot이 작업을 마쳤어요";
-  if (text.endsWith("봇") || text.endsWith("Bot")) return `${text}이 작업을 마쳤어요`;
+  if (!text) {return "Bot이 작업을 마쳤어요";}
+  if (text.endsWith("봇") || text.endsWith("Bot")) {return `${text}이 작업을 마쳤어요`;}
   return `${text} Bot이 작업을 마쳤어요`;
 };
 
@@ -72,19 +73,20 @@ export const recordAiDone = async (ctx: Ctx): Promise<Response> => {
     return data(201, { id: null }, ctx.rid);
   }
   const claim = await one(ctx.deps.query, CLAIM, [`ai-done:${jobId}`, ctx.now.toISOString()]);
-  if (!claim) return data(201, { id: null }, ctx.rid);
-  const botId = row.bot_id == null || row.bot_id === "" ? "" : String(row.bot_id);
-  const title = botId ? "Bot 작업 완료" : (body.title == null || body.title === "" ? "AI 작업이 끝났어요" : String(body.title));
-  if (title.length > 200) throw fieldError("title", "must be at most 200 characters");
-  const id = await sendNotification(ctx, {
+  if (!claim) {return data(201, { id: null }, ctx.rid);}
+  const botId = (row.bot_id === null || row.bot_id === undefined) || row.bot_id === "" ? "" : String(row.bot_id);
+  const title = botId ? "Bot 작업 완료" : ((body.title === null || body.title === undefined) || body.title === "" ? "AI 작업이 끝났어요" : String(body.title));
+  if (title.length > 200) {throw fieldError("title", "must be at most 200 characters");}
+  const notice: Notice = {
     userId,
     type: "AI_DONE",
     title,
     body: botId ? plainLine(String(row.last_message_preview ?? "")) : "",
     target: botId ? { kind: "bot", id: botId } : { kind: "conversation", id: conversationId },
     conversationId,
-    ...(botId ? { pushBody: pushSentence(row.display_name) } : {}),
-  });
+  };
+  if (botId) {notice.pushBody = pushSentence(row.display_name);}
+  const id = await sendNotification(ctx, notice);
   return data(201, { id }, ctx.rid);
 };
 
@@ -108,8 +110,8 @@ export const runNotificationJobs = async (ctx: Ctx): Promise<Response> => {
 };
 
 export const dispatchNotificationJobs = async (ctx: Ctx, path: string): Promise<Response | null> => {
-  if (ctx.request.method !== "POST") return null;
-  if (path === "/api/v1/internal/notifications/ai-done") return recordAiDone(ctx);
-  if (path === "/api/v1/internal/notifications/run") return runNotificationJobs(ctx);
+  if (ctx.request.method !== "POST") {return null;}
+  if (path === "/api/v1/internal/notifications/ai-done") {return recordAiDone(ctx);}
+  if (path === "/api/v1/internal/notifications/run") {return runNotificationJobs(ctx);}
   return null;
 };

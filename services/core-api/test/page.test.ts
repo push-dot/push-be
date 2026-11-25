@@ -8,9 +8,9 @@ import { encodeCursor } from "../src/time.ts";
 const pageError = (url: string): HttpError => {
   try {
     pageOf(new URL(url));
-  } catch (err) {
-    if (err instanceof HttpError) return err;
-    throw err;
+  } catch (error) {
+    if (error instanceof HttpError) {return error;}
+    throw error;
   }
   throw new Error("expected a validation error");
 };

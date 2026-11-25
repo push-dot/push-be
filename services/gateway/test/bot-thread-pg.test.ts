@@ -5,8 +5,15 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
 import { METHODS, specRoutes } from "../../../packages/contracts/drift.ts";
-import { handle, resetLimits, type Deps, type FrontEnv } from "../src/handler.ts";
+import { handle, resetLimits } from '../src/handler.ts';
+import type { Deps, FrontEnv } from '../src/handler.ts';
 import { sha256Hex } from "../src/http.ts";
+
+const jsonOf = <T>(res: Response): Promise<T> => res.json();
+const parseAs = <T>(text: string): T => {
+  const parsed: T = JSON.parse(text);
+  return parsed;
+};
 
 const URL_ = process.env.BILLING_PG_URL;
 const SKIP = "set BILLING_PG_URL to a migrated Postgres";
@@ -20,7 +27,7 @@ const world = async (url: string) => {
   const { botsPg } = await import("../../core-api/test-support/bots-pg.ts");
   const core = await import("../../core-api/src/handler.ts");
   const db = await botsPg(url);
-  const forwarded: string[] = [];
+  const forwarded: Array<string> = [];
   const query: Deps["query"] = async (sql, params) => (await db.pg.query(sql, params)).rows;
   const probe = (owner: string) => async (request: Request | string | URL): Promise<Response> => {
     forwarded.push(`${owner} ${request instanceof Request ? request.url : String(request)}`);
@@ -40,28 +47,27 @@ const world = async (url: string) => {
           { query: db.pg.query, transaction: db.pg.transaction, now: () => new Date() }),
       },
     };
-    const deps: Deps = { query, sleep: options.sleep ?? (async () => {}), fetch: probe("ai") as typeof fetch };
+    const deps: Deps = { query, sleep: options.sleep ?? (async () => {}), fetch: probe("ai") };
     return (method: string, path: string, body?: unknown, token: string | null = "dev"): Promise<Response> => {
       resetLimits();
+      const headers = new Headers({ "content-type": "application/json" });
+      if (token) {headers.set("authorization", `Bearer ${token}`);}
+      if (method === "POST") {headers.set("idempotency-key", crypto.randomUUID());}
       return handle(new Request(BASE + path, {
         method,
-        headers: {
-          ...(token ? { authorization: `Bearer ${token}` } : {}),
-          "content-type": "application/json",
-          ...(method === "POST" ? { "idempotency-key": crypto.randomUUID() } : {}),
-        },
+        headers,
         body: body === undefined ? undefined : JSON.stringify(body),
       }), env, deps);
     };
   };
 
-  const rows = async (sql: string, params: unknown[]): Promise<Record<string, unknown>[]> => (await db.pg.query(sql, params)).rows;
+  const rows = async (sql: string, params: Array<unknown>) => (await db.pg.query(sql, params)).rows;
 
   /** A user with a company bot whose thread holds one queued send, and a conversation that is no bot's. */
   const seeded = async (company: string) => {
     const user = await db.person("PRO");
     const call = as(user);
-    const bot = await (await call("POST", "/bots", { postingId: await db.posting(company) })).json() as { data: { id: string } };
+    const bot = await jsonOf<{ data: { id: string } }>(await call("POST", "/bots", { postingId: await db.posting(company) }));
     const sent = await call("POST", `/bots/${bot.data.id}/messages/stream`, { text: `${company}에 맞춰 줘` });
     const [thread] = await rows("SELECT c.id, j.id AS job FROM conversations c JOIN ai_jobs j ON j.conversation_id = c.id WHERE c.bot_id = $1::uuid", [bot.data.id]);
     const plain = crypto.randomUUID();
@@ -73,27 +79,32 @@ const world = async (url: string) => {
 };
 
 let w: World | undefined;
-before(async () => { if (URL_) w = await world(URL_); });
+before(async () => { if (URL_) {w = await world(URL_);} });
 after(async () => { await w?.db.close(); });
 
-const framesOf = (text: string): Record<string, unknown>[] => text.split("\n\n")
+type Frame = Awaited<ReturnType<World["rows"]>>[number];
+
+const framesOf = (text: string): Array<Frame> => text.split("\n\n")
   .map((block) => block.split("\n").find((line) => line.startsWith("data: ")))
   .filter((line): line is string => line !== undefined)
-  .map((line) => JSON.parse(line.slice("data: ".length)) as Record<string, unknown>);
+  .map((line) => parseAs<Frame>(line.slice("data: ".length)));
 
 const TS = (column: string): string => `to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
 
-const emit = (world: World, job: string, events: [type: string, payload: unknown][]): Promise<unknown> => world.db.pg.query(
-  "INSERT INTO chat_events (job_id, type, payload) SELECT $1::uuid, e->>0, e->1 FROM jsonb_array_elements($2::jsonb) e",
-  [job, JSON.stringify(events)]);
+const emit = async (world: World, job: string, events: Array<[type: string, payload: unknown]>): Promise<void> => {
+  await world.db.pg.query(
+    "INSERT INTO chat_events (job_id, type, payload) SELECT $1::uuid, e->>0, e->1 FROM jsonb_array_elements($2::jsonb) e",
+    [job, JSON.stringify(events)]);
+};
+
+const idsOf = async (res: Response): Promise<Array<string>> => {
+  assert.equal(res.status, 200);
+  return ((await jsonOf<{ data: Array<{ id: string }> }>(res))).data.map((item) => item.id);
+};
 
 test("a bot's thread is not in the conversation list, by either way the list is read", async (t) => {
-  if (!w) return t.skip(SKIP);
+  if (!w) {return t.skip(SKIP);}
   const { user, call, plain } = await w.seeded("List");
-  const idsOf = async (res: Response): Promise<string[]> => {
-    assert.equal(res.status, 200);
-    return ((await res.json()) as { data: { id: string }[] }).data.map((item) => item.id);
-  };
   assert.deepEqual(await idsOf(await call("GET", "/conversations")), [plain]);
   assert.deepEqual(await idsOf(await call("GET", `/conversations?q=${encodeURIComponent("맞춰")}`)), [], "nor found by its text");
 
@@ -103,7 +114,7 @@ test("a bot's thread is not in the conversation list, by either way the list is 
   await w.db.pg.query(
     "INSERT INTO access_tokens (id, user_id, token_hash, refresh_token_id, expires_at) VALUES ($1::uuid, $2::uuid, $3, $4::uuid, now() + interval '1 hour')",
     [crypto.randomUUID(), user.id, await sha256Hex(token), refresh]);
-  const statements: string[] = [];
+  const statements: Array<string> = [];
   resetLimits();
   const listed = await handle(new Request(BASE + "/conversations", { headers: { authorization: `Bearer ${token}` } }),
     { APP_ENV: "production" },
@@ -116,39 +127,39 @@ test("a bot's thread is not in the conversation list, by either way the list is 
 
 const CONVERSATION_ROUTES = specRoutes.filter((route) => route.template.startsWith("/api/v1/conversations/{id}"));
 const pathFor = (template: string, id: string): string =>
-  template.replace("/api/v1", "").replace("{id}", id).replace(/\{\w+\}/g, SAMPLE_ID);
+  template.replace("/api/v1", "").replace("{id}", id).replaceAll(/\{\w+\}/g, SAMPLE_ID);
 
 test("no route under /conversations/{id} answers for a bot's thread, and each still answers for a conversation", async (t) => {
-  if (!w) return t.skip(SKIP);
+  if (!w) {return t.skip(SKIP);}
   const { user, thread, plain } = await w.seeded("Guard");
   const call = w.as(user, { coreProbe: true });
   assert.ok(CONVERSATION_ROUTES.length >= 14, "the routes come from openapi.json");
 
-  const answered: string[] = [];
+  const answered: Array<string> = [];
   w.forwarded.length = 0;
   for (const template of new Set(CONVERSATION_ROUTES.map((route) => route.template))) {
     for (const method of METHODS) {
       const body = method === "GET" || method === "DELETE" ? undefined : {};
       for (const token of ["dev", null]) {
         const res = await call(method, pathFor(template, thread), body, token);
-        const code = res.status === 404 ? ((await res.json()) as { error: { code: string } }).error.code : String(res.status);
-        if (code !== "NOT_FOUND") answered.push(`${method} ${template} ${token ?? "no token"}: ${code}`);
+        const code = res.status === 404 ? ((await jsonOf<{ error: { code: string } }>(res))).error.code : String(res.status);
+        if (code !== "NOT_FOUND") {answered.push(`${method} ${template} ${token ?? "no token"}: ${code}`);}
       }
     }
   }
   assert.deepEqual(answered, []);
   assert.deepEqual(w.forwarded, [], "nothing reached core or the AI service");
 
-  const hidden: string[] = [];
+  const hidden: Array<string> = [];
   for (const route of CONVERSATION_ROUTES) {
     const res = await call(route.method, pathFor(route.template, plain), route.method === "GET" || route.method === "DELETE" ? undefined : {});
-    if (res.status === 404) hidden.push(`${route.method} ${route.template}`);
+    if (res.status === 404) {hidden.push(`${route.method} ${route.template}`);}
   }
   assert.deepEqual(hidden, []);
 });
 
 test("only the spellings of an id the gateway can read reach a route", async (t) => {
-  if (!w) return t.skip(SKIP);
+  if (!w) {return t.skip(SKIP);}
   const { user, thread, plain } = await w.seeded("Spell");
   const call = w.as(user, { coreProbe: true });
   const compact = thread.replaceAll("-", "");
@@ -168,7 +179,7 @@ test("only the spellings of an id the gateway can read reach a route", async (t)
 });
 
 test("a send streams the queued run by bot, and a follow resumes after a seq without the rows that have no phase", async (t) => {
-  if (!w) return t.skip(SKIP);
+  if (!w) {return t.skip(SKIP);}
   const { call, botId, thread, job, sent } = await w.seeded("Stream");
   assert.deepEqual([sent.status, sent.headers.get("content-type")], [200, "text/event-stream"]);
   const [queued] = await w.rows(
@@ -208,9 +219,9 @@ test("a send streams the queued run by bot, and a follow resumes after a seq wit
 });
 
 test("a stop while a document flow is active ends the stream with one cancelled that is resumable", async (t) => {
-  if (!w) return t.skip(SKIP);
+  if (!w) {return t.skip(SKIP);}
   const { user, botId, thread, job } = await w.seeded("Cancel");
-  const call = w.as(user, { polls: 200, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, Math.min(ms, 20))) });
+  const call = w.as(user, { polls: 200, sleep: (ms) => new Promise((resolve) => { setTimeout(resolve, Math.min(ms, 20)); }) });
   await w.db.pg.query("UPDATE conversations SET resume_state = '{\"status\":\"active\"}' WHERE id = $1::uuid", [thread]);
   await w.db.pg.query("UPDATE ai_jobs SET status = 'RUNNING' WHERE id = $1::uuid", [job]);
   const open = await call("GET", `/bots/${botId}/stream`);
@@ -224,15 +235,15 @@ test("a stop while a document flow is active ends the stream with one cancelled 
   assert.equal(frames.at(-1)?.type, "cancelled", "the stream closed on it");
   assert.deepEqual(await w.rows("SELECT payload FROM chat_events WHERE job_id = $1::uuid AND type = 'cancelled'", [job]), [{ payload: { resumable: true } }]);
   const again = await call("POST", `/bots/${botId}/stream/cancel`);
-  assert.deepEqual([again.status, ((await again.json()) as { error: { code: string } }).error.code], [409, "CONFLICT"]);
+  assert.deepEqual([again.status, ((await jsonOf<{ error: { code: string } }>(again))).error.code], [409, "CONFLICT"]);
 });
 
 test("a bot with nothing running, the Push Bot before its first use, and a bot of another user", async (t) => {
-  if (!w) return t.skip(SKIP);
+  if (!w) {return t.skip(SKIP);}
   const user = await w.db.person("PRO");
   const call = w.as(user);
-  const bot = await (await call("POST", "/bots", { postingId: await w.db.posting("Idle") })).json() as { data: { id: string } };
-  const statuses = async (id: string, as_ = call): Promise<number[]> =>
+  const bot = await jsonOf<{ data: { id: string } }>(await call("POST", "/bots", { postingId: await w.db.posting("Idle") }));
+  const statuses = async (id: string, as_ = call): Promise<Array<number>> =>
     [(await as_("GET", `/bots/${id}/stream`)).status, (await as_("POST", `/bots/${id}/stream/cancel`)).status];
 
   assert.deepEqual(await statuses(bot.data.id), [204, 409], "a bot with no thread");
@@ -249,33 +260,33 @@ test("a bot with nothing running, the Push Bot before its first use, and a bot o
 const BOT_ROUTES = specRoutes.filter((route) => route.template.startsWith("/api/v1/bots"));
 
 test("no body of a bot route and no frame of its streams holds the thread's id", async (t) => {
-  if (!w) return t.skip(SKIP);
+  if (!w) {return t.skip(SKIP);}
   const { call, botId, thread, sent } = await w.seeded("Leak");
   const card = crypto.randomUUID();
   await w.db.pg.query(
     `INSERT INTO approvals (id, user_id, kind, target_id, payload_hash, status, conversation_id, title, options, tool_name, tool_args)
      SELECT $1::uuid, user_id, 'TOOL_ACTION', $1::uuid, 'h', 'PENDING', id, '지원할까요?', '[{"id":"approve","label":"지원"}]', 'apply_to_posting', '{}'
      FROM conversations WHERE id = $2::uuid`, [card, thread]);
-  const bodies: Record<string, unknown> = {
-    "POST /api/v1/bots": { postingId: await w.db.posting("Leak two") },
-    "POST /api/v1/bots/link-preview": { url: "https://jobs.example/1" },
-    "PATCH /api/v1/bots/{id}": { expectedRevision: 1, notificationsMuted: true },
-    "POST /api/v1/bots/{id}/messages/stream": { text: "한 번 더" },
-    "POST /api/v1/bots/{id}/approvals/{approvalId}": { optionId: "approve" },
-  };
+  const bodies = new Map<string, unknown>([
+    ["POST /api/v1/bots", { postingId: await w.db.posting("Leak two") }],
+    ["POST /api/v1/bots/link-preview", { url: "https://jobs.example/1" }],
+    ["PATCH /api/v1/bots/{id}", { expectedRevision: 1, notificationsMuted: true }],
+    ["POST /api/v1/bots/{id}/messages/stream", { text: "한 번 더" }],
+    ["POST /api/v1/bots/{id}/approvals/{approvalId}", { optionId: "approve" }],
+  ]);
   // Deletes go last: they end the thread the other routes answer for.
   const ordered = [...BOT_ROUTES].sort((a, b) => Number(a.method === "DELETE") - Number(b.method === "DELETE"));
   const seen = [`${sent.status} send\n${await sent.text()}`];
 
   for (const route of ordered) {
     const key = `${route.method} ${route.template}`;
-    const path = route.template.replace("/api/v1", "").replace("{id}", botId).replace("{approvalId}", card).replace(/\{\w+\}/g, SAMPLE_ID);
+    const path = route.template.replace("/api/v1", "").replace("{id}", botId).replace("{approvalId}", card).replaceAll(/\{\w+\}/g, SAMPLE_ID);
     const query = route.template.endsWith("/matches") ? `?q=${encodeURIComponent("맞춰")}` : "";
-    const res = await call(route.method, path + query, bodies[key] ?? (route.method === "GET" || route.method === "DELETE" ? undefined : {}));
+    const res = await call(route.method, path + query, bodies.get(key) ?? (route.method === "GET" || route.method === "DELETE" ? undefined : {}));
     seen.push(`${res.status} ${key}\n${await res.text()}`);
   }
 
   assert.ok(seen.length > 10 && seen.some((entry) => entry.startsWith("200 GET /api/v1/bots/{id}/transcript/matches")));
-  assert.deepEqual(seen.filter((entry) => entry.includes(thread)).map((entry) => entry.split("\n")[0]), []);
+  assert.deepEqual(seen.flatMap((entry) => (entry.includes(thread) ? [entry.split("\n")[0]] : [])), []);
   assert.ok(seen.join("\n").includes(botId), "the bodies were read");
 });

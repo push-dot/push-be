@@ -1,5 +1,6 @@
 import { parseTimeField, strictBody } from "../body.ts";
 import { one, query } from "../db.ts";
+import type { Row } from "../db.ts";
 import { HttpError, data, fieldError, pageBody, parseUuid, requireUuid } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
@@ -8,7 +9,6 @@ import { validTz } from "./calendar.ts";
 const COLS = "id, user_id, revision, application_id, title, scheduled_at, duration_minutes, event_id, evidence_ids, company_sources, notes, reflection, created_at, updated_at";
 const EVENT_COLS = "id, user_id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, created_at, updated_at";
 
-type Row = Record<string, unknown>;
 type CompanySource = { sourceUrl: string; sourceText: string; accessedAt: string | null };
 
 const notFound = (): HttpError => new HttpError(404, "NOT_FOUND", "resource not found");
@@ -16,7 +16,7 @@ const invalidBody = (): HttpError => new HttpError(400, "VALIDATION_ERROR", "inv
 const len = (value: string): number => Array.from(value).length;
 
 const sourceOut = (value: unknown): CompanySource => {
-  const s = (value && typeof value === "object" ? value : {}) as Row;
+  const s: Row = value && typeof value === "object" ? Object.fromEntries(Object.entries(value)) : {};
   return {
     sourceUrl: String(s.sourceUrl ?? s.source_url ?? ""),
     sourceText: String(s.sourceText ?? s.source_text ?? ""),
@@ -24,14 +24,14 @@ const sourceOut = (value: unknown): CompanySource => {
   };
 };
 
-const interviewDto = (row: Row): Row => ({
+const interviewDto = (row: Row) => ({
   id: String(row.id),
   revision: Number(row.revision),
   applicationId: String(row.application_id),
   title: String(row.title),
   scheduledAt: ts(row.scheduled_at),
-  durationMinutes: row.duration_minutes == null ? null : Number(row.duration_minutes),
-  eventId: row.event_id == null ? null : String(row.event_id),
+  durationMinutes: (row.duration_minutes === null || row.duration_minutes === undefined) ? null : Number(row.duration_minutes),
+  eventId: (row.event_id === null || row.event_id === undefined) ? null : String(row.event_id),
   evidenceIds: Array.isArray(row.evidence_ids) ? row.evidence_ids.map(String) : [],
   companySources: Array.isArray(row.company_sources) ? row.company_sources.map(sourceOut) : [],
   notes: String(row.notes ?? ""),
@@ -41,15 +41,16 @@ const interviewDto = (row: Row): Row => ({
 });
 
 /** `CompanySourceReq` (strict, no extra keys) plus the router's `accessedAt` parse. */
-const companySources = (value: unknown): CompanySource[] => {
-  if (!Array.isArray(value)) throw invalidBody();
-  const parsed = value.map((item) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) throw invalidBody();
-    const entry = item as Row;
+const companySources = (value: unknown): Array<CompanySource> => {
+  if (!Array.isArray(value)) {throw invalidBody();}
+  const parsed = value.map((item: unknown) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {throw invalidBody();}
+    const entry: Row = Object.fromEntries(Object.entries(item));
     const keys = Object.keys(entry);
-    if (keys.some((key) => !["sourceUrl", "sourceText", "accessedAt"].includes(key))) throw invalidBody();
-    if (typeof entry.sourceUrl !== "string" || typeof entry.sourceText !== "string" || typeof entry.accessedAt !== "string") throw invalidBody();
-    return entry as { sourceUrl: string; sourceText: string; accessedAt: string };
+    if (keys.some((key) => !["sourceUrl", "sourceText", "accessedAt"].includes(key))) {throw invalidBody();}
+    const { sourceUrl, sourceText, accessedAt } = entry;
+    if (typeof sourceUrl !== "string" || typeof sourceText !== "string" || typeof accessedAt !== "string") {throw invalidBody();}
+    return { sourceUrl, sourceText, accessedAt };
   });
   return parsed.map((entry) => ({
     sourceUrl: entry.sourceUrl,
@@ -67,18 +68,18 @@ const httpUrl = (value: string): boolean => {
   }
 };
 
-const validateSources = (sources: CompanySource[], now: Date): void => {
-  if (sources.length > 10) throw fieldError("companySources", "at most 10 sources");
+const validateSources = (sources: Array<CompanySource>, now: Date): void => {
+  if (sources.length > 10) {throw fieldError("companySources", "at most 10 sources");}
   for (const source of sources) {
-    if (!httpUrl(source.sourceUrl)) throw fieldError("companySources", "sourceUrl must be http(s)");
-    if (len(source.sourceText) < 1 || len(source.sourceText) > 20000) throw fieldError("companySources", "sourceText must be 1-20000 characters");
-    if (Date.parse(String(source.accessedAt)) > now.getTime()) throw fieldError("companySources", "accessedAt cannot be in the future");
+    if (!httpUrl(source.sourceUrl)) {throw fieldError("companySources", "sourceUrl must be http(s)");}
+    if (len(source.sourceText) < 1 || len(source.sourceText) > 20_000) {throw fieldError("companySources", "sourceText must be 1-20000 characters");}
+    if (Date.parse(String(source.accessedAt)) > now.getTime()) {throw fieldError("companySources", "accessedAt cannot be in the future");}
   }
 };
 
 const queryTime = (ctx: Ctx, name: string): string | null => {
   const raw = ctx.url.searchParams.get(name);
-  if (!raw) return null;
+  if (!raw) {return null;}
   return parseTimeField(raw, name);
 };
 
@@ -87,15 +88,15 @@ export const listInterviews = async (ctx: Ctx): Promise<Response> => {
   let applicationId: string | null = null;
   if (appRaw) {
     applicationId = parseUuid(appRaw);
-    if (!applicationId) throw fieldError("applicationId", "must be a UUID");
+    if (!applicationId) {throw fieldError("applicationId", "must be a UUID");}
   }
   const from = queryTime(ctx, "from");
   const to = queryTime(ctx, "to");
   const page = pageOf(ctx.url);
-  const params: unknown[] = [ctx.user.id];
+  const params: Array<unknown> = [ctx.user.id];
   const where = ["user_id = $1"];
   for (const [value, clause] of [[applicationId, "application_id ="], [from, "scheduled_at >="], [to, "scheduled_at <="]] as const) {
-    if (value === null) continue;
+    if (value === null) {continue;}
     params.push(value);
     where.push(`${clause} $${params.length}`);
   }
@@ -112,7 +113,7 @@ export const listInterviews = async (ctx: Ctx): Promise<Response> => {
 
 const loadInterview = async (ctx: Ctx, id: string): Promise<Row> => {
   const row = await one(ctx.deps.query, `SELECT ${COLS} FROM interviews WHERE id = $1 AND user_id = $2`, [id, ctx.user.id]);
-  if (!row) throw notFound();
+  if (!row) {throw notFound();}
   return row;
 };
 
@@ -133,26 +134,26 @@ export const createInterview = async (ctx: Ctx): Promise<Response> => {
   const scheduledAt = parseTimeField(values.scheduledAt, "scheduledAt");
   const sources = values.companySources === undefined ? [] : companySources(values.companySources);
   const title = String(values.title);
-  if (len(title) < 1 || len(title) > 300) throw fieldError("title", "title must be 1-300 characters");
+  if (len(title) < 1 || len(title) > 300) {throw fieldError("title", "title must be 1-300 characters");}
   validateSources(sources, ctx.now);
   const applicationId = String(values.applicationId);
   const app = await one(ctx.deps.query, "SELECT id FROM applications WHERE id = $1 AND user_id = $2", [applicationId, ctx.user.id]);
-  if (!app) throw notFound();
-  const evidenceIds = (values.evidenceIds as string[] | undefined) ?? [];
+  if (!app) {throw notFound();}
+  const evidenceIds = Array.isArray(values.evidenceIds) ? values.evidenceIds.map(String) : [];
   if (evidenceIds.length) {
     const found = await query(ctx.deps.query,
       "SELECT id FROM career_evidence WHERE user_id = $1 AND id IN (SELECT jsonb_array_elements_text($2::jsonb)::uuid)",
       [ctx.user.id, JSON.stringify(evidenceIds)]);
     const owned = new Set(found.rows.map((row) => String(row.id)));
     const missing = evidenceIds.find((eid) => !owned.has(eid));
-    if (missing) throw fieldError("evidenceIds", "evidence " + missing + " not found");
+    if (missing) {throw fieldError("evidenceIds", "evidence " + missing + " not found");}
   }
   const tz = String(values.timeZone) || "UTC";
-  if (!validTz(tz)) throw fieldError("timeZone", "invalid IANA time zone");
-  const duration = values.durationMinutes == null ? null : Number(values.durationMinutes);
+  if (!validTz(tz)) {throw fieldError("timeZone", "invalid IANA time zone");}
+  const duration = (values.durationMinutes === null || values.durationMinutes === undefined) ? null : Number(values.durationMinutes);
   const notes = String(values.notes ?? "");
   const now = ts(ctx.now);
-  const row: Row = {
+  const row = {
     id: crypto.randomUUID(), revision: 1, application_id: applicationId, title, scheduled_at: scheduledAt,
     duration_minutes: duration, event_id: crypto.randomUUID(), evidence_ids: evidenceIds, company_sources: sources,
     notes, reflection: "", created_at: now, updated_at: now,
@@ -177,28 +178,28 @@ export const patchInterview = async (ctx: Ctx, idRaw: string): Promise<Response>
     notes: { kind: "str", nullable: true },
     reflection: { kind: "str", nullable: true },
   });
-  const scheduledAt = values.scheduledAt == null ? null : parseTimeField(values.scheduledAt, "scheduledAt");
-  const sources = values.companySources == null ? null : companySources(values.companySources);
+  const scheduledAt = (values.scheduledAt === null || values.scheduledAt === undefined) ? null : parseTimeField(values.scheduledAt, "scheduledAt");
+  const sources = (values.companySources === null || values.companySources === undefined) ? null : companySources(values.companySources);
   const expected = Number(values.expectedRevision);
   const row = await loadInterview(ctx, id);
   if (Number(row.revision) !== expected) {
     throw new HttpError(409, "REVISION_CONFLICT", "resource was modified", { currentRevision: Number(row.revision) });
   }
-  if (values.title != null) {
+  if ((values.title !== null && values.title !== undefined)) {
     const title = String(values.title);
-    if (len(title) < 1 || len(title) > 300) throw fieldError("title", "title must be 1-300 characters");
+    if (len(title) < 1 || len(title) > 300) {throw fieldError("title", "title must be 1-300 characters");}
     row.title = title;
   }
-  if (scheduledAt !== null) row.scheduled_at = scheduledAt;
+  if (scheduledAt !== null) {row.scheduled_at = scheduledAt;}
   if (sources !== null) {
     validateSources(sources, ctx.now);
     row.company_sources = sources;
   }
-  if (values.notes != null) row.notes = values.notes;
-  if (values.reflection != null) row.reflection = values.reflection;
+  if ((values.notes !== null && values.notes !== undefined)) {row.notes = values.notes;}
+  if ((values.reflection !== null && values.reflection !== undefined)) {row.reflection = values.reflection;}
   const now = ts(ctx.now);
   row.updated_at = now;
-  const moveEvent = row.event_id != null && scheduledAt !== null;
+  const moveEvent = (row.event_id !== null && row.event_id !== undefined) && scheduledAt !== null;
   const updated = await one(ctx.deps.query,
     `WITH upd AS (UPDATE interviews SET revision = revision + 1, title = $3, scheduled_at = $4, company_sources = $5::jsonb, notes = $6, reflection = $7, updated_at = $8
        WHERE id = $1 AND user_id = $2 AND revision = $9 RETURNING id, scheduled_at, duration_minutes, event_id),
@@ -209,7 +210,7 @@ export const patchInterview = async (ctx: Ctx, idRaw: string): Promise<Response>
       row.notes, row.reflection, now, expected, moveEvent]);
   if (!updated) {
     const current = await one(ctx.deps.query, "SELECT revision FROM interviews WHERE id = $1 AND user_id = $2", [id, ctx.user.id]);
-    if (!current) throw notFound();
+    if (!current) {throw notFound();}
     throw new HttpError(409, "REVISION_CONFLICT", "resource was modified", { currentRevision: Number(current.revision) });
   }
   row.revision = expected + 1;
@@ -219,13 +220,13 @@ export const patchInterview = async (ctx: Ctx, idRaw: string): Promise<Response>
 export const dispatchInterviews = async (ctx: Ctx, path: string): Promise<Response | null> => {
   const method = ctx.request.method;
   if (path === "/api/v1/interviews") {
-    if (method === "GET") return listInterviews(ctx);
-    if (method === "POST") return createInterview(ctx);
+    if (method === "GET") {return listInterviews(ctx);}
+    if (method === "POST") {return createInterview(ctx);}
     return null;
   }
   const m = path.match(/^\/api\/v1\/interviews\/([^/]+)$/);
-  if (!m) return null;
-  if (method === "GET") return getInterview(ctx, m[1]);
-  if (method === "PATCH") return patchInterview(ctx, m[1]);
+  if (!m) {return null;}
+  if (method === "GET") {return getInterview(ctx, m[1]);}
+  if (method === "PATCH") {return patchInterview(ctx, m[1]);}
   return null;
 };

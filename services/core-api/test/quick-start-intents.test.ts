@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
@@ -54,11 +55,11 @@ test("personal conversations accept quick-start intents", async () => {
       accessMode: "AUTO",
       intent,
     }), `bbbbbbbb-bbbb-4ccc-8ddd-${index.toString(16).padStart(12, "0")}`), env(), deps(async (sql, next) => {
-      if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
-      if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-      if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem" }], rowCount: 1 };
-      if (sql.includes("idempotency_keys") && sql.includes("UPDATE")) return { rows: [], rowCount: 1 };
-      if (sql.includes("user_consents")) return { rows: [{ reference_data: true }], rowCount: 1 };
+      if (sql.includes("access_tokens")) {return { rows: [authRow], rowCount: 1 };}
+      if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+      if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {return { rows: [{ id: "idem" }], rowCount: 1 };}
+      if (sql.includes("idempotency_keys") && sql.includes("UPDATE")) {return { rows: [], rowCount: 1 };}
+      if (sql.includes("user_consents")) {return { rows: [{ reference_data: true }], rowCount: 1 };}
       if (sql.includes("chat_jobs")) {
         payload = String(next?.[3]);
         return { rows: [{ id: "job-1" }], rowCount: 1 };
@@ -80,13 +81,13 @@ test("an unknown intent is rejected", async () => {
     accessMode: "AUTO",
     intent: "nope",
   }), "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeee20"), env(), deps(async (sql) => {
-    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem" }], rowCount: 1 };
+    if (sql.includes("access_tokens")) {return { rows: [authRow], rowCount: 1 };}
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {return { rows: [{ id: "idem" }], rowCount: 1 };}
     return { rows: [], rowCount: 0 };
   }));
   assert.equal(res.status, 400);
-  const body = await res.json() as { error: { message: string; details?: { field?: string } } };
+  const body: { error: { message: string; details?: { field?: string } } } = await res.json();
   assert.equal(body.error.message, "unsupported intent");
   assert.equal(body.error.details?.field, "intent");
 });
@@ -99,10 +100,10 @@ test("a company conversation rejects a personal quick-start intent", async () =>
     accessMode: "AUTO",
     intent: "match_posting",
   }), "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeee21"), env(), deps(async (sql) => {
-    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem" }], rowCount: 1 };
-    if (sql.includes("idempotency_keys") && sql.includes("UPDATE")) return { rows: [], rowCount: 1 };
+    if (sql.includes("access_tokens")) {return { rows: [authRow], rowCount: 1 };}
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {return { rows: [{ id: "idem" }], rowCount: 1 };}
+    if (sql.includes("idempotency_keys") && sql.includes("UPDATE")) {return { rows: [], rowCount: 1 };}
     if (sql.includes("chat_jobs")) {
       queued = true;
       return { rows: [{ id: "job-1" }], rowCount: 1 };

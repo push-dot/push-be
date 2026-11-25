@@ -83,6 +83,11 @@ async def test_ultra_reviews_an_attached_pdf_and_keeps_it_in_the_conversation():
     out = await _review("ULTRA", store).ainvoke(dict(STATE))
     assert out["flow"]["status"] == "done"
     assert store.saved == [("co-1", "conv-1", None, "외부지원자_이력서.pdf")]
+    # External PDFs end at the report: the fixed final reply has no next step.
+    assert out["flow"]["reply"] == (
+        "만든 것\n• 요건 1개를 서류와 맞춰 봤어요\n• 면접에서 확인할 곳 1곳을 짚었어요\n\n"
+        "대신 정한 것\n• 비교할 참고 서류가 충분하지 않아 다른 서류와 비교하지 않았어요"
+    )
 
 
 async def test_pdf_review_is_ultra_only():

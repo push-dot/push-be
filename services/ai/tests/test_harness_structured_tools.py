@@ -14,6 +14,9 @@ _RESUME_TIERS = {
     "parse_attachment": Tier.READ,
     "fetch_url": Tier.READ,
     "explore_github": Tier.READ,
+    "read_github": Tier.READ,
+    "open_page": Tier.READ,
+    "research_company": Tier.READ,
     "get_posting": Tier.READ,
     "compute_fit": Tier.READ,
     "save_artifact": Tier.SAFE_WRITE,
@@ -30,7 +33,7 @@ def test_every_tool_keeps_its_tier():
     from app.harness.tools import to_structured_tool
 
     groups = (
-        (PERSONAL_TOOLS, PERSONAL_TIERS),
+        (PERSONAL_TOOLS, {**PERSONAL_TIERS, "read_sources": Tier.READ}),
         (EMPLOYER_TOOLS, EMPLOYER_TIERS),
         (RESUME_TOOLS, _RESUME_TIERS),
     )

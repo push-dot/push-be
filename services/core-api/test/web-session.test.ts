@@ -3,6 +3,11 @@ import { test } from "node:test";
 
 import { giveRefreshCookie, takeRefreshCookie } from "../src/web-session.ts";
 
+const jsonOf = async <T>(res: Response): Promise<T> => {
+  const value: T = await res.json();
+  return value;
+};
+
 const post = (path: string, body: unknown, headers: Record<string, string> = {}): Request =>
   new Request("https://core.example" + path, {
     method: "POST",
@@ -18,7 +23,7 @@ const session = (): Response =>
 test("a web login keeps the refresh token out of the body and in an HttpOnly cookie", async () => {
   const res = await giveRefreshCookie(post("/api/v1/auth/email/login", {}, { "x-csrf": "1" }), session());
 
-  const body = await res.json() as { data: Record<string, unknown> };
+  const body = await jsonOf<{ data: { refreshToken?: string; accessToken?: string } }>(res);
   assert.equal(body.data.refreshToken, undefined);
   assert.equal(body.data.accessToken, "a");
   assert.equal(res.headers.get("content-length"), String(JSON.stringify(body).length));
@@ -32,7 +37,7 @@ test("a web login keeps the refresh token out of the body and in an HttpOnly coo
 test("a client without the header (the mobile app) still gets the token in the body and no cookie", async () => {
   const res = await giveRefreshCookie(post("/api/v1/auth/email/login", {}), session());
 
-  assert.equal(((await res.json()) as { data: { refreshToken: string } }).data.refreshToken, "r-1");
+  assert.equal(((await jsonOf<{ data: { refreshToken: string } }>(res))).data.refreshToken, "r-1");
   assert.equal(res.headers.get("set-cookie"), null);
 });
 
@@ -74,6 +79,6 @@ test("a refused refresh and a logout clear the cookie", async () => {
   const refused = await giveRefreshCookie(post("/api/v1/auth/refresh", {}, { "x-csrf": "1" }), new Response("{}", { status: 401 }));
   const out = await giveRefreshCookie(post("/api/v1/auth/logout", {}, { "x-csrf": "1" }), new Response(null, { status: 204 }));
 
-  for (const res of [refused, out]) assert.match(res.headers.get("set-cookie") ?? "", /^push_rt=; Max-Age=0; Path=\/api\/v1\/auth/);
+  for (const res of [refused, out]) {assert.match(res.headers.get("set-cookie") ?? "", /^push_rt=; Max-Age=0; Path=\/api\/v1\/auth/);}
   assert.equal(out.status, 204);
 });

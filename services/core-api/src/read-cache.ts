@@ -6,17 +6,17 @@ export const READ_CACHE_TTL_MS = 60_000;
 export const READ_CACHE_MAX_ENTRIES = 128;
 const MAX_KEY_LENGTH = 4096;
 
-export class ReadCache {
-  private readonly entries = new Map<string, { value: unknown; expiresAt: number }>();
+export class ReadCache<T> {
+  private readonly entries = new Map<string, { value: T; expiresAt: number }>();
 
   get size(): number {
     return this.entries.size;
   }
 
-  async get<T>(key: string, nowMs: number, load: () => Promise<T>): Promise<T> {
-    if (key.length > MAX_KEY_LENGTH) return load();
+  async get(key: string, nowMs: number, load: () => Promise<T>): Promise<T> {
+    if (key.length > MAX_KEY_LENGTH) {return load();}
     const hit = this.entries.get(key);
-    if (hit && hit.expiresAt > nowMs) return hit.value as T;
+    if (hit && hit.expiresAt > nowMs) {return hit.value;}
     const value = await load();
     this.store(key, value, nowMs);
     return value;
@@ -26,16 +26,16 @@ export class ReadCache {
     this.entries.clear();
   }
 
-  private store(key: string, value: unknown, nowMs: number): void {
+  private store(key: string, value: T, nowMs: number): void {
     this.entries.delete(key);
-    if (this.entries.size >= READ_CACHE_MAX_ENTRIES) this.sweep(nowMs);
+    if (this.entries.size >= READ_CACHE_MAX_ENTRIES) {this.sweep(nowMs);}
     this.entries.set(key, { value, expiresAt: nowMs + READ_CACHE_TTL_MS });
   }
 
   private sweep(nowMs: number): void {
-    for (const [key, entry] of this.entries) if (entry.expiresAt <= nowMs) this.entries.delete(key);
-    if (this.entries.size < READ_CACHE_MAX_ENTRIES) return;
+    for (const [key, entry] of this.entries) {if (entry.expiresAt <= nowMs) {this.entries.delete(key);}}
+    if (this.entries.size < READ_CACHE_MAX_ENTRIES) {return;}
     const oldest = this.entries.keys().next().value;
-    if (oldest !== undefined) this.entries.delete(oldest);
+    if (oldest !== undefined) {this.entries.delete(oldest);}
   }
 }

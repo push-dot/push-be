@@ -69,8 +69,8 @@ test("project routes go to core except AI blueprints and verification", () => {
 test("google integration routes go to core", () => {
   assert.equal(ownerOf("GET", "/api/v1/integrations/google"), "core");
   assert.equal(ownerOf("DELETE", "/api/v1/integrations/google"), "core");
-  for (const step of ["connect", "complete", "sync"]) assert.equal(ownerOf("POST", `/api/v1/integrations/google/${step}`), "core");
-  for (const read of ["callback", "messages", "events"]) assert.equal(ownerOf("GET", `/api/v1/integrations/google/${read}`), "core");
+  for (const step of ["connect", "complete", "sync"]) {assert.equal(ownerOf("POST", `/api/v1/integrations/google/${step}`), "core");}
+  for (const read of ["callback", "messages", "events"]) {assert.equal(ownerOf("GET", `/api/v1/integrations/google/${read}`), "core");}
   assert.equal(ownerOf("POST", `/api/v1/integrations/google/messages/${ID}/link`), "core");
 });
 
@@ -82,7 +82,7 @@ test("document routes go to core except rendering and the AI revision proposal",
   assert.equal(ownerOf("GET", `/api/v1/documents/${ID}/versions`), "core");
   assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/versions`), "core");
   assert.equal(ownerOf("GET", `/api/v1/documents/${ID}/versions/${ID}`), "core");
-  for (const sub of ["review", "finalize", "archive", "restore"]) assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/${sub}`), "core");
+  for (const sub of ["review", "finalize", "archive", "restore"]) {assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/${sub}`), "core");}
   assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/revisions/${ID}/apply`), "core");
   assert.equal(ownerOf("GET", `/api/v1/documents/${ID}/exports`), "core");
   assert.equal(ownerOf("POST", `/api/v1/documents/${ID}/exports`), "core");

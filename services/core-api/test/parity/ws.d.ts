@@ -11,7 +11,7 @@ declare module "ws" {
     constructor(options: { port: number });
     on(event: "connection", listener: (socket: WebSocket) => void): this;
     on(event: "listening", listener: () => void): this;
-    address(): unknown;
+    address(): string | { port: number; address: string; family: string } | null;
     close(callback: () => void): void;
   }
 }

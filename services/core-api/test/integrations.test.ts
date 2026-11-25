@@ -3,6 +3,11 @@ import { test } from "node:test";
 
 import { USER, recorder } from "../test-support/recorder.ts";
 
+const parseJson = <T>(text: string): T => {
+  const value: T = JSON.parse(text);
+  return value;
+};
+
 const NOW = new Date("2026-10-21T00:00:00Z");
 const ENV = { APP_ENV: "production" };
 
@@ -16,11 +21,11 @@ test("google sync fetches gmail in parallel batches and writes every row in one 
   let peak = 0;
   const fetchImpl: typeof fetch = async (input) => {
     const url = String(input);
-    if (url.includes("/messages?")) return Response.json({ messages: ids.map((id) => ({ id })), historyId: "9" });
+    if (url.includes("/messages?")) {return Response.json({ messages: ids.map((id) => ({ id })), historyId: "9" });}
     if (url.includes("/messages/")) {
       inFlight += 1;
       peak = Math.max(peak, inFlight);
-      await new Promise((resolve) => setTimeout(resolve, 1));
+      await new Promise((resolve) => { setTimeout(resolve, 1); });
       inFlight -= 1;
       const id = decodeURIComponent(url.split("/messages/")[1].split("?")[0]);
       return Response.json({ id, threadId: "t", snippet: "s", internalDate: "1761100000000", payload: { headers: [] } });
@@ -50,7 +55,7 @@ test("google sync fetches gmail in parallel batches and writes every row in one 
   assert.ok(peak > 1 && peak <= 10, `peak concurrency ${peak}`);
   const writes = calls.filter((c) => c.sql.includes("INSERT INTO google_messages"));
   assert.equal(writes.length, 1);
-  assert.deepEqual(JSON.parse(String(writes[0].params[2])).map((m: { external_id: string }) => m.external_id), ids);
+  assert.deepEqual(parseJson<Array<{ external_id: string }>>(String(writes[0].params[2])).map((m) => m.external_id), ids);
   assert.deepEqual(JSON.parse(String(writes[0].params[3])), ["e2"]);
-  assert.deepEqual(JSON.parse(String(writes[0].params[4])).map((e: { external_id: string }) => e.external_id), ["e1"]);
+  assert.deepEqual(parseJson<Array<{ external_id: string }>>(String(writes[0].params[4])).map((e) => e.external_id), ["e1"]);
 });

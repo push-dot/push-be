@@ -76,27 +76,31 @@ def test_only_the_first_terminal_event_is_kept():
         {"type": "cancelled", "resumable": True, "seq": 2, "at": T0 + timedelta(seconds=2)}]
 
 
-def test_a_finished_turn_keeps_the_wait_and_its_card_reads_the_cards_row():
+def test_a_finished_turn_keeps_the_wait_and_its_card_is_a_surface_with_the_cards_answer():
     opened = T0 + timedelta(minutes=30)
-    card = {"resolution": {"status": "EXPIRED", "optionId": None}, "openedAt": opened,
-            "expiresAt": opened + timedelta(minutes=10), "retryable": True}
+    card = {"resolution": {"status": "REJECTED", "optionId": "reject"}, "openedAt": opened}
+    options = [{"id": "approve", "label": "실행"}, {"id": "reject", "label": "닫기"}]
     rows = [
         _status(1, "thinking"),
         _status(2, "waiting", "확인을 기다리고 있어요", **{"for": "confirm", "cardId": CARD}),
-        _row(3, "approval", {"id": CARD, "kind": "TOOL_ACTION", "title": "페이지 읽기", "options": []}),
+        _row(3, "approval", {"id": CARD, "kind": "TOOL_ACTION", "title": "페이지 읽기", "options": options}),
         _row(4, "done", {"operation": None, "awaiting": "approval"}),
     ]
     wait, approval = bot_turn_events(rows, {CARD: card}, active=False)
     assert wait["phase"] == "waiting" and wait["since"] == opened
-    assert approval == {"type": "approval", "id": CARD, "kind": "TOOL_ACTION", "title": "페이지 읽기",
-                        "options": [], **card, "seq": 3, "at": T0 + timedelta(seconds=3)}
+    assert (approval["type"], approval["kind"], approval["surfaceId"]) == ("a2ui", "approval", CARD)
+    assert (approval["seq"], approval["at"]) == (3, T0 + timedelta(seconds=3))
+    data = approval["messages"][-1]["updateDataModel"]["value"]
+    assert (data["open"], data["picked"]) == (False, ["reject"])
 
 
-def test_a_gate_the_server_answered_itself_has_no_row_and_reads_as_settled():
-    rows = [_row(1, "choice", {"id": CARD, "auto": True, "options": []})]
-    (choice,) = bot_turn_events(rows, {}, active=False)
-    assert choice["resolution"] == {"status": "APPROVED", "optionId": None}
-    assert (choice["openedAt"], choice["expiresAt"], choice["retryable"]) == (T0 + timedelta(seconds=1), None, False)
+def test_a_gate_the_server_answered_itself_draws_nothing_and_does_not_split_the_text():
+    rows = [
+        _row(1, "token", {"text": "고를게요."}),
+        _row(2, "choice", {"id": CARD, "auto": True, "options": []}),
+        _row(3, "token", {"text": "\n\n자동으로 골랐어요: 이력서\n\n"}),
+    ]
+    assert [e["type"] for e in bot_turn_events(rows, {}, active=False)] == ["token"]
 
 
 def test_compaction_of_a_200_token_turn_leaves_one_row_with_the_same_text():

@@ -8,7 +8,7 @@ export interface ModelRow {
   model: string;
   label: string;
   available: boolean;
-  supportedEfforts: string[];
+  supportedEfforts: Array<string>;
 }
 
 export const OPENAI_MODELS: Array<{ provider: string; model: string; label: string }> = [
@@ -16,16 +16,16 @@ export const OPENAI_MODELS: Array<{ provider: string; model: string; label: stri
 ];
 
 export function validProvider(value: string): boolean {
-  return (AI_PROVIDERS as readonly string[]).includes(value);
+  return (AI_PROVIDERS as ReadonlyArray<string>).includes(value);
 }
 
 export function listModels(opts: {
   provider: string;
   managedAi: boolean;
-}): ModelRow[] {
-  const models: ModelRow[] = [];
+}): Array<ModelRow> {
+  const models: Array<ModelRow> = [];
   for (const m of OPENAI_MODELS) {
-    if (opts.provider && opts.provider !== m.provider) continue;
+    if (opts.provider && opts.provider !== m.provider) {continue;}
     models.push({
       provider: m.provider,
       model: m.model,
@@ -45,7 +45,7 @@ export const JOB_SITE_CHECKLIST = [
   "Record the submission via POST /applications/:id/submission-drafts",
 ];
 
-export function jobSitesBody(): { data: unknown[] } {
+export function jobSitesBody() {
   return {
     data: ["WANTED", "JUMPIT", "JOBKOREA"].map((provider) => ({
       provider,

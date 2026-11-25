@@ -21,7 +21,7 @@ function capped(body: ReadableStream<Uint8Array>, init: RequestInit): ReadableSt
   return body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       seen += chunk.byteLength;
-      if (seen <= MAX_BODY_BYTES) return controller.enqueue(chunk);
+      if (seen <= MAX_BODY_BYTES) {return controller.enqueue(chunk);}
       overCap.add(init);
       controller.error(new Error("request body too large"));
     },
@@ -29,17 +29,17 @@ function capped(body: ReadableStream<Uint8Array>, init: RequestInit): ReadableSt
 }
 
 // Every x-push-* header is the gateway's or a worker's to set. A client copy is dropped.
-function forwardInit(request: Request, rid: string, keepActAs: boolean): RequestInit | Response {
+function forwardInit(request: Request, rid: string, keepActAs: boolean): (RequestInit & { headers: Headers }) | Response {
   if (Number(request.headers.get("content-length")) > MAX_BODY_BYTES) {
     return errorResponse(413, "PAYLOAD_TOO_LARGE", "request body too large", rid);
   }
   const headers = new Headers(request.headers);
-  for (const name of [...headers.keys()]) {
-    if (name.startsWith("x-push-") && !(keepActAs && ACT_AS.has(name))) headers.delete(name);
+  for (const name of Array.from(headers.keys())) {
+    if (name.startsWith("x-push-") && !(keepActAs && ACT_AS.has(name))) {headers.delete(name);}
   }
   headers.delete("host");
   headers.set("x-request-id", rid);
-  const init: RequestInit & { duplex?: "half" } = { method: request.method, headers, redirect: "manual" };
+  const init: RequestInit & { headers: Headers; duplex?: "half" } = { method: request.method, headers, redirect: "manual" };
   if (request.method !== "GET" && request.method !== "HEAD" && request.body) {
     // Stream the body through; buffering it let one upload exhaust isolate memory.
     init.body = capped(request.body, init);
@@ -53,11 +53,11 @@ async function relay(send: () => Promise<Response>, rid: string, init: RequestIn
   try {
     res = await send();
   } catch {
-    if (overCap.has(init)) return errorResponse(413, "PAYLOAD_TOO_LARGE", "request body too large", rid);
+    if (overCap.has(init)) {return errorResponse(413, "PAYLOAD_TOO_LARGE", "request body too large", rid);}
     return errorResponse(500, "INTERNAL", "internal error", rid);
   }
   const out = new Headers(res.headers);
-  if (!out.has("x-request-id")) out.set("x-request-id", rid);
+  if (!out.has("x-request-id")) {out.set("x-request-id", rid);}
   if (res.status === 204 || res.status === 205 || res.status === 304) {
     return new Response(null, { status: res.status, headers: out });
   }
@@ -65,9 +65,9 @@ async function relay(send: () => Promise<Response>, rid: string, init: RequestIn
 }
 
 export async function proxy(request: Request, binding: FrontEnv["CORE"] | undefined, rid: string, keepActAs = false): Promise<Response> {
-  if (!binding) return errorResponse(500, "INTERNAL", "internal error", rid);
+  if (!binding) {return errorResponse(500, "INTERNAL", "internal error", rid);}
   const init = forwardInit(request, rid, keepActAs);
-  if (init instanceof Response) return init;
+  if (init instanceof Response) {return init;}
   return relay(() => binding.fetch(new Request(request.url, init)), rid, init);
 }
 
@@ -75,27 +75,27 @@ export async function proxy(request: Request, binding: FrontEnv["CORE"] | undefi
 export async function proxyPython(request: Request, env: FrontEnv, deps: Deps, rid: string): Promise<Response> {
   const origin = (env.AI_ORIGIN || "").trim().replace(/\/$/, "");
   const secret = (env.AI_SHARED_SECRET || "").trim();
-  if (!origin) return errorResponse(500, "NOT_CONFIGURED", "ai origin is not configured", rid);
-  if (!secret || !origin.startsWith("https://")) return errorResponse(500, "INTERNAL", "internal error", rid);
+  if (!origin) {return errorResponse(500, "NOT_CONFIGURED", "ai origin is not configured", rid);}
+  if (!secret || !origin.startsWith("https://")) {return errorResponse(500, "INTERNAL", "internal error", rid);}
   const init = forwardInit(request, rid, false);
-  if (init instanceof Response) return init;
-  const outHeaders = init.headers as Headers;
+  if (init instanceof Response) {return init;}
+  const outHeaders = init.headers;
   outHeaders.set("x-push-ai-secret", secret);
   outHeaders.delete("x-forwarded-for");
   const edgeIp = request.headers.get("cf-connecting-ip")?.trim();
-  if (edgeIp) outHeaders.set("cf-connecting-ip", edgeIp);
-  else outHeaders.delete("cf-connecting-ip");
+  if (edgeIp) {outHeaders.set("cf-connecting-ip", edgeIp);}
+  else {outHeaders.delete("cf-connecting-ip");}
   const url = new URL(request.url);
   const fetchImpl = deps.fetch ?? fetch;
   // Concatenate, never resolve: ownerOf already refused `//`, so the host stays the origin's.
   return relay(() => fetchImpl(origin + url.pathname + url.search, init), rid, init);
 }
 export async function invalidateAfterWrite(request: Request, path: string, deps: Deps): Promise<void> {
-  if (path !== "/api/v1/auth/logout" && path !== "/api/v1/auth/refresh") return;
+  if (path !== "/api/v1/auth/logout" && path !== "/api/v1/auth/refresh") {return;}
   const authz = request.headers.get("authorization") || "";
-  if (!authz.startsWith("Bearer ")) return;
+  if (!authz.startsWith("Bearer ")) {return;}
   const token = authz.slice(7);
-  if (!token) return;
+  if (!token) {return;}
   try {
     const hash = await sha256Hex(token);
     isolate.dropAuth(hash);

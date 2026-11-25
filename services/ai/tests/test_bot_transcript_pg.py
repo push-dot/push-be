@@ -3,6 +3,7 @@
 CI test-db sets BILLING_PG_URL; elsewhere these tests skip.
 """
 
+import json
 import os
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -17,6 +18,7 @@ from app.domain import entities as ent
 from app.domain.errors import DomainError
 from app.infrastructure.store_chat_jobs import assistant_message_id, user_message_id
 from app.queue.admin import AdminJobs
+from tests.test_a2ui import _MULTI, _TOOL
 from tests.test_bot_turn_pg import queued_turn, run_turn
 
 asyncpg = pytest.importorskip("asyncpg")
@@ -220,5 +222,74 @@ async def test_compaction_keeps_what_a_reopened_chat_shows_and_runs_once(db):
         assert text == "".join(f"{i}," for i in range(200))
         assert await db.q().fetchval(count, fresh, "status") == 3
         assert await db.q().fetchval(count, web_job, "status") == 3
+    finally:
+        await db.q().execute("DELETE FROM users WHERE id = $1", user)
+
+
+async def test_a_card_replays_in_the_a2ui_version_the_request_names(db):
+    user = await person(db)
+    try:
+        bot, thread = await bot_with_thread(db, user)
+        rows = [("todo", {"id": "analyze", "items": [{"id": "a", "text": "공고 분석", "state": "now"}]}),
+                ("done", {"operation": None})]
+        await turn(db, user, thread, "DONE", NOW, rows, "분석해 줘")
+        http = client(db, user)
+
+        def versions(body):
+            (event,) = body["data"][0]["events"]
+            assert (event["type"], event["kind"]) == ("a2ui", "todo")
+            return {message["version"] for message in event["messages"]}
+
+        url = f"/api/v1/bots/{bot}/transcript"
+        assert versions((await http.get(url)).json()) == {"v0.9.1"}
+        assert versions((await http.get(url, headers={"A2UI-Version": "1.0"})).json()) == {"1.0"}
+        assert versions((await http.get(url, headers={"A2UI-Version": "2.0"})).json()) == {"v0.9.1"}
+    finally:
+        await db.q().execute("DELETE FROM users WHERE id = $1", user)
+
+
+async def card(db, user, thread, event, status="PENDING", option_id=None, expires_at=None) -> dict:
+    """The card event with a fresh id, and its approvals row as the harness stores it."""
+    event = {**event, "id": str(uuid4())}
+    options = json.dumps(event["options"], ensure_ascii=False)
+    await db.q().execute(
+        "INSERT INTO approvals (id, user_id, kind, target_id, payload_hash, status, conversation_id, "
+        "title, options, option_id, expires_at) VALUES ($1, $2, $3, $1, 'h', $4, $5, $6, $7::jsonb, $8, $9)",
+        UUID(event["id"]), user, event.get("kind") or "TOOL_ACTION", status, thread, event["title"],
+        options, option_id, expires_at)
+    return event
+
+
+async def test_a_card_replays_closed_with_what_the_approvals_row_says_was_picked(db):
+    user = await person(db)
+    try:
+        bot, thread = await bot_with_thread(db, user)
+        answered = await card(db, user, thread, _TOOL, "APPROVED", "approve")
+        several = await card(db, user, thread, _MULTI, "APPROVED", "resume")
+        expired = await card(db, user, thread, _TOOL, expires_at=NOW - timedelta(minutes=1))
+        pending = await card(db, user, thread, _MULTI)
+        rows = [("approval", answered), ("choice", several), ("approval", expired), ("choice", pending),
+                ("done", {"operation": None})]
+        await turn(db, user, thread, "DONE", NOW - timedelta(minutes=2), rows, "카드 보여 줘")
+        # The run that answered `several` stores every picked id on its resume.
+        resume = {"text": "", "resume": {"approvalId": several["id"], "optionId": "resume",
+                                         "optionIds": ["resume", "portfolio"]}}
+        await db.q().execute(
+            "INSERT INTO ai_jobs (id, type, queue, user_id, status, max_attempts, payload, conversation_id, "
+            "created_at, updated_at) VALUES ($1, 'chat', 'q:chat', $2, 'DONE', 3, $3::jsonb, $4, $5, $5)",
+            uuid4(), user, resume, thread, NOW - timedelta(minutes=1))
+
+        body = (await client(db, user).get(f"/api/v1/bots/{bot}/transcript")).json()
+
+        events = next(t["events"] for t in body["data"] if t["user"] and t["user"]["text"] == "카드 보여 줘")
+        assert [(e["type"], e["kind"], e["surfaceId"]) for e in events] == [
+            ("a2ui", kind, event["id"]) for kind, event in rows[:4]]
+        states = [e["messages"][2]["updateDataModel"]["value"] for e in events]
+        assert [(state["open"], state["picked"]) for state in states] == [
+            (False, ["approve"]),
+            (False, ["resume", "portfolio"]),
+            (False, []),
+            (True, []),
+        ]
     finally:
         await db.q().execute("DELETE FROM users WHERE id = $1", user)

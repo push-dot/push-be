@@ -1,0 +1,85 @@
+{
+  "type": "a2ui",
+  "kind": "choice",
+  "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+  "messages": [
+    {
+      "version": "v0.9.1",
+      "createSurface": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "catalogId": "https://push.app/a2ui/catalogs/push/v1/catalog.json"
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateComponents": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "components": [
+          {
+            "id": "root",
+            "component": "PushChoice",
+            "questions": [
+              {
+                "id": "q",
+                "title": "어떤 산출물을 만들까요?",
+                "choices": [
+                  {
+                    "id": "resume",
+                    "label": "이력서",
+                    "recommended": true
+                  },
+                  {
+                    "id": "portfolio",
+                    "label": "포트폴리오"
+                  },
+                  {
+                    "id": "cover_letter",
+                    "label": "자기소개서"
+                  }
+                ],
+                "multiple": true
+              }
+            ],
+            "answer": "pick",
+            "submit": {
+              "label": "이대로 진행"
+            },
+            "secondary": {
+              "id": "cancel",
+              "label": "닫기"
+            },
+            "open": {
+              "path": "/open"
+            },
+            "picked": {
+              "path": "/picked"
+            },
+            "selected": {
+              "path": "/selected"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateDataModel": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "path": "/",
+        "value": {
+          "open": false,
+          "picked": [
+            "resume",
+            "cover_letter"
+          ],
+          "selected": {
+            "q": []
+          }
+        }
+      }
+    }
+  ],
+  "seq": 1,
+  "at": "2026-11-23T00:00:00.000000Z",
+  "turn": "00000000-0000-4000-8000-00000000a001"
+}

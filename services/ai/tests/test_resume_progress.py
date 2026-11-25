@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from app.harness.personal.resume.progress import (
     analyze_steps,
+    company_line,
     done_summary,
     fit_card,
     github_line,
     posting_line,
     resume_line,
     todo_event,
+    verify_text,
 )
 
 _PARTS = {
@@ -42,6 +44,50 @@ def test_analyze_steps_follow_the_inputs_and_mark_late_github_added():
     steps, added = analyze_steps(inputs, {"github": {"username": "seojun-kim"}})
     assert [key for key, _label in steps] == ["resume", "github", "posting", "fit"]
     assert added == {"github"}
+
+
+def test_analyze_steps_put_company_research_before_the_posting():
+    inputs = {"github": "https://github.com/acme-labs", "posting": {"company": "토스"}}
+    steps, added = analyze_steps(inputs, company=True)
+    assert [key for key, _label in steps] == ["resume", "github", "company", "posting", "fit"]
+    assert ("company", "회사 조사") in steps
+    assert added == set()
+    assert analyze_steps({"attachments": ["a"]}, company=True) == ([("resume", "이력서 읽기")], set())
+    assert "company" not in [key for key, _label in analyze_steps(inputs)[0]]
+
+
+def test_analyze_steps_mark_company_added_when_the_posting_is_found_late():
+    steps, added = analyze_steps({}, {"jobs": [{"title": "백엔드"}]}, company=True)
+    assert [key for key, _label in steps] == ["resume", "company", "posting", "fit"]
+    assert added == {"company", "posting", "fit"}
+    todo = todo_event("analyze", steps, 1, added)
+    assert todo["items"][1] == {"id": "company", "text": "회사 조사", "state": "now", "added": True}
+
+
+_TOOL_KEYS = {"type", "name", "state", "summary", "tier", "target", "resultLine", "extra"}
+
+
+def test_company_line_lists_unique_sources():
+    line = company_line(["https://toss.im/a", "https://toss.im/a", "https://toss.tech/b"])
+    assert set(line) <= _TOOL_KEYS
+    assert (line["name"], line["state"], line["summary"]) == ("research_company", "ok", "회사 조사")
+    assert line["resultLine"] == "출처 2개"
+    assert line["extra"] == ["https://toss.im/a", "https://toss.tech/b"]
+    assert company_line([])["resultLine"] == "출처를 찾지 못했어요"
+    assert "extra" not in company_line([])
+
+
+def test_verify_text_lists_p0_first_in_polite_copy():
+    text = verify_text([
+        {"level": "P0", "rule": "unsupported_number", "detail": "40%, 1.5배"},
+        {"level": "P0", "rule": "unknown_evidence", "detail": "E3"},
+    ])
+    assert text.splitlines() == [
+        "확인이 필요한 점이 있어요.",
+        "• 출처를 찾지 못한 숫자가 있어요: 40%, 1.5배",
+        "• 근거 목록에 없는 E3을 인용했어요.",
+    ]
+    assert verify_text([]) == ""
 
 
 def test_analyze_steps_without_a_posting_only_read_the_resume():
@@ -586,3 +632,57 @@ def test_quality_diff_pairs_before_after():
             {"line": 4, "sign": "+", "text": "new"},
         ],
     }
+
+
+def test_present_message_has_fixed_parts_and_drops_empty_ones():
+    from app.harness.personal.resume.graph import present_message
+
+    view = {"drafts": {"markdown": "# 이력서", "verify_left": [
+        {"level": "P1", "rule": "x", "detail": "기타"},
+        {"level": "P0", "rule": "unknown_evidence", "detail": "E9"}]},
+        "analysis": {"stage_late": ["posting"]}, "output_targets": ["resume", "portfolio"]}
+    notes = {"assumptions": ["a1", "a2", "a3"]}
+    text = present_message(view, notes, extras=True, saved="이력서_수정본.pdf")
+    assert text.split("\n\n") == [
+        "만든 것\n• 이력서 · 이력서_수정본.pdf\n• 포트폴리오",
+        "대신 정한 것\n• a1\n• a2\n• a3",
+        "확인이 필요한 점\n• 근거 목록에 없는 E9를 인용했어요.\n• 기타\n• 공고 읽기: 시간 안에 끝나지 않아 빼고 진행했어요",
+        "다음\n• 같은 근거로 자기소개서도 만들 수 있어요. 원하면 말해 주세요.",
+    ]
+    # No extras on the plan: no next step offers one.
+    assert "다음" not in present_message(view, notes, extras=False)
+    # Nothing drafted, nothing assumed, nothing left: the caller keeps its own line.
+    assert present_message({}, {"assumptions": []}, extras=True) == ""
+
+
+def test_present_message_names_no_save_when_saving_failed():
+    from app.harness.personal.resume.graph import present_message
+
+    text = present_message({"drafts": {"markdown": "# 이력서"}}, {}, extras=True)
+    assert "만든 것\n• 이력서\n" in text
+    assert "저장" not in text.split("확인이 필요한 점")[0]
+    assert "• 저장하지 못했어요. 다시 시도해 주세요." in text
+
+
+def test_present_message_lists_failed_and_late_github_and_attachment_reads():
+    from app.harness.personal.resume.graph import present_message
+
+    view = {"drafts": {"markdown": "# 이력서"}, "analysis": {
+        "stage_late": ["github:acme-labs/shop-web"],
+        "stage_failed": ["posting", "github:acme-labs/shop-api", "attachment:a1", "attachment:a2"]}}
+    text = present_message(view, {}, extras=False, saved="Push 프로필에 저장")
+    late = "• GitHub 읽기 (acme-labs/shop-web): 시간 안에 끝나지 않아 빼고 진행했어요"
+    assert late in text
+    assert "• 공고 읽기: 끝내지 못해 빼고 진행했어요" in text
+    assert "• GitHub 읽기 (acme-labs/shop-api): 끝내지 못해 빼고 진행했어요" in text
+    assert text.count("첨부 파일 읽기: 끝내지 못해 빼고 진행했어요") == 1
+
+
+def test_a_budget_stopped_boost_promises_no_follow_up():
+    from app.harness.personal.resume.graph import present_message
+
+    view = {"drafts": {"markdown": "# 이력서"}, "boost_stopped": "budget",
+            "output_targets": ["resume"]}
+    text = present_message(view, {}, extras=True, saved="Push 프로필에 저장")
+    assert "더 올려" not in text
+    assert text.endswith("같은 근거로 포트폴리오, 자기소개서도 만들 수 있어요. 원하면 말해 주세요.")

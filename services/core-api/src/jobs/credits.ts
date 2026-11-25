@@ -3,8 +3,8 @@ import { isMissingRelation, one } from "../db.ts";
 import { HttpError } from "../http.ts";
 
 const asBig = (value: unknown): bigint => {
-  if (typeof value === "bigint") return value;
-  if (value == null || value === "") return 0n;
+  if (typeof value === "bigint") {return value;}
+  if (value === null || value === undefined || value === "") {return 0n;}
   return BigInt(String(value));
 };
 
@@ -25,9 +25,9 @@ const settledMicro = async (tx: Query, sql: string, owner: string): Promise<bigi
   try {
     const row = await one(tx, sql, [owner]);
     return asBig(row?.settled);
-  } catch (err) {
-    if (isMissingRelation(err)) return 0n;
-    throw err;
+  } catch (error) {
+    if (isMissingRelation(error)) {return 0n;}
+    throw error;
   }
 };
 
@@ -43,7 +43,7 @@ export const reserveCredits = async (
   tx: Query,
   input: { userId: string; companyId?: string; amount: bigint },
 ): Promise<void> => {
-  if (input.amount <= 0n) return;
+  if (input.amount <= 0n) {return;}
   const available = await availableMicro(tx, input.userId, input.companyId);
   if (available < input.amount) {
     throw new HttpError(402, "INSUFFICIENT_CREDITS", "insufficient credits");

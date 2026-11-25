@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { beforeEach, test } from "node:test";
 
-import type { Query } from "../src/db.ts";
-import { handle, type CoreEnv } from "../src/handler.ts";
+import type { DbValue, Query } from "../src/db.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
 
 const ALICE = "aaaaaaaa-0000-4000-8000-000000000001";
@@ -11,28 +12,34 @@ const BOB = "bbbbbbbb-0000-4000-8000-000000000002";
 const NOW = new Date("2026-10-22T00:00:00Z");
 const env: CoreEnv = { APP_ENV: "production" };
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-const TOKENS: Record<string, string> = { [sha("tok-alice")]: ALICE, [sha("tok-bob")]: BOB };
+const TOKENS = new Map([[sha("tok-alice"), ALICE], [sha("tok-bob"), BOB]]);
 
-type Row = Record<string, unknown>;
-type Call = { sql: string; params: unknown[] };
-type Body = { data: Row & Row[]; page?: { nextCursor: string | null; hasMore: boolean }; error?: { code: string; message: string; details: unknown } };
+// The fake binds only scalar parameters; anything else is a test bug.
+const dbValue = (value: unknown): DbValue => {
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {return value;}
+  throw new TypeError("unexpected non-scalar parameter");
+};
+
+type Row = Awaited<ReturnType<Query>>["rows"][number];
+type Call = { sql: string; params: Array<unknown> };
+type Body = { data: Row & Array<Row>; page?: { nextCursor: string | null; hasMore: boolean }; error?: { code: string; message: string; details: unknown } };
 
 // In-memory jobs/gap_analyses tables that honour the user_id predicate, so isolation is observable.
 function world() {
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const jobs = new Map<string, Row>();
-  const analyses: Row[] = [];
-  const out = (rows: Row[]) => ({ rows, rowCount: rows.length });
+  const analyses: Array<Row> = [];
+  const out = (rows: Array<Row>) => ({ rows, rowCount: rows.length });
   const query: Query = async (sql, params = []) => {
     seen.push({ sql, params });
     if (sql.includes("access_tokens")) {
-      const id = TOKENS[String(params[0])];
+      const id = TOKENS.get(String(params[0]));
       return out(id ? [{ id, display_name: "u", locale: "ko", plan: "FREE", created_at: "2026-01-01T00:00:00Z", token_expires_at: "2099-01-01T00:00:00Z" }] : []);
     }
-    if (sql.includes("rate_limits")) return out([{ hits: 1 }]);
-    if (sql.startsWith("INSERT INTO idempotency_keys")) return out([{ id: "idem" }]);
+    if (sql.includes("rate_limits")) {return out([{ hits: 1 }]);}
+    if (sql.startsWith("INSERT INTO idempotency_keys")) {return out([{ id: "idem" }]);}
     if (sql.startsWith("INSERT INTO jobs")) {
-      const [id, user_id, company, title, source_kind, source_url, source_text, requirements, preferred, deadline, language, now] = params;
+      const [id, user_id, company, title, source_kind, source_url, source_text, requirements, preferred, deadline, language, now] = params.map(dbValue);
       jobs.set(String(id), { id, user_id, revision: 1, company, title, source_kind, source_url, source_text, requirements, preferred, keywords: "[]", risks: "[]", deadline, language, archived: false, created_at: now, updated_at: now });
       return out([]);
     }
@@ -41,12 +48,12 @@ function world() {
       return out(job && job.user_id === params[1] ? [{ ...job }] : []);
     }
     if (sql.includes("FROM jobs WHERE user_id = $1")) {
-      const limit = Number(params[params.length - 1]);
+      const limit = Number(params.at(-1));
       return out([...jobs.values()].filter((job) => job.user_id === params[0]).slice(0, limit));
     }
     if (sql.startsWith("UPDATE jobs")) {
       const job = jobs.get(String(params[0]));
-      if (!job || job.user_id !== params[1] || job.revision !== params[15]) return out([]);
+      if (!job || job.user_id !== params[1] || job.revision !== params[15]) {return out([]);}
       Object.assign(job, {
         revision: Number(job.revision) + 1, company: params[2], title: params[3], requirements: params[7], preferred: params[8],
         deadline: params[11], archived: params[13], updated_at: params[14],
@@ -54,20 +61,21 @@ function world() {
       return out([{ ...job }]);
     }
     if (sql.includes("FROM gap_analyses")) {
-      const limit = Number(params[params.length - 1]);
+      const limit = Number(params.at(-1));
       return out(analyses.filter((row) => row.user_id === params[0] && row.job_id === params[1]).slice(0, limit));
     }
-    if (sql.includes("INSERT INTO ai_jobs")) return out([{ id: params[0], queue: params[2] }]);
+    if (sql.includes("INSERT INTO ai_jobs")) {return out([{ id: dbValue(params[0]), queue: dbValue(params[2]) }]);}
     return out([]);
   };
   const call = async (method: string, path: string, opts: { token?: string | null; body?: unknown } = {}) => {
-    const headers: Record<string, string> = { "idempotency-key": crypto.randomUUID(), "content-type": "application/json" };
+    const headers = new Headers({ "idempotency-key": crypto.randomUUID(), "content-type": "application/json" });
     const token = opts.token === undefined ? "tok-alice" : opts.token;
-    if (token) headers.authorization = `Bearer ${token}`;
+    if (token) {headers.set("authorization", `Bearer ${token}`);}
     const body = opts.body === undefined ? undefined : typeof opts.body === "string" ? opts.body : JSON.stringify(opts.body);
     const res = await handle(new Request(`https://core.example${path}`, { method, headers, body }), env, { query, now: () => NOW });
     const text = await res.text();
-    return { status: res.status, body: (text ? JSON.parse(text) : null) as Body };
+    const parsed: Body = text ? JSON.parse(text) : null;
+    return { status: res.status, body: parsed };
   };
   return { seen, jobs, analyses, query, call };
 }
@@ -95,7 +103,7 @@ test("jobs: create stores the job for the caller and get returns the same DTO", 
   const created = await w.call("POST", "/api/v1/jobs", { body: valid });
   assert.equal(created.status, 201);
   const job = created.body.data;
-  assert.deepEqual({ ...job, id: "x" }, {
+  assert.deepEqual(Object.assign({}, job, { id: "x" }), {
     id: "x", revision: 1, company: "Acme", title: "Backend Engineer", sourceKind: "URL", sourceUrl: "https://jobs.example/1",
     sourceText: "We need TypeScript.", requirements: ["TS"], preferred: ["Go"], keywords: [], risks: [], deadline: "2026-11-30",
     language: "en", createdAt: "2026-10-22T00:00:00Z", updatedAt: "2026-10-22T00:00:00Z",
@@ -118,7 +126,7 @@ test("jobs: TEXT sources need no URL and default optional lists to empty", async
 });
 
 test("jobs: create rejects malformed bodies with 400 VALIDATION_ERROR", async () => {
-  const cases: [unknown, string, unknown][] = [
+  const cases: Array<[unknown, string, unknown]> = [
     ["", "request body required", undefined],
     ["{not json", "invalid request body", undefined],
     [[1, 2], "invalid request body", undefined],
@@ -134,7 +142,7 @@ test("jobs: create rejects malformed bodies with 400 VALIDATION_ERROR", async ()
     [{ ...valid, sourceUrl: "not a url" }, "must be an http(s) URL without credentials", { field: "sourceUrl" }],
     [{ ...valid, sourceText: "" }, "collected source text is required (1-200000 characters)", { field: "sourceText" }],
     [{ ...valid, deadline: "30/11/2026" }, "must be YYYY-MM-DD", { field: "deadline" }],
-    [{ ...valid, deadline: 20261130 }, "must be YYYY-MM-DD", { field: "deadline" }],
+    [{ ...valid, deadline: 20_261_130 }, "must be YYYY-MM-DD", { field: "deadline" }],
   ];
   for (const [body, message, details] of cases) {
     const w = world();
@@ -143,7 +151,7 @@ test("jobs: create rejects malformed bodies with 400 VALIDATION_ERROR", async ()
     assert.equal(res.status, 400, JSON.stringify(body));
     assert.equal(res.body.error?.code, "VALIDATION_ERROR");
     assert.equal(res.body.error?.message, message);
-    if (details) assert.deepEqual(res.body.error?.details, details);
+    if (details) {assert.deepEqual(res.body.error?.details, details);}
     assert.equal(w.jobs.size, 0);
   }
 });
@@ -164,7 +172,7 @@ test("jobs: another user cannot read, patch, or list analyses of someone else's 
   assert.equal(w.jobs.get(String(id))?.title, "Backend Engineer");
   const lookups = w.seen.slice(before).filter((call) => /FROM jobs WHERE id = \$1 AND user_id = \$2/.test(call.sql));
   assert.equal(lookups.length, 3);
-  for (const c of lookups) assert.deepEqual(c.params, [id, BOB]);
+  for (const c of lookups) {assert.deepEqual(c.params, [id, BOB]);}
   const listed = await w.call("GET", "/api/v1/jobs", { token: "tok-bob" });
   assert.deepEqual(listed.body.data, []);
   assert.equal(w.seen.at(-1)?.params[0], BOB);
@@ -197,7 +205,7 @@ test("jobs: list filters by archived and query and paginates with a cursor", asy
   assert.deepEqual(first.body.data[0].preferred, []);
   assert.ok(first.body.page?.nextCursor);
 
-  await w.call("GET", `/api/v1/jobs?archived=false&cursor=${first.body.page!.nextCursor}`);
+  await w.call("GET", `/api/v1/jobs?archived=false&cursor=${first.body.page.nextCursor}`);
   const next = w.seen.at(-1)!;
   assert.match(next.sql, /archived = \$2 AND \(created_at, id\) < \(\$3, \$4\)/);
   assert.deepEqual(next.params, [ALICE, false, "2026-10-02T00:00:00Z", "00000000-0000-4000-8000-000000000001", 51]);
@@ -247,7 +255,7 @@ test("jobs: patch with a stale revision answers 409 with the current revision", 
 test("jobs: patch validates its body", async () => {
   const w = world();
   const id = (await w.call("POST", "/api/v1/jobs", { body: valid })).body.data.id;
-  const cases: [unknown, unknown][] = [
+  const cases: Array<[unknown, unknown]> = [
     [{ title: "x" }, null],
     [{ expectedRevision: 1, company: "" }, { field: "company" }],
     [{ expectedRevision: 1, company: 3 }, { field: "company" }],
@@ -283,7 +291,7 @@ test("jobs: analyses are listed for the owner and mapped to the API shape", asyn
   const list = w.seen.at(-1)!;
   assert.deepEqual(list.params, [ALICE, id, 2]);
 
-  const next = await w.call("GET", `/api/v1/jobs/${id}/analyses?cursor=${res.body.page!.nextCursor}`);
+  const next = await w.call("GET", `/api/v1/jobs/${id}/analyses?cursor=${res.body.page.nextCursor}`);
   assert.equal(next.status, 200);
   assert.match(w.seen.at(-1)!.sql, /AND \(created_at, id\) < \(\$3, \$4\)/);
 });

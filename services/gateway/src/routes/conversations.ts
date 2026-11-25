@@ -1,5 +1,9 @@
 import { decodeCursor, encodeCursor, formatCursorTimestamp, formatJsonTimestamp, pyJson } from "../time.ts";
-import type { Deps, FrontEnv } from "../types.ts";
+import type { DbValue, Deps, FrontEnv } from "../types.ts";
+
+type Row = Awaited<ReturnType<Deps["query"]>>[number];
+
+const rowOf = (entries: Iterable<readonly [string, DbValue]>): Row => Object.fromEntries(entries);
 import {
   asBool, conditional, errorResponse, fieldError, freshRead, jsonResponse, jsonRows,
   pageLimit, parseUuid, sha256Hex, USER_CACHE_CONTROL,
@@ -13,11 +17,11 @@ import {
 
 function cursorPair(url: URL, rid: string): { at: string | null; id: string | null } | Response {
   const cur = url.searchParams.get("cursor");
-  if (!cur) return { at: null, id: null };
+  if (!cur) {return { at: null, id: null };}
   try {
     const decoded = decodeCursor(cur);
     const id = parseUuid(decoded.id);
-    if (!id) throw new Error("bad cursor");
+    if (!id) {throw new Error("bad cursor");}
     // parseUtc also takes Date-parsable text Postgres may reject; send canonical ISO.
     return { at: formatCursorTimestamp(decoded.createdAt), id };
   } catch {
@@ -27,13 +31,13 @@ function cursorPair(url: URL, rid: string): { at: string | null; id: string | nu
 
 const likePattern = (raw: string | null): string | null => {
   const trimmed = (raw ?? "").trim();
-  if (!trimmed) return null;
-  return `%${trimmed.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+  if (!trimmed) {return null;}
+  return `%${trimmed.replaceAll(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
 };
 
 async function listConversationsFor(deps: Deps, ownerId: string, appId: string | null, cursor: { at: string | null; id: string | null }, limit: number, rid: string, audience: "PERSONAL" | "EMPLOYER" = "PERSONAL", q: string | null = null, archived = false): Promise<Response> {
   let filterSql = "";
-  const params: unknown[] = [ownerId];
+  const params: Array<unknown> = [ownerId];
   if (appId) {
     params.push(appId);
     filterSql += ` AND c.application_id = $${params.length}::uuid`;
@@ -62,16 +66,16 @@ async function listConversationsFor(deps: Deps, ownerId: string, appId: string |
 
 export async function getConversation(request: Request, env: FrontEnv, deps: Deps, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
   const id = parseUuid(rawId);
-  if (!id) return fieldError("id", "must be a UUID", rid);
+  if (!id) {return fieldError("id", "must be a UUID", rid);}
   const user = await requireUser(request, env, deps, rid, limits, now);
-  if (user instanceof Response) return user;
+  if (user instanceof Response) {return user;}
   try {
     const rows = await deps.query(
       conversationRowSelect(personalOwnerPc("$2"))
       + "WHERE c.id = $1::uuid AND c.user_id = $2::uuid AND c.company_id IS NULL",
       [id, user.id],
     );
-    if (!rows[0]) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
+    if (!rows[0]) {return errorResponse(404, "NOT_FOUND", "resource not found", rid);}
     return await freshRead(jsonResponse(200, { data: conversationJson(rows[0]) }, rid), request, rid);
   } catch {
     return errorResponse(500, "INTERNAL", "internal error", rid);
@@ -80,20 +84,20 @@ export async function getConversation(request: Request, env: FrontEnv, deps: Dep
 
 export async function listConversations(request: Request, env: FrontEnv, deps: Deps, url: URL, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
   const page = pageLimit(url, rid);
-  if (page instanceof Response) return page;
+  if (page instanceof Response) {return page;}
   const appRaw = url.searchParams.get("applicationId") || "";
   let appId: string | null = null;
   if (appRaw) {
     appId = parseUuid(appRaw);
-    if (!appId) return fieldError("applicationId", "must be a UUID", rid);
+    if (!appId) {return fieldError("applicationId", "must be a UUID", rid);}
   }
   const cursor = cursorPair(url, rid);
-  if (cursor instanceof Response) return cursor;
+  if (cursor instanceof Response) {return cursor;}
   const q = likePattern(url.searchParams.get("q"));
   const archived = url.searchParams.get("archived") === "true";
   if (url.searchParams.get("audience") === "EMPLOYER") {
     const user = await requireUser(request, env, deps, rid, limits, now);
-    if (user instanceof Response) return user;
+    if (user instanceof Response) {return user;}
     if (!user.companyId) {
       return errorResponse(403, "BUSINESS_NOT_VERIFIED", "company is not verified", rid);
     }
@@ -104,10 +108,10 @@ export async function listConversations(request: Request, env: FrontEnv, deps: D
     }
   }
   const ctx = await tokenContext(request, env, deps, rid, limits, now);
-  if (ctx instanceof Response) return ctx;
+  if (ctx instanceof Response) {return ctx;}
   if (ctx.user || ctx.revalidate) {
     const user = ctx.user ?? await revalidateAuth(ctx, env, deps, rid);
-    if (user instanceof Response) return user;
+    if (user instanceof Response) {return user;}
     try {
       return await freshRead(
         await listConversationsFor(deps, user.id, appId, cursor, page.limit, rid, "PERSONAL", q, archived),
@@ -118,7 +122,7 @@ export async function listConversations(request: Request, env: FrontEnv, deps: D
   }
   if (ctx.dev) {
     const user = await requireUser(request, env, deps, rid, limits, now);
-    if (user instanceof Response) return user;
+    if (user instanceof Response) {return user;}
     try {
       return await listConversationsFor(deps, user.id, appId, cursor, page.limit, rid, "PERSONAL", q, archived);
     } catch {
@@ -131,12 +135,12 @@ export async function listConversations(request: Request, env: FrontEnv, deps: D
       appId, cursor.at, cursor.id, page.limit + 1, q,
     ]);
     const user = interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, true, rid, deps, rememberBag(ctx, env));
-    if (user instanceof Response) return user;
+    if (user instanceof Response) {return user;}
     const text = pyJson(pageBody(jsonRows(rows[0]?.rows), page.limit, conversationJson));
     return conditional(text, request, rid, USER_CACHE_CONTROL);
   } catch {
     const user = await requireUser(request, env, deps, rid, limits, now);
-    if (user instanceof Response) return user;
+    if (user instanceof Response) {return user;}
     try {
       return await listConversationsFor(deps, user.id, appId, cursor, page.limit, rid, "PERSONAL", q, archived);
     } catch {
@@ -145,21 +149,21 @@ export async function listConversations(request: Request, env: FrontEnv, deps: D
   }
 }
 
-function conversationJson(row: Record<string, unknown>): Record<string, unknown> {
+function conversationJson(row: Row) {
   return {
     id: String(row.id),
     revision: Number(row.revision),
-    applicationId: row.application_id == null ? null : String(row.application_id),
+    applicationId: (row.application_id === null || row.application_id === undefined) ? null : String(row.application_id),
     title: String(row.title ?? ""),
     pinned: asBool(row.pinned),
     createdAt: formatJsonTimestamp(row.created_at),
     updatedAt: formatJsonTimestamp(row.updated_at),
-    status: row.status == null || row.status === "" ? "DONE" : String(row.status),
-    queuePosition: row.queue_position == null ? null : Number(row.queue_position),
-    lastLine: row.last_line == null || row.last_line === "" ? null : String(row.last_line),
+    status: (row.status === null || row.status === undefined) || row.status === "" ? "DONE" : String(row.status),
+    queuePosition: (row.queue_position === null || row.queue_position === undefined) ? null : Number(row.queue_position),
+    lastLine: (row.last_line === null || row.last_line === undefined) || row.last_line === "" ? null : String(row.last_line),
     lastMessagePreview: String(row.last_message_preview ?? "").slice(0, 140),
     createdBy: { displayName: String(row.display_name ?? "") },
-    postingId: row.posting_id == null || row.posting_id === "" ? null : String(row.posting_id),
+    postingId: (row.posting_id === null || row.posting_id === undefined) || row.posting_id === "" ? null : String(row.posting_id),
   };
 }
 
@@ -218,30 +222,30 @@ const BOT_ACTIVE_JOB_SQL = BOT_FOUND + " SELECT " + BOT_SEEN + ", (" + ACTIVE_JO
 
 const BOT_CANCEL_SQL = cancelSql(BOT_FOUND, BOT_SEEN);
 
-const present = (value: unknown): boolean => value != null && value !== "";
+const present = (value: unknown): boolean => (value !== null && value !== undefined) && value !== "";
 
 export const isBotThread = async (deps: Deps, conversationId: string): Promise<boolean> =>
   (await deps.query("SELECT 1 FROM conversations WHERE id = $1::uuid AND bot_id IS NOT NULL", [conversationId])).length > 0;
 
 async function listMessagesFor(deps: Deps, userId: string, id: string, cursor: { at: string | null; id: string | null }, limit: number, rid: string, companyId: string | null): Promise<Response> {
   const rows = await deps.query(SCOPED_MESSAGES_SQL, [id, userId, companyId, cursor.at, cursor.id, limit + 1]);
-  if (!present(rows[0]?.conversation_id)) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
+  if (!present(rows[0]?.conversation_id)) {return errorResponse(404, "NOT_FOUND", "resource not found", rid);}
   const page = jsonRows(rows[0].rows);
   return jsonResponse(200, pageBody(page, limit, messageJson(await storedFiles(deps, id, page))), rid);
 }
 
 export async function listMessages(request: Request, env: FrontEnv, deps: Deps, url: URL, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
   const id = parseUuid(rawId);
-  if (!id) return fieldError("id", "must be a UUID", rid);
+  if (!id) {return fieldError("id", "must be a UUID", rid);}
   const page = pageLimit(url, rid);
-  if (page instanceof Response) return page;
+  if (page instanceof Response) {return page;}
   const cursor = cursorPair(url, rid);
-  if (cursor instanceof Response) return cursor;
+  if (cursor instanceof Response) {return cursor;}
   const ctx = await tokenContext(request, env, deps, rid, limits, now);
-  if (ctx instanceof Response) return ctx;
+  if (ctx instanceof Response) {return ctx;}
   if (ctx.user || ctx.revalidate) {
     const user = ctx.user ?? await revalidateAuth(ctx, env, deps, rid);
-    if (user instanceof Response) return user;
+    if (user instanceof Response) {return user;}
     try {
       return await freshRead(
         await listMessagesFor(deps, user.id, id, cursor, page.limit, rid, user.companyId),
@@ -252,7 +256,7 @@ export async function listMessages(request: Request, env: FrontEnv, deps: Deps, 
   }
   if (ctx.dev) {
     const user = await requireUser(request, env, deps, rid, limits, now);
-    if (user instanceof Response) return user;
+    if (user instanceof Response) {return user;}
     try {
       return await listMessagesFor(deps, user.id, id, cursor, page.limit, rid, user.companyId);
     } catch {
@@ -265,9 +269,9 @@ export async function listMessages(request: Request, env: FrontEnv, deps: Deps, 
       id, cursor.at, cursor.id, page.limit + 1,
     ]);
     const user = interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, true, rid, deps, rememberBag(ctx, env));
-    if (user instanceof Response) return user;
+    if (user instanceof Response) {return user;}
     const conversationId = rows[0]?.conversation_id;
-    if (conversationId == null || conversationId === "") {
+    if ((conversationId === null || conversationId === undefined) || conversationId === "") {
       return errorResponse(404, "NOT_FOUND", "resource not found", rid);
     }
     const messages = jsonRows(rows[0]?.rows);
@@ -275,7 +279,7 @@ export async function listMessages(request: Request, env: FrontEnv, deps: Deps, 
     return conditional(text, request, rid, USER_CACHE_CONTROL);
   } catch {
     const user = await requireUser(request, env, deps, rid, limits, now);
-    if (user instanceof Response) return user;
+    if (user instanceof Response) {return user;}
     try {
       return await listMessagesFor(deps, user.id, id, cursor, page.limit, rid, user.companyId);
     } catch {
@@ -285,7 +289,7 @@ export async function listMessages(request: Request, env: FrontEnv, deps: Deps, 
 }
 
 type StoredFile = { fileName: string; size: number };
-type ApplicationChip = { title: string; documentTitles: string[] };
+type ApplicationChip = { title: string; documentTitles: Array<string> };
 type StoredAttachments = { files: Map<string, StoredFile>; applications: Map<string, ApplicationChip> };
 
 // Company conversations only. A personal conversation has a null company_id, so the join matches nothing.
@@ -305,36 +309,36 @@ const APPLICATION_CHIPS_SQL = `SELECT a.id, u.display_name,
  JOIN users u ON u.id = a.user_id
  WHERE a.id = ANY($2::uuid[])`;
 
-function chipTitles(value: unknown): string[] {
+function chipTitles(value: unknown): Array<string> {
   let raw = value;
   if (typeof raw === "string") {
     try { raw = JSON.parse(raw); } catch { return []; }
   }
-  if (!Array.isArray(raw)) return [];
+  if (!Array.isArray(raw)) {return [];}
   return raw.map((item) => String(item ?? ""));
 }
 
-function attachmentList(raw: unknown): unknown[] {
-  let attachments = raw ?? [];
+function attachmentList(raw: unknown): Array<unknown> {
+  let attachments = raw;
   if (typeof attachments === "string") {
     try { attachments = JSON.parse(attachments); } catch { attachments = []; }
   }
   return Array.isArray(attachments) ? attachments : [];
 }
 
-async function storedFiles(deps: Deps, conversationId: string, messages: Record<string, unknown>[]): Promise<StoredAttachments> {
+async function storedFiles(deps: Deps, conversationId: string, messages: Array<Row>): Promise<StoredAttachments> {
   const files: Map<string, StoredFile> = new Map();
   const applications: Map<string, ApplicationChip> = new Map();
   const ids = new Set<string>();
   const applicationIds = new Set<string>();
   for (const message of messages) {
     for (const raw of attachmentList(message.attachments)) {
-      if (!raw || typeof raw !== "object") continue;
-      const item = raw as Record<string, unknown>;
+      if (!raw || typeof raw !== "object") {continue;}
+      const item = rowOf(Object.entries(raw));
       const id = parseUuid(String(item.id ?? ""));
-      if (!id) continue;
+      if (!id) {continue;}
       ids.add(id);
-      if (String(item.type ?? "") === "APPLICATION") applicationIds.add(id);
+      if (String(item.type ?? "") === "APPLICATION") {applicationIds.add(id);}
     }
   }
   if (ids.size) {
@@ -343,7 +347,7 @@ async function storedFiles(deps: Deps, conversationId: string, messages: Record<
         "SELECT id, file_name, octet_length(content) AS size FROM conversation_attachments WHERE conversation_id = $1::uuid AND id = ANY($2::uuid[])",
         [conversationId, [...ids]],
       );
-      for (const row of rows) files.set(String(row.id), { fileName: String(row.file_name), size: Number(row.size) });
+      for (const row of rows) {files.set(String(row.id), { fileName: String(row.file_name), size: Number(row.size) });}
     } catch {
       // names and sizes are extras; the page is still served without them
     }
@@ -364,31 +368,35 @@ async function storedFiles(deps: Deps, conversationId: string, messages: Record<
   return { files, applications };
 }
 
-const messageJson = (stored: StoredAttachments) => (row: Record<string, unknown>): Record<string, unknown> => ({
+const messageJson = (stored: StoredAttachments) => (row: Row) => ({
   id: String(row.id),
   conversationId: String(row.conversation_id),
   role: String(row.role),
   text: String(row.text ?? ""),
   attachments: attachmentList(row.attachments)
     .map((raw) => attachmentJson(raw, stored))
-    .filter((item): item is Record<string, unknown> => item !== null),
-  operationId: row.operation_id == null ? null : String(row.operation_id),
+    .filter((item) => item !== null),
+  operationId: (row.operation_id === null || row.operation_id === undefined) ? null : String(row.operation_id),
   createdAt: formatJsonTimestamp(row.created_at),
 });
 
-function attachmentJson(raw: unknown, stored: StoredAttachments): Record<string, unknown> | null {
-  const a = (raw && typeof raw === "object") ? raw as Record<string, unknown> : {};
-  const title = a.title == null ? "" : String(a.title);
+type AttachmentOut = {
+  type: string; id: string; documentId?: string; title?: string; fileName?: string; size?: number; documentTitles?: Array<string>;
+};
+
+function attachmentJson(raw: unknown, stored: StoredAttachments): AttachmentOut | null {
+  const a = (raw && typeof raw === "object") ? rowOf(Object.entries(raw)) : {};
+  const title = (a.title === null || a.title === undefined) ? "" : String(a.title);
   const name = String(a.name ?? a.fileName ?? "");
   const mime = String(a.mime ?? a.mimeType ?? "");
   if (title.toLowerCase().endsWith(".md") || name.toLowerCase().endsWith(".md") || mime.toLowerCase() === "text/markdown") {
     return null;
   }
-  const out: Record<string, unknown> = { type: String(a.type ?? ""), id: String(a.id ?? "") };
-  if (a.documentId != null) out.documentId = String(a.documentId);
-  if (a.title != null) out.title = String(a.title);
+  const out: AttachmentOut = { type: String(a.type ?? ""), id: String(a.id ?? "") };
+  if ((a.documentId !== null && a.documentId !== undefined)) {out.documentId = String(a.documentId);}
+  if ((a.title !== null && a.title !== undefined)) {out.title = String(a.title);}
   const file = stored.files.get(parseUuid(String(out.id)) ?? "");
-  if (file) Object.assign(out, file);
+  if (file) {Object.assign(out, file);}
   if (String(out.type) === "APPLICATION") {
     const chip = stored.applications.get(parseUuid(String(out.id)) ?? "");
     if (chip) {
@@ -399,13 +407,13 @@ function attachmentJson(raw: unknown, stored: StoredAttachments): Record<string,
   return out;
 }
 
-function pageBody(rows: Record<string, unknown>[], limit: number, map: (row: Record<string, unknown>) => Record<string, unknown>): Record<string, unknown> {
+function pageBody<T extends { id: string; createdAt: string; updatedAt?: string }>(rows: Array<Row>, limit: number, map: (row: Row) => T) {
   const more = rows.length > limit;
   const items = (more ? rows.slice(0, limit) : rows).map(map);
   let nextCursor: string | null = null;
-  if (more && items.length) {
-    const last = items[items.length - 1];
-    const stamp = map === conversationJson ? String(last.updatedAt) : String(last.createdAt);
+  const last = items.at(-1);
+  if (more && last) {
+    const stamp = String(last.updatedAt ?? last.createdAt);
     const id = String(last.id);
     nextCursor = encodeCursor(stamp, id);
   }
@@ -415,18 +423,18 @@ function pageBody(rows: Record<string, unknown>[], limit: number, map: (row: Rec
 /** The newest running job id, null when there is none, or a 404 when the conversation is not visible. */
 async function activeJobFor(deps: Deps, userId: string, id: string, companyId: string | null, rid: string): Promise<string | null | Response> {
   const rows = await deps.query(ACTIVE_JOB_SQL, [id, userId, companyId]);
-  if (!present(rows[0]?.conversation_id)) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
+  if (!present(rows[0]?.conversation_id)) {return errorResponse(404, "NOT_FOUND", "resource not found", rid);}
   return present(rows[0].job_id) ? String(rows[0].job_id) : null;
 }
 
 type Limits = { user: number; public: number; windowMs: number };
 
 /** The row of the job a cancel statement stopped, or the error it answers with. `seen` is the column that is null when the caller may not see the chat. */
-const cancelActive = async (deps: Deps, sql: string, params: unknown[], seen: string, rid: string): Promise<Record<string, unknown> | Response> => {
+const cancelActive = async (deps: Deps, sql: string, params: Array<unknown>, seen: string, rid: string): Promise<Row | Response> => {
   try {
     const row = (await deps.query(sql, params))[0];
-    if (!present(row?.[seen])) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
-    if (present(row.job_id)) return row;
+    if (!present(row?.[seen])) {return errorResponse(404, "NOT_FOUND", "resource not found", rid);}
+    if (present(row.job_id)) {return row;}
     const mine = row.mine;
     if (mine === false || mine === "f" || mine === "false") {
       return errorResponse(403, "FORBIDDEN", "forbidden", rid);
@@ -439,11 +447,11 @@ const cancelActive = async (deps: Deps, sql: string, params: unknown[], seen: st
 
 export const streamCancel = async (request: Request, env: FrontEnv, deps: Deps, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> => {
   const id = parseUuid(rawId);
-  if (!id) return fieldError("id", "must be a UUID", rid);
+  if (!id) {return fieldError("id", "must be a UUID", rid);}
   const user = await requireUser(request, env, deps, rid, limits, now);
-  if (user instanceof Response) return user;
+  if (user instanceof Response) {return user;}
   const row = await cancelActive(deps, CANCEL_SQL, [id, user.id, user.companyId], "conversation_id", rid);
-  if (row instanceof Response) return row;
+  if (row instanceof Response) {return row;}
   return jsonResponse(200, { data: { jobId: String(row.job_id), status: "CANCELLED" } }, rid);
 };
 
@@ -451,11 +459,11 @@ const botAddress = (raw: string): string | null => (raw === "push" ? raw : parse
 
 export const streamBotCancel = async (request: Request, env: FrontEnv, deps: Deps, rawId: string, rid: string, limits: Limits, now: () => Date): Promise<Response> => {
   const address = botAddress(rawId);
-  if (!address) return fieldError("id", "must be a UUID", rid);
+  if (!address) {return fieldError("id", "must be a UUID", rid);}
   const user = await requireUser(request, env, deps, rid, limits, now);
-  if (user instanceof Response) return user;
+  if (user instanceof Response) {return user;}
   const row = await cancelActive(deps, BOT_CANCEL_SQL, [address, user.id], "bot_id", rid);
-  if (row instanceof Response) return row;
+  if (row instanceof Response) {return row;}
   return jsonResponse(200, { data: { status: "CANCELLED", resumable: asBool(row.resumable) } }, rid);
 };
 
@@ -466,80 +474,90 @@ const resumeSeq = (request: Request, url: URL): number => {
 
 export const streamBotActive = async (request: Request, env: FrontEnv, deps: Deps, url: URL, rawId: string, rid: string, limits: Limits, now: () => Date): Promise<Response> => {
   const address = botAddress(rawId);
-  if (!address) return fieldError("id", "must be a UUID", rid);
+  if (!address) {return fieldError("id", "must be a UUID", rid);}
   const user = await requireUser(request, env, deps, rid, limits, now);
-  if (user instanceof Response) return user;
-  let row: Record<string, unknown> | undefined;
+  if (user instanceof Response) {return user;}
+  let row: Row | undefined;
   try {
     row = (await deps.query(BOT_ACTIVE_JOB_SQL, [address, user.id]))[0];
   } catch {
     return errorResponse(500, "INTERNAL", "internal error", rid);
   }
-  if (!present(row?.bot_id)) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
-  if (!present(row?.job_id)) return new Response(null, { status: 204, headers: { "x-request-id": rid } });
+  if (!present(row?.bot_id)) {return errorResponse(404, "NOT_FOUND", "resource not found", rid);}
+  if (!present(row?.job_id)) {return new Response(null, { status: 204, headers: { "x-request-id": rid } });}
   return jobEvents(request, String(row?.job_id), resumeSeq(request, url), env, deps, rid, true);
 };
 
 export async function streamActive(request: Request, env: FrontEnv, deps: Deps, url: URL, rawId: string, rid: string, limits: { user: number; public: number; windowMs: number }, now: () => Date): Promise<Response> {
   const id = parseUuid(rawId);
-  if (!id) return fieldError("id", "must be a UUID", rid);
+  if (!id) {return fieldError("id", "must be a UUID", rid);}
   const ctx = await tokenContext(request, env, deps, rid, limits, now);
-  if (ctx instanceof Response) return ctx;
+  if (ctx instanceof Response) {return ctx;}
   let jobId: string | null;
   try {
     if (ctx.user || ctx.revalidate) {
       const user = ctx.user ?? await revalidateAuth(ctx, env, deps, rid);
-      if (user instanceof Response) return user;
+      if (user instanceof Response) {return user;}
       const found = await activeJobFor(deps, user.id, id, user.companyId, rid);
-      if (found instanceof Response) return found;
+      if (found instanceof Response) {return found;}
       jobId = found;
     } else if (ctx.dev) {
       const user = await requireUser(request, env, deps, rid, limits, now);
-      if (user instanceof Response) return user;
+      if (user instanceof Response) {return user;}
       const found = await activeJobFor(deps, user.id, id, user.companyId, rid);
-      if (found instanceof Response) return found;
+      if (found instanceof Response) {return found;}
       jobId = found;
     } else {
       const rows = await queryToleratingCompany(deps.query, STREAM_SQL, [
         ...rateParams(ctx.hash, ctx.moment, limits.user, ctx.batch, ctx.release), id,
       ]);
       const user = interpretAuth(rows, ctx.moment, limits.user, limits.windowMs, ctx.cacheKey, true, rid, deps, rememberBag(ctx, env));
-      if (user instanceof Response) return user;
+      if (user instanceof Response) {return user;}
       const conversationId = rows[0]?.conversation_id;
-      if (conversationId == null || conversationId === "") {
+      if ((conversationId === null || conversationId === undefined) || conversationId === "") {
         return errorResponse(404, "NOT_FOUND", "resource not found", rid);
       }
       const rawJob = rows[0]?.job_id;
-      jobId = rawJob == null || rawJob === "" ? null : String(rawJob);
+      jobId = (rawJob === null || rawJob === undefined) || rawJob === "" ? null : String(rawJob);
     }
   } catch {
-    if (ctx.user || ctx.revalidate) return errorResponse(500, "INTERNAL", "internal error", rid);
+    if (ctx.user || ctx.revalidate) {return errorResponse(500, "INTERNAL", "internal error", rid);}
     try {
       const user = await requireUser(request, env, deps, rid, limits, now);
-      if (user instanceof Response) return user;
+      if (user instanceof Response) {return user;}
       const found = await activeJobFor(deps, user.id, id, user.companyId, rid);
-      if (found instanceof Response) return found;
+      if (found instanceof Response) {return found;}
       jobId = found;
     } catch {
       return errorResponse(500, "INTERNAL", "internal error", rid);
     }
   }
-  if (!jobId) return new Response(null, { status: 204, headers: { "x-request-id": rid } });
+  if (!jobId) {return new Response(null, { status: 204, headers: { "x-request-id": rid } });}
   return jobEvents(request, jobId, resumeSeq(request, url), env, deps, rid);
 }
+
+const queuedJobId = (body: unknown): string => {
+  if (typeof body !== "object" || body === null || !("data" in body)) {return "";}
+  const { data } = body;
+  if (typeof data !== "object" || data === null || !("result" in data)) {return "";}
+  const { result } = data;
+  if (typeof result !== "object" || result === null || !("value" in result)) {return "";}
+  const { value } = result;
+  if (typeof value !== "object" || value === null || !("jobId" in value)) {return "";}
+  return String(value.jobId ?? "");
+};
 
 /** Queues the send in core and streams its job. `bot` is true for a send addressed by bot. */
 export const streamMessage = async (request: Request, env: FrontEnv, deps: Deps, rid: string, bot = false): Promise<Response> => {
   const queued = await proxy(request, env.CORE, rid);
-  if (queued.status !== 202) return queued;
-  let jobId = "";
+  if (queued.status !== 202) {return queued;}
+  let jobId: string;
   try {
-    const body = await queued.json() as { data?: { result?: { value?: { jobId?: unknown } } } };
-    jobId = String(body.data?.result?.value?.jobId ?? "");
+    jobId = queuedJobId(await queued.json());
   } catch {
     jobId = "";
   }
-  if (!parseUuid(jobId)) return errorResponse(500, "INTERNAL", "internal error", rid);
+  if (!parseUuid(jobId)) {return errorResponse(500, "INTERNAL", "internal error", rid);}
   return jobEvents(request, jobId, 0, env, deps, rid, bot);
 };
 
@@ -554,16 +572,17 @@ const EVENTS_SQL = "SELECT id, type, payload, " + tsText("created_at") + " AS cr
 
 const jobEvents = async (request: Request, jobId: string, start: number, env: FrontEnv, deps: Deps, rid: string, bot = false): Promise<Response> => {
   const release = openStream(await sha256Hex(request.headers.get("authorization") || ""));
-  if (!release) return errorResponse(429, "RATE_LIMITED", "too many open streams", rid);
+  if (!release) {return errorResponse(429, "RATE_LIMITED", "too many open streams", rid);}
   let after = start;
+  const version = a2uiVersion(request);
   const polls = Math.max(1, Number(env.SSE_MAX_POLLS || "20") || 20);
-  const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => { setTimeout(r, ms); }));
   const encoder = new TextEncoder();
   let open = true;
   const stream = new ReadableStream({
     async start(controller) {
       const send = (frame: string) => {
-        if (!open) return;
+        if (!open) {return;}
         try { controller.enqueue(encoder.encode(frame)); }
         catch { open = false; }
       };
@@ -571,24 +590,24 @@ const jobEvents = async (request: Request, jobId: string, start: number, env: Fr
       try {
         let idle = 0;
         for (let i = 0; i < polls; i++) {
-          if (!open) break;
+          if (!open) {break;}
           const rows = await deps.query(EVENTS_SQL, [jobId, after]);
           let terminal = false;
           for (const row of rows) {
             after = Number(row.id);
             const payload = payloadOf(row);
-            if (hidden(row.type, payload, bot)) continue;
-            send(sseFrame(row, payload, jobId));
+            if (hidden(row.type, payload, bot, version)) {continue;}
+            send(sseFrame(row, payload, jobId, version));
             if (row.type === "done" || row.type === "error" || row.type === "cancelled") {
               terminal = true;
               break;
             }
           }
-          if (terminal || !open) break;
-          if (rows.length >= EVENT_PAGE) continue;
+          if (terminal || !open) {break;}
+          if (rows.length >= EVENT_PAGE) {continue;}
           idle = rows.length ? 0 : idle + 1;
           if (i + 1 < polls) {
-            if (rows.length === 0) send(": ping\n\n");
+            if (rows.length === 0) {send(": ping\n\n");}
             await sleep(Math.min(MAX_POLL_MS, POLL_MS * 2 ** Math.max(0, idle - 1)));
           }
         }
@@ -615,19 +634,35 @@ const jobEvents = async (request: Request, jobId: string, start: number, env: Fr
   });
 };
 
-const payloadOf = (row: Record<string, unknown>): Record<string, unknown> => {
-  let payload = row.payload ?? {};
+const objectOf = (value: unknown): Row => {
+  let payload = value;
   if (typeof payload === "string") {
     try { payload = JSON.parse(payload); } catch { payload = {}; }
   }
-  return (payload && typeof payload === "object") ? payload as Record<string, unknown> : {};
+  return (payload && typeof payload === "object") ? rowOf(Object.entries(payload)) : {};
+};
+
+const payloadOf = (row: Row): Row => objectOf(row.payload);
+
+// The card rows the AI service stores with their A2UI surface under `a2ui`, one per version
+// (services/ai/src/app/domain/a2ui.py `surfaces`).
+const CARD_KINDS = new Set(["approval", "choice", "plan", "paper", "todo", "diff", "fit", "result"]);
+
+/** The A2UI version a request names with A2UI-Version: 1.0, else v0.9.1 (also when absent or unknown). */
+const a2uiVersion = (request: Request): string => (request.headers.get("a2ui-version")?.trim() === "1.0" ? "1.0" : "v0.9.1");
+
+const surfaceOf = (p: Row, version: string): Row | undefined => {
+  const surface = objectOf(objectOf(p.a2ui)[version]);
+  return Array.isArray(surface.messages) ? surface : undefined;
 };
 
 // A bot stream promises a phase on every status. A row without one was stored
 // before phases, or by a run of the AI service that does not write them yet.
-const hidden = (type: unknown, p: Record<string, unknown>, bot: boolean): boolean => {
-  if (type === "status") return bot && p.phase == null;
-  if (type !== "file") return false;
+// A card row without a surface is one no client draws, such as a gate the server answered itself.
+const hidden = (type: unknown, p: Row, bot: boolean, version: string): boolean => {
+  if (type === "status") {return bot && (p.phase === null || p.phase === undefined);}
+  if (typeof type === "string" && CARD_KINDS.has(type)) {return surfaceOf(p, version) === undefined;}
+  if (type !== "file") {return false;}
   const name = String(p.name ?? p.fileName ?? "");
   const mime = String(p.mime ?? p.mimeType ?? "");
   return name.toLowerCase().endsWith(".md") || mime.toLowerCase() === "text/markdown";
@@ -635,21 +670,25 @@ const hidden = (type: unknown, p: Record<string, unknown>, bot: boolean): boolea
 
 const STATUS_FIELDS = ["phase", "since", "ahead", "for", "cardId"];
 
-/** `turn` is the job id: opaque to a client and equal for every frame of one run. */
-const sseFrame = (row: Record<string, unknown>, p: Record<string, unknown>, turn: string): string => {
-  const seq = Number(row.id);
-  let body: Record<string, unknown>;
-  if (row.type === "token") body = { type: "token", text: String(p.text ?? "") };
-  else if (row.type === "status") {
-    body = { type: "status", text: String(p.text ?? "") };
-    for (const field of STATUS_FIELDS) if (p[field] != null) body[field] = p[field];
+const frameOf = (row: Row, p: Row, version: string) => {
+  if (row.type === "token") {return { type: "token", text: String(p.text ?? "") };}
+  if (row.type === "status") {
+    const fields = STATUS_FIELDS.flatMap((field): Array<[string, DbValue]> => (p[field] !== null && p[field] !== undefined ? [[field, p[field]]] : []));
+    return { type: "status", text: String(p.text ?? ""), ...rowOf(fields) };
   }
-  else if (row.type === "error") body = { type: "error", error: p.error ?? {} };
-  else if (row.type === "done") body = { type: "done", operation: p.operation ?? null, ...(p.awaiting ? { awaiting: p.awaiting } : {}) };
-  else if (row.type === "cancelled") body = { type: "cancelled", resumable: p.resumable === true };
-  else body = { type: row.type, ...p };
-  body.seq = seq;
-  body.at = formatJsonTimestamp(row.created_at);
-  body.turn = turn;
+  if (row.type === "error") {return { type: "error", error: p.error ?? {} };}
+  if (row.type === "done") {return p.awaiting ? { type: "done", operation: p.operation ?? null, awaiting: p.awaiting } : { type: "done", operation: p.operation ?? null };}
+  if (row.type === "cancelled") {return { type: "cancelled", resumable: p.resumable === true };}
+  const surface = surfaceOf(p, version);
+  if (surface && typeof row.type === "string" && CARD_KINDS.has(row.type)) {
+    return { type: "a2ui", kind: row.type, surfaceId: surface.surfaceId ?? null, messages: surface.messages };
+  }
+  return { type: row.type, ...p };
+};
+
+/** `turn` is the job id: opaque to a client and equal for every frame of one run. */
+const sseFrame = (row: Row, p: Row, turn: string, version: string): string => {
+  const seq = Number(row.id);
+  const body = { ...frameOf(row, p, version), seq, at: formatJsonTimestamp(row.created_at), turn };
   return `id: ${seq}\ndata: ${pyJson(body)}\n\n`;
 };

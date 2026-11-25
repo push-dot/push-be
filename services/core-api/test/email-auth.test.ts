@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 
+import type { DbValue, Row as DbRow } from "../src/db.ts";
+import type { Json } from "../src/json.ts";
 import { pkceChallenge } from "../src/crypto.ts";
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { createMailer } from "../src/mail/mailer.ts";
 import { hashPassword, verifyPassword } from "../src/mail/password.ts";
 import { resetLimits } from "../src/ratelimit.ts";
@@ -12,11 +15,14 @@ const NOW = new Date("2026-10-21T00:00:00Z");
 const EMAIL = "a@push.app";
 const PASSWORD = "secret123";
 
-type Row = Record<string, unknown>;
-type Call = { sql: string; params: unknown[] };
+type Row = DbRow;
+
+// A bound parameter is stored in a fake row, so it is a column value; undefined is how the driver sends NULL.
+const toDbValue = (value: unknown): DbValue => (isDbValue(value) ? value : null);
+const isDbValue = (value: unknown): value is DbValue =>
+  value === null || ["string", "number", "boolean", "object"].includes(typeof value);
+type Call = { sql: string; params: Array<unknown> };
 type Mail = { to: string; subject: string; text: string; html: string };
-type Err = { error: { code: string; message: string; details: { field?: string; accountType?: string; email?: string; retryAfterSec?: number } | null } };
-type Session = { data: { accessToken: string; refreshToken: string; expiresIn: number; user: { id: string; accountType: string; companyId: string | null; companyRole: string | null } } };
 
 const env = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
   APP_ENV: "production",
@@ -29,13 +35,13 @@ const env = (extra: Partial<CoreEnv> = {}): CoreEnv => ({
   ...extra,
 });
 
-const post = (path: string, body: unknown, headers?: HeadersInit): Request => new Request("https://core.example" + path, {
+const post = (path: string, body: unknown, headers?: { "cf-connecting-ip": string }): Request => new Request("https://core.example" + path, {
   method: "POST",
   headers: { "content-type": "application/json", ...headers },
   body: JSON.stringify(body),
 });
 
-const signupBody = (extra: Record<string, unknown> = {}) => ({
+const signupBody = (extra: Record<string, Json | undefined> = {}) => ({
   email: EMAIL,
   accountType: "EMPLOYER",
   displayName: "Ada",
@@ -43,7 +49,7 @@ const signupBody = (extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 
-const userRow = (extra: Row = {}): Row => ({
+const userRow = (extra: Row = {}) => ({
   id: "11111111-1111-4111-8111-111111111111",
   provider: "email",
   provider_subject: EMAIL,
@@ -64,23 +70,24 @@ const userRow = (extra: Row = {}): Row => ({
 });
 
 const createDb = () => {
-  const users: Row[] = [];
-  const signups: Row[] = [];
-  const tokens: Row[] = [];
-  const consents: Row[] = [];
-  const refresh: Row[] = [];
-  const access: Row[] = [];
-  const states: Row[] = [];
-  const codes: Row[] = [];
-  const sqls: Call[] = [];
+  const users: Array<Row> = [];
+  const signups: Array<Row> = [];
+  const tokens: Array<Row> = [];
+  const consents: Array<Row> = [];
+  const refresh: Array<Row> = [];
+  const access: Array<Row> = [];
+  const states: Array<Row> = [];
+  const codes: Array<Row> = [];
+  const sqls: Array<Call> = [];
 
   const byEmail = (email: unknown): Row | undefined =>
     users.find((row) => String(row.email).toLowerCase() === String(email).toLowerCase());
 
-  const query: Deps["query"] = async (sql, params = []) => {
-    sqls.push({ sql, params });
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("deletion_requested_at")) return { rows: [], rowCount: 1 };
+  const query: Deps["query"] = async (sql, rawParams = []) => {
+    sqls.push({ sql, params: rawParams });
+    const params = rawParams.map(toDbValue);
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("deletion_requested_at")) {return { rows: [], rowCount: 1 };}
     if (sql.startsWith("INSERT INTO email_signups")) {
       const [id, email, isEmployer, displayName, consent, createdAt] = params;
       signups.push({
@@ -91,20 +98,20 @@ const createDb = () => {
     }
     if (sql.startsWith("DELETE FROM email_tokens")) {
       for (let i = tokens.length - 1; i >= 0; i--) {
-        if (tokens[i].signup_id === params[0]) tokens.splice(i, 1);
+        if (tokens[i].signup_id === params[0]) {tokens.splice(i, 1);}
       }
       return { rows: [], rowCount: 1 };
     }
     if (sql.startsWith("WITH revoked AS (DELETE FROM email_tokens")) {
       for (let i = tokens.length - 1; i >= 0; i--) {
         const row = tokens[i];
-        const owned = (params[1] != null && row.user_id === params[1]) || (params[2] != null && row.signup_id === params[2]);
-        if (owned && row.kind === params[3] && row.used_at == null) tokens.splice(i, 1);
+        const owned = ((params[1] !== null && params[1] !== undefined) && row.user_id === params[1]) || ((params[2] !== null && params[2] !== undefined) && row.signup_id === params[2]);
+        if (owned && row.kind === params[3] && (row.used_at === null || row.used_at === undefined)) {tokens.splice(i, 1);}
       }
     }
     if (sql.startsWith("DELETE FROM email_signups")) {
       const gone = signups.filter((row) => String(row.email).toLowerCase() === String(params[0]).toLowerCase());
-      for (const row of gone) signups.splice(signups.indexOf(row), 1);
+      for (const row of gone) {signups.splice(signups.indexOf(row), 1);}
       return { rows: [], rowCount: gone.length };
     }
     if (sql.startsWith("INSERT INTO email_tokens") || sql.startsWith("WITH revoked AS (DELETE FROM email_tokens")) {
@@ -122,9 +129,9 @@ const createDb = () => {
     }
     if (sql.includes("email_tokens") && sql.includes("email_signups")) {
       const token = tokens.find((row) => row.token_hash === params[0] && row.kind === "VERIFY");
-      if (!token) return { rows: [], rowCount: 0 };
+      if (!token) {return { rows: [], rowCount: 0 };}
       const signup = signups.find((row) => row.id === token.signup_id);
-      if (!signup) return { rows: [], rowCount: 0 };
+      if (!signup) {return { rows: [], rowCount: 0 };}
       return {
         rows: [{
           id: token.id,
@@ -146,8 +153,8 @@ const createDb = () => {
       return { rows: token ? [token] : [], rowCount: token ? 1 : 0 };
     }
     if (sql.startsWith("UPDATE email_tokens")) {
-      const token = tokens.find((row) => row.id === params[0] && row.used_at == null);
-      if (!token) return { rows: [], rowCount: 0 };
+      const token = tokens.find((row) => row.id === params[0] && (row.used_at === null || row.used_at === undefined));
+      if (!token) {return { rows: [], rowCount: 0 };}
       token.used_at = params[1];
       return { rows: [{ id: token.id }], rowCount: 1 };
     }
@@ -175,7 +182,7 @@ const createDb = () => {
     }
     if (sql.startsWith("UPDATE users SET password_hash")) {
       const user = users.find((row) => row.id === params[0]);
-      if (user) user.password_hash = params[1];
+      if (user) {user.password_hash = params[1];}
       return { rows: [], rowCount: user ? 1 : 0 };
     }
     if (sql.includes("FROM users") && sql.includes("lower(email)")) {
@@ -209,15 +216,15 @@ const createDb = () => {
     }
     if (sql.includes("UPDATE refresh_tokens") && sql.includes("revoked_at")) {
       for (const row of refresh) {
-        if (row.user_id === params[0] && row.revoked_at == null) row.revoked_at = params[1];
+        if (row.user_id === params[0] && (row.revoked_at === null || row.revoked_at === undefined)) {row.revoked_at = params[1];}
       }
       return { rows: [], rowCount: 1 };
     }
-    if (sql.includes("UPDATE access_tokens")) return { rows: [], rowCount: 1 };
+    if (sql.includes("UPDATE access_tokens")) {return { rows: [], rowCount: 1 };}
     if (sql.includes("FROM access_tokens")) {
       const token = access.find((row) => row.token_hash === params[0]);
       const user = token && users.find((row) => row.id === token.user_id);
-      if (!token || !user) return { rows: [], rowCount: 0 };
+      if (!token || !user) {return { rows: [], rowCount: 0 };}
       return { rows: [{ ...user, token_expires_at: token.expires_at }], rowCount: 1 };
     }
     if (sql.includes("FROM users WHERE id")) {
@@ -237,12 +244,12 @@ const createDb = () => {
     }
     if (sql.startsWith("DELETE FROM oauth_states")) {
       const index = states.findIndex((item) => item.state === params[0]);
-      if (index >= 0) states.splice(index, 1);
+      if (index >= 0) {states.splice(index, 1);}
       return { rows: [], rowCount: 1 };
     }
     if (sql.startsWith("UPDATE exchange_codes")) {
-      const row = codes.find((item) => item.code === params[0] && item.used_at == null);
-      if (!row) return { rows: [], rowCount: 0 };
+      const row = codes.find((item) => item.code === params[0] && (item.used_at === null || item.used_at === undefined));
+      if (!row) {return { rows: [], rowCount: 0 };}
       row.used_at = params[1];
       return { rows: [{ code: row.code }], rowCount: 1 };
     }
@@ -266,12 +273,12 @@ const tokenFrom = (mail: Mail): string => {
   return token;
 };
 
-const calls = (db: ReturnType<typeof createDb>, needle: string): Call[] =>
+const calls = (db: ReturnType<typeof createDb>, needle: string): Array<Call> =>
   db.sqls.filter((call) => call.sql.includes(needle));
 
 test("signup accepts an employer account and rejects a personal account", async () => {
   resetLimits();
-  const sent: Mail[] = [];
+  const sent: Array<Mail> = [];
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   const res = await handle(
@@ -307,14 +314,14 @@ test("signup accepts an employer account and rejects a personal account", async 
     deps(db, mailer),
   );
   assert.equal(personal.status, 400);
-  assert.equal((await personal.json() as Err).error.details?.field, "accountType");
+  assert.equal(at(await readJson(personal), "error", "details", "field"), "accountType");
   assert.equal(sent.length, 1);
 
   for (const agreeTerms of [undefined, false, "true"]) {
     resetLimits();
     const unagreed = await handle(post("/api/v1/auth/email/signup", signupBody({ agreeTerms })), env(), deps(db, mailer));
     assert.equal(unagreed.status, 400, String(agreeTerms));
-    assert.equal((await unagreed.json() as Err).error.details?.field, "agreeTerms");
+    assert.equal(at(await readJson(unagreed), "error", "details", "field"), "agreeTerms");
   }
   assert.equal(sent.length, 1);
 
@@ -330,7 +337,7 @@ test("signup accepts an employer account and rejects a personal account", async 
 
 test("verify takes the password from the person who opens the link and keeps the link when it is too short or long", async () => {
   resetLimits();
-  const sent: Mail[] = [];
+  const sent: Array<Mail> = [];
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
@@ -339,9 +346,9 @@ test("verify takes the password from the person who opens the link and keeps the
   for (const password of [undefined, "short", "x".repeat(129)]) {
     resetLimits();
     const bad = await handle(post("/api/v1/auth/email/verify", { token, password }), env(), deps(db, mailer));
-    const body = await bad.json() as Err;
+    const body = await readJson(bad);
     assert.equal(bad.status, 400, String(password));
-    assert.equal(body.error.details?.field, "password");
+    assert.equal(at(body, "error", "details", "field"), "password");
     assert.equal(db.users.length, 0);
     assert.equal(db.tokens[0].used_at ?? null, null);
   }
@@ -354,7 +361,7 @@ test("verify takes the password from the person who opens the link and keeps the
 
 test("whoever opens a link sets the password, so a second signup for the address cannot pick it", async () => {
   resetLimits();
-  const sent: Mail[] = [];
+  const sent: Array<Mail> = [];
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   const first = await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
@@ -379,7 +386,7 @@ test("whoever opens a link sets the password, so a second signup for the address
 
 test("a signup row made before the password moved still verifies without one", async () => {
   resetLimits();
-  const sent: Mail[] = [];
+  const sent: Array<Mail> = [];
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
@@ -393,16 +400,16 @@ test("a signup row made before the password moved still verifies without one", a
 
 test("signup reports the existing account type", async () => {
   resetLimits();
-  const sent: Mail[] = [];
+  const sent: Array<Mail> = [];
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   db.users.push(userRow({ is_employer: false }));
   const personal = await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
-  const personalBody = await personal.json() as Err;
+  const personalBody = await readJson(personal);
   assert.equal(personal.status, 409);
-  assert.equal(personalBody.error.code, "EMAIL_TAKEN");
-  assert.equal(personalBody.error.details?.accountType, "PERSONAL");
-  assert.equal(personalBody.error.message, "이 이메일은 개인 계정으로 가입되어 있어요");
+  assert.equal(at(personalBody, "error", "code"), "EMAIL_TAKEN");
+  assert.equal(at(personalBody, "error", "details", "accountType"), "PERSONAL");
+  assert.equal(at(personalBody, "error", "message"), "이 이메일은 개인 계정으로 가입되어 있어요");
 
   resetLimits();
   db.users[0].is_employer = true;
@@ -411,18 +418,18 @@ test("signup reports the existing account type", async () => {
     env(),
     deps(db, mailer),
   );
-  const employerBody = await employer.json() as Err;
+  const employerBody = await readJson(employer);
   assert.equal(employer.status, 409);
-  assert.equal(employerBody.error.code, "EMAIL_TAKEN");
-  assert.equal(employerBody.error.details?.accountType, "EMPLOYER");
-  assert.equal(employerBody.error.message, "이 이메일은 기업 계정으로 가입되어 있어요");
+  assert.equal(at(employerBody, "error", "code"), "EMAIL_TAKEN");
+  assert.equal(at(employerBody, "error", "details", "accountType"), "EMPLOYER");
+  assert.equal(at(employerBody, "error", "message"), "이 이메일은 기업 계정으로 가입되어 있어요");
   assert.equal(sent.length, 0);
   assert.equal(calls(db, "INSERT INTO users").length, 0);
 });
 
 test("verify creates the email user and a second use is rejected", async () => {
   resetLimits();
-  const sent: Mail[] = [];
+  const sent: Array<Mail> = [];
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   await handle(
@@ -433,13 +440,13 @@ test("verify creates the email user and a second use is rejected", async () => {
   resetLimits();
   const res = await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]), password: PASSWORD }), env(), deps(db, mailer));
   assert.equal(res.status, 200);
-  const body = await res.json() as Session;
-  assert.equal(body.data.expiresIn, 900);
-  assert.ok(body.data.accessToken);
-  assert.ok(body.data.refreshToken);
-  assert.equal(body.data.user.accountType, "EMPLOYER");
-  assert.equal(body.data.user.companyId, null);
-  assert.equal(body.data.user.companyRole, null);
+  const body = await readJson(res);
+  assert.equal(at(body, "data", "expiresIn"), 900);
+  assert.ok(at(body, "data", "accessToken"));
+  assert.ok(at(body, "data", "refreshToken"));
+  assert.equal(at(body, "data", "user", "accountType"), "EMPLOYER");
+  assert.equal(at(body, "data", "user", "companyId"), null);
+  assert.equal(at(body, "data", "user", "companyRole"), null);
   assert.equal(db.users.length, 1);
   const inserted = db.sqls.find((call) => call.sql.startsWith("INSERT INTO users"));
   assert.ok(inserted);
@@ -454,7 +461,7 @@ test("verify creates the email user and a second use is rejected", async () => {
     terms_version: TERMS_VERSION, age14_at: NOW.toISOString(), service_terms_at: NOW.toISOString(), privacy_at: NOW.toISOString(),
   }]);
   assert.equal(db.tokens[0].used_at, NOW.toISOString());
-  assert.equal(body.data.user.id, db.users[0].id);
+  assert.equal(at(body, "data", "user", "id"), db.users[0].id);
 
   resetLimits();
   const again = await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]), password: PASSWORD }), env(), deps(db, mailer));
@@ -464,7 +471,7 @@ test("verify creates the email user and a second use is rejected", async () => {
 
 test("verify with an expired unused token is 410 TOKEN_EXPIRED with the signup email", async () => {
   resetLimits();
-  const sent: Mail[] = [];
+  const sent: Array<Mail> = [];
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   await handle(post("/api/v1/auth/email/signup", signupBody({ email: "Mina@Push.app" })), env(), deps(db, mailer));
@@ -472,9 +479,9 @@ test("verify with an expired unused token is 410 TOKEN_EXPIRED with the signup e
   resetLimits();
   const res = await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]), password: PASSWORD }), env(), deps(db, mailer));
   assert.equal(res.status, 410);
-  const body = await res.json() as Err;
-  assert.equal(body.error.code, "TOKEN_EXPIRED");
-  assert.deepEqual(body.error.details, { email: "mina@push.app" });
+  const body = await readJson(res);
+  assert.equal(at(body, "error", "code"), "TOKEN_EXPIRED");
+  assert.deepEqual(at(body, "error", "details"), { email: "mina@push.app" });
   assert.equal(db.tokens[0].used_at, null);
   assert.equal(db.users.length, 0);
   const unknown = await handle(post("/api/v1/auth/email/verify", { token: "nope", password: PASSWORD }), env(), deps(db, mailer));
@@ -483,32 +490,32 @@ test("verify with an expired unused token is 410 TOKEN_EXPIRED with the signup e
 
 test("login waits for verification and checks the password", async () => {
   resetLimits();
-  const sent: Mail[] = [];
+  const sent: Array<Mail> = [];
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
   resetLimits();
   const early = await handle(post("/api/v1/auth/email/login", { email: EMAIL, password: PASSWORD }), env(), deps(db, mailer));
   assert.equal(early.status, 401);
-  assert.equal((await early.json() as Err).error.code, "INVALID_CREDENTIALS");
+  assert.equal(at(await readJson(early), "error", "code"), "INVALID_CREDENTIALS");
 
   resetLimits();
   await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]), password: PASSWORD }), env(), deps(db, mailer));
   resetLimits();
   const wrong = await handle(post("/api/v1/auth/email/login", { email: EMAIL, password: "nope1234" }), env(), deps(db, mailer));
   assert.equal(wrong.status, 401);
-  assert.equal((await wrong.json() as Err).error.code, "INVALID_CREDENTIALS");
+  assert.equal(at(await readJson(wrong), "error", "code"), "INVALID_CREDENTIALS");
   resetLimits();
   const ok = await handle(post("/api/v1/auth/email/login", { email: EMAIL, password: PASSWORD }), env(), deps(db, mailer));
   assert.equal(ok.status, 200);
-  const body = await ok.json() as Session;
-  assert.equal(body.data.user.accountType, "EMPLOYER");
-  assert.ok(body.data.accessToken);
+  const body = await readJson(ok);
+  assert.equal(at(body, "data", "user", "accountType"), "EMPLOYER");
+  assert.ok(at(body, "data", "accessToken"));
 });
 
 test("password reset does not reveal unknown emails", async () => {
   resetLimits();
-  const sent: Mail[] = [];
+  const sent: Array<Mail> = [];
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   const unknown = await handle(post("/api/v1/auth/email/password-reset", { email: "missing@push.app" }), env(), deps(db, mailer));
@@ -533,7 +540,7 @@ test("password reset does not reveal unknown emails", async () => {
 
 test("password reset confirm changes the password and revokes refresh tokens", async () => {
   resetLimits();
-  const sent: Mail[] = [];
+  const sent: Array<Mail> = [];
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
@@ -556,7 +563,7 @@ test("password reset confirm changes the password and revokes refresh tokens", a
   assert.ok(revoke);
   assert.equal(revoke.params[0], userId);
   assert.ok(db.refresh.some((row) => row.user_id === userId));
-  assert.ok(db.refresh.filter((row) => row.user_id === userId).every((row) => row.revoked_at != null));
+  assert.ok(db.refresh.filter((row) => row.user_id === userId).every((row) => (row.revoked_at !== null && row.revoked_at !== undefined)));
   resetLimits();
   const oldLogin = await handle(post("/api/v1/auth/email/login", { email: EMAIL, password: PASSWORD }), env(), deps(db, mailer));
   assert.equal(oldLogin.status, 401);
@@ -571,10 +578,10 @@ test("github employer start is rejected and google stores the account type", asy
   const denied = await handle(new Request(
     "https://core.example/api/v1/auth/github/start?codeChallengeMethod=S256&codeChallenge=abc&redirectUri=push://auth/callback&accountType=EMPLOYER",
   ), env(), deps(db));
-  const deniedBody = await denied.json() as Err;
+  const deniedBody = await readJson(denied);
   assert.equal(denied.status, 400);
-  assert.equal(deniedBody.error.code, "VALIDATION_ERROR");
-  assert.equal(deniedBody.error.details?.field, "accountType");
+  assert.equal(at(deniedBody, "error", "code"), "VALIDATION_ERROR");
+  assert.equal(at(deniedBody, "error", "details", "field"), "accountType");
   assert.equal(db.sqls.some((call) => call.sql.includes("oauth_states")), false);
 
   resetLimits();
@@ -605,18 +612,19 @@ test("github employer start is rejected and google stores the account type", asy
     "https://core.example/api/v1/auth/google/start?codeChallengeMethod=S256&codeChallenge=abc&redirectUri=" + encodeURIComponent("https://evil.example/auth/callback"),
   ), env({ OAUTH_REDIRECT_ORIGINS: "https://web.example" }), deps(db));
   assert.equal(evil.status, 400);
-  assert.equal((await evil.json() as Err).error.details?.field, "redirectUri");
+  assert.equal(at(await readJson(evil), "error", "details", "field"), "redirectUri");
 });
 
+const start = (redirect: string, appEnv: string) => handle(new Request(
+  "https://core.example/api/v1/auth/google/start?codeChallengeMethod=S256&codeChallenge=abc&redirectUri=" + encodeURIComponent(redirect),
+), env({ APP_ENV: appEnv }), deps(createDb()));
+
 test("production refuses a localhost redirectUri", async () => {
-  const start = (redirect: string, appEnv: string) => handle(new Request(
-    "https://core.example/api/v1/auth/google/start?codeChallengeMethod=S256&codeChallenge=abc&redirectUri=" + encodeURIComponent(redirect),
-  ), env({ APP_ENV: appEnv }), deps(createDb()));
   for (const redirect of ["http://localhost:5173/auth/callback", "http://127.0.0.1:4000/auth/callback"]) {
     resetLimits();
     const prod = await start(redirect, "production");
     assert.equal(prod.status, 400, redirect);
-    assert.equal((await prod.json() as Err).error.details?.field, "redirectUri");
+    assert.equal(at(await readJson(prod), "error", "details", "field"), "redirectUri");
     resetLimits();
     assert.equal((await start(redirect, "development")).status, 200, redirect);
   }
@@ -626,7 +634,7 @@ test("production refuses a localhost redirectUri", async () => {
 
 const googleFetch = (verified: boolean) => async (input: RequestInfo | URL) => {
   const url = String(input);
-  if (url.includes("token")) return Response.json({ access_token: "ya29" });
+  if (url.includes("token")) {return Response.json({ access_token: "ya29" });}
   return Response.json({ sub: "gsub", email: "ada@push.app", email_verified: verified, name: "Ada" });
 };
 
@@ -634,7 +642,7 @@ const exchangeCode = async (db: ReturnType<typeof createDb>, verified: boolean, 
   const callback = await handle(
     new Request("https://core.example/api/v1/auth/google/callback?code=abc&state=s1"),
     env(),
-    deps(db, undefined, googleFetch(verified) as typeof fetch),
+    deps(db, undefined, googleFetch(verified)),
   );
   assert.equal(callback.status, 302);
   assert.equal(calls(db, "INSERT INTO users").length, 0);
@@ -667,7 +675,7 @@ test("exchange rejects unverified google email and defers a new personal account
   resetLimits();
   const bad = await handle(post("/api/v1/auth/exchange", { code: badCode, codeVerifier: verifier }), env(), deps(unverified));
   assert.equal(bad.status, 400);
-  assert.equal((await bad.json() as Err).error.code, "EMAIL_NOT_VERIFIED");
+  assert.equal(at(await readJson(bad), "error", "code"), "EMAIL_NOT_VERIFIED");
   assert.equal(unverified.users.length, 0);
 
   resetLimits();
@@ -681,9 +689,9 @@ test("exchange rejects unverified google email and defers a new personal account
   const takenCode = await exchangeCode(taken, true, verifier);
   resetLimits();
   const conflict = await handle(post("/api/v1/auth/exchange", { code: takenCode, codeVerifier: verifier }), env(), deps(taken));
-  const conflictBody = await conflict.json() as { data: { pendingToken?: string } };
+  const conflictBody = await readJson(conflict);
   assert.equal(conflict.status, 200);
-  assert.equal(typeof conflictBody.data.pendingToken, "string");
+  assert.equal(typeof at(conflictBody, "data", "pendingToken"), "string");
   assert.equal(taken.users.length, 1);
   assert.equal(calls(taken, "INSERT INTO users").length, 0);
 
@@ -699,9 +707,9 @@ test("exchange rejects unverified google email and defers a new personal account
   resetLimits();
   const session = await handle(post("/api/v1/auth/exchange", { code: linkedCode, codeVerifier: verifier }), env(), deps(linked));
   assert.equal(session.status, 200);
-  const body = await session.json() as { data: { pendingToken?: string; user?: { id: string } } };
-  assert.equal(typeof body.data.pendingToken, "string");
-  assert.equal(body.data.user, undefined);
+  const body = await readJson(session);
+  assert.equal(typeof at(body, "data", "pendingToken"), "string");
+  assert.equal(at(body, "data", "user"), undefined);
   assert.equal(linked.users.length, 1);
   assert.equal(calls(linked, "INSERT INTO users").length, 0);
 
@@ -716,12 +724,19 @@ test("exchange rejects unverified google email and defers a new personal account
   resetLimits();
   const made = await handle(post("/api/v1/auth/exchange", { code: createdCode, codeVerifier: verifier }), env(), deps(created));
   assert.equal(made.status, 200);
-  const madeBody = await made.json() as { data: { pendingToken?: string; expiresIn?: number } };
-  assert.equal(typeof madeBody.data.pendingToken, "string");
-  assert.equal(madeBody.data.expiresIn, 900);
+  const madeBody = await readJson(made);
+  assert.equal(typeof at(madeBody, "data", "pendingToken"), "string");
+  assert.equal(at(madeBody, "data", "expiresIn"), 900);
   assert.equal(created.users.length, 0);
   assert.equal(calls(created, "INSERT INTO users").length, 0);
 });
+
+const objectEmails = async (input: RequestInfo | URL, init?: RequestInit) => {
+  const url = String(input);
+  if (url.includes("access_token")) {return Response.json({ access_token: "gho_x" });}
+  const ua = new Headers(init?.headers).get("user-agent");
+  return ua ? Response.json({ id: 42, login: "ada" }) : new Response("forbidden", { status: 403 });
+};
 
 test("github callback keeps a missing email on the exchange code", async () => {
   const verifier = "verifier-verifier-verifier-verifier-verifier";
@@ -733,12 +748,12 @@ test("github callback keeps a missing email on the exchange code", async () => {
     redirect_uri: "https://core.example/api/v1/auth/github/callback",
     final_uri: "push://auth/callback", expires_at: "2099-01-01T00:00:00Z", account_type: "PERSONAL",
   });
-  const seen: { url: string; ua: string | null; auth: string | null }[] = [];
+  const seen: Array<{ url: string; ua: string | null; auth: string | null }> = [];
   const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const headers = new Headers(init?.headers);
     seen.push({ url, ua: headers.get("user-agent"), auth: headers.get("authorization") });
-    if (url.includes("access_token")) return Response.json({ access_token: "gho_x" });
+    if (url.includes("access_token")) {return Response.json({ access_token: "gho_x" });}
     if (url.includes("/user/emails")) {
       return Response.json([
         { email: "other@push.app", primary: false, verified: true },
@@ -751,7 +766,7 @@ test("github callback keeps a missing email on the exchange code", async () => {
   const callback = await handle(
     new Request("https://core.example/api/v1/auth/github/callback?code=abc&state=s1"),
     env(),
-    deps(db, undefined, fetchImpl as typeof fetch),
+    deps(db, undefined, fetchImpl),
   );
   assert.equal(callback.status, 302);
   const emails = seen.find((call) => call.url.includes("/user/emails"));
@@ -771,9 +786,9 @@ test("github callback keeps a missing email on the exchange code", async () => {
   resetLimits();
   const session = await handle(post("/api/v1/auth/exchange", { code, codeVerifier: verifier }), env(), deps(db));
   assert.equal(session.status, 200);
-  const pending = await session.json() as { data: { pendingToken?: string; expiresIn?: number } };
-  assert.equal(typeof pending.data.pendingToken, "string");
-  assert.equal(pending.data.expiresIn, 900);
+  const pending = await readJson(session);
+  assert.equal(typeof at(pending, "data", "pendingToken"), "string");
+  assert.equal(at(pending, "data", "expiresIn"), 900);
   assert.equal(db.users.length, 0);
 
   resetLimits();
@@ -783,16 +798,10 @@ test("github callback keeps a missing email on the exchange code", async () => {
     redirect_uri: "https://core.example/api/v1/auth/github/callback",
     final_uri: "push://auth/callback", expires_at: "2099-01-01T00:00:00Z", account_type: "PERSONAL",
   });
-  const objectEmails = async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    if (url.includes("access_token")) return Response.json({ access_token: "gho_x" });
-    const ua = new Headers(init?.headers).get("user-agent");
-    return ua ? Response.json({ id: 42, login: "ada" }) : new Response("forbidden", { status: 403 });
-  };
   const again = await handle(
     new Request("https://core.example/api/v1/auth/github/callback?code=abc&state=s1"),
     env(),
-    deps(bare, undefined, objectEmails as typeof fetch),
+    deps(bare, undefined, objectEmails),
   );
   assert.equal(again.status, 302);
   const profile = bare.sqls.find((call) => call.sql.startsWith("INSERT INTO exchange_codes"));
@@ -801,41 +810,39 @@ test("github callback keeps a missing email on the exchange code", async () => {
   resetLimits();
   const rejected = await handle(post("/api/v1/auth/exchange", { code: bareCode, codeVerifier: verifier }), env(), deps(bare));
   assert.equal(rejected.status, 400);
-  assert.equal((await rejected.json() as Err).error.code, "EMAIL_NOT_VERIFIED");
+  assert.equal(at(await readJson(rejected), "error", "code"), "EMAIL_NOT_VERIFIED");
   assert.equal(bare.users.length, 0);
 });
 
 test("auth me for an email user includes the company fields", async () => {
   resetLimits();
-  const sent: Mail[] = [];
+  const sent: Array<Mail> = [];
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
   resetLimits();
   const verified = await handle(post("/api/v1/auth/email/verify", { token: tokenFrom(sent[0]), password: PASSWORD }), env(), deps(db, mailer));
-  const session = await verified.json() as Session;
+  const session = await readJson(verified);
   assert.equal(db.consents[0].terms_version, TERMS_VERSION);
   resetLimits();
   const me = await handle(new Request("https://core.example/api/v1/auth/me", {
-    headers: { authorization: "Bearer " + session.data.accessToken },
+    headers: { authorization: "Bearer " + at(session, "data", "accessToken") },
   }), env(), deps(db, mailer));
   assert.equal(me.status, 200);
-  const body = await me.json() as { data: { accountType: string; companyId: string | null; companyRole: string | null } };
-  assert.equal(body.data.accountType, "EMPLOYER");
-  assert.equal(body.data.companyId, null);
-  const meBody = body as { data: { email?: string; provider?: string; plan?: string } };
-  assert.equal(meBody.data.email, EMAIL);
-  assert.equal(meBody.data.provider, "email");
-  assert.equal(meBody.data.plan, "FREE");
-  assert.equal(body.data.companyRole, null);
+  const body = await readJson(me);
+  assert.equal(at(body, "data", "accountType"), "EMPLOYER");
+  assert.equal(at(body, "data", "companyId"), null);
+  assert.equal(at(body, "data", "email"), EMAIL);
+  assert.equal(at(body, "data", "provider"), "email");
+  assert.equal(at(body, "data", "plan"), "FREE");
+  assert.equal(at(body, "data", "companyRole"), null);
   assert.ok(db.sqls.some((call) => call.sql.includes("FROM access_tokens") && call.sql.includes("company_members")));
 });
 
 test("a missing mail binding still accepts signup", async () => {
   resetLimits();
-  const logs: string[] = [];
-  const original = console.log;
-  console.log = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); };
+  const logs: Array<string> = [];
+  const log = mock.method(console, "info", (...args: Array<unknown>) => { logs.push(args.map(String).join(" ")); });
   try {
     const db = createDb();
     const res = await handle(post("/api/v1/auth/email/signup", signupBody()), env({ APP_ENV: "development" }), deps(db));
@@ -844,13 +851,13 @@ test("a missing mail binding still accepts signup", async () => {
     assert.match(logs[0], /noreply@push.local/);
     assert.match(logs[0], /http:\/\/localhost:5174\/auth\/verify\?token=/);
   } finally {
-    console.log = original;
+    log.mock.restore();
   }
 });
 
 test("the EMAIL binding sends mail from MAIL_FROM", async () => {
   resetLimits();
-  const sent: { to: string; from: string; subject: string; text: string; html: string }[] = [];
+  const sent: Array<{ to: string; from: string; subject: string; text: string; html: string }> = [];
   const db = createDb();
   const res = await handle(
     post("/api/v1/auth/email/signup", signupBody()),
@@ -877,7 +884,7 @@ const blockLiveFetch = (): (() => void) => {
   const original = globalThis.fetch;
   globalThis.fetch = (async () => {
     throw new Error("live fetch");
-  }) as typeof fetch;
+  });
   return () => {
     globalThis.fetch = original;
   };
@@ -885,7 +892,7 @@ const blockLiveFetch = (): (() => void) => {
 
 test("RESEND_API_KEY posts the signup mail through the injected fetch", async () => {
   resetLimits();
-  const calls: { input: RequestInfo | URL; init?: RequestInit }[] = [];
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     calls.push({ input, init });
     return new Response("{}", { status: 200 });
@@ -901,17 +908,18 @@ test("RESEND_API_KEY posts the signup mail through the injected fetch", async ()
     assert.equal(res.status, 202);
     assert.equal(calls.length, 1);
     const request = asRequest(calls[0].input, calls[0].init);
-    const body = await request.json() as { from: string; to: string; subject: string; html: string; text: string };
-    const token = new URL(body.text).searchParams.get("token");
+    const body = await readJson(request);
+    const text = String(at(body, "text"));
+    const token = new URL(text).searchParams.get("token");
     assert.equal(request.url, "https://api.resend.com/emails");
     assert.equal(request.method, "POST");
     assert.equal(request.headers.get("authorization"), `Bearer ${KEY}`);
-    assert.equal(typeof body.to, "string");
-    assert.equal(body.from, FROM);
-    assert.equal(body.to, EMAIL);
-    assert.equal(body.subject, "이메일 인증");
-    assert.match(body.text, /^http:\/\/localhost:5174\/auth\/verify\?token=/);
-    assert.equal(body.html, `<p><a href="${body.text}">${body.text}</a></p>`);
+    assert.equal(typeof at(body, "to"), "string");
+    assert.equal(at(body, "from"), FROM);
+    assert.equal(at(body, "to"), EMAIL);
+    assert.equal(at(body, "subject"), "이메일 인증");
+    assert.match(text, /^http:\/\/localhost:5174\/auth\/verify\?token=/);
+    assert.equal(at(body, "html"), `<p><a href="${text}">${text}</a></p>`);
     assert.ok(token);
     assert.equal(request.headers.get("idempotency-key"), token);
   } finally {
@@ -920,9 +928,8 @@ test("RESEND_API_KEY posts the signup mail through the injected fetch", async ()
 });
 
 test("a Resend error status throws and the log has the status without the key", async () => {
-  const logs: string[] = [];
-  const original = console.log;
-  console.log = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); };
+  const logs: Array<string> = [];
+  const log = mock.method(console, "info", (...args: Array<unknown>) => { logs.push(args.map(String).join(" ")); });
   const fetchImpl = (async () => new Response(KEY, { status: 422 })) as typeof fetch;
   try {
     const mailer = createMailer({ RESEND_API_KEY: KEY, MAIL_FROM: FROM }, fetchImpl);
@@ -939,20 +946,19 @@ test("a Resend error status throws and the log has the status without the key", 
     assert.equal(logs[0].includes("Bearer"), false);
     assert.equal(logs[0].includes("Authorization"), false);
   } finally {
-    console.log = original;
+    log.mock.restore();
   }
 });
 
 test("an unconfigured mailer logs the recipient and the link only in development", async () => {
   const sent = { to: EMAIL, subject: "이메일 인증", text: "http://localhost:5174/auth/verify?token=live", html: "<p>x</p>" };
   const logged = async (appEnv: string) => {
-    const logs: string[] = [];
-    const original = console.log;
-    console.log = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); };
+    const logs: Array<string> = [];
+    const log = mock.method(console, "info", (...args: Array<unknown>) => { logs.push(args.map(String).join(" ")); });
     try {
       await createMailer({ APP_ENV: appEnv }).send(sent);
     } finally {
-      console.log = original;
+      log.mock.restore();
     }
     return logs.join("\n");
   };
@@ -966,8 +972,8 @@ test("an unconfigured mailer logs the recipient and the link only in development
 
 test("RESEND_API_KEY skips the EMAIL binding", async () => {
   resetLimits();
-  const sent: { to: string }[] = [];
-  const calls: { input: RequestInfo | URL; init?: RequestInit }[] = [];
+  const sent: Array<{ to: string }> = [];
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     calls.push({ input, init });
     return new Response("{}", { status: 200 });
@@ -996,10 +1002,9 @@ test("RESEND_API_KEY skips the EMAIL binding", async () => {
 
 test("a whitespace RESEND_API_KEY keeps the local mail log", async () => {
   resetLimits();
-  const calls: unknown[] = [];
-  const logs: string[] = [];
-  const original = console.log;
-  console.log = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); };
+  const calls: Array<unknown> = [];
+  const logs: Array<string> = [];
+  const log = mock.method(console, "info", (...args: Array<unknown>) => { logs.push(args.map(String).join(" ")); });
   const fetchImpl = (async () => {
     calls.push(1);
     return new Response("{}", { status: 200 });
@@ -1017,7 +1022,7 @@ test("a whitespace RESEND_API_KEY keeps the local mail log", async () => {
     assert.equal(logs.length, 1);
     assert.match(logs[0], /noreply@push.local/);
   } finally {
-    console.log = original;
+    log.mock.restore();
     restore();
   }
 });
@@ -1036,10 +1041,10 @@ test("mail without an idempotency key sends a uuid key", async () => {
 const counted = (db: ReturnType<typeof createDb>): Deps["query"] => {
   const hits = new Map<string, number>();
   return async (sql, params = []) => {
-    if (!sql.includes("rate_limits")) return db.query(sql, params);
+    if (!sql.includes("rate_limits")) {return db.query(sql, params);}
     const bucket = String(params[0]);
     const used = hits.get(bucket) ?? 0;
-    if (used >= Number(params[2])) return { rows: [], rowCount: 0 };
+    if (used >= Number(params[2])) {return { rows: [], rowCount: 0 };}
     hits.set(bucket, used + 1);
     return { rows: [{ hits: used + 1 }], rowCount: 1 };
   };
@@ -1054,8 +1059,8 @@ const loginFrom = (query: Deps["query"], ip: string, email: string, password: st
 test("login failures are limited per address and email, so another address is not locked out", async () => {
   resetLimits();
   const query = counted(createDb());
-  const statuses: number[] = [];
-  for (let i = 0; i < 11; i++) statuses.push((await loginFrom(query, "10.0.0.1", "Victim@push.app", "wrong-password-" + i)).status);
+  const statuses: Array<number> = [];
+  for (let i = 0; i < 11; i++) {statuses.push((await loginFrom(query, "10.0.0.1", "Victim@push.app", "wrong-password-" + i)).status);}
   assert.deepEqual(statuses.slice(0, 10), Array(10).fill(401));
   assert.equal(statuses[10], 429);
   assert.equal((await loginFrom(query, "10.0.0.2", "victim@push.app", "wrong-password-x")).status, 401);
@@ -1064,8 +1069,8 @@ test("login failures are limited per address and email, so another address is no
 test("one address is limited across emails", async () => {
   resetLimits();
   const query = counted(createDb());
-  const statuses: number[] = [];
-  for (let i = 0; i < 21; i++) statuses.push((await loginFrom(query, "10.0.0.9", `user${i}@push.app`, "wrong-password")).status);
+  const statuses: Array<number> = [];
+  for (let i = 0; i < 21; i++) {statuses.push((await loginFrom(query, "10.0.0.9", `user${i}@push.app`, "wrong-password")).status);}
   assert.deepEqual(statuses.slice(0, 20), Array(20).fill(401));
   assert.equal(statuses[20], 429);
 });
@@ -1077,28 +1082,28 @@ test("an unverified account answers EMAIL_NOT_VERIFIED only after the right pass
   const query = counted(db);
   const wrong = await loginFrom(query, "10.0.0.1", EMAIL, "wrong-password-1");
   assert.equal(wrong.status, 401);
-  assert.equal((await wrong.json() as Err).error.code, "INVALID_CREDENTIALS");
+  assert.equal(at(await readJson(wrong), "error", "code"), "INVALID_CREDENTIALS");
   const right = await loginFrom(query, "10.0.0.1", EMAIL, PASSWORD);
   assert.equal(right.status, 403);
-  assert.equal((await right.json() as Err).error.code, "EMAIL_NOT_VERIFIED");
+  assert.equal(at(await readJson(right), "error", "code"), "EMAIL_NOT_VERIFIED");
 });
 
 test("a pending signup looks like an unknown email to login", async () => {
   resetLimits();
-  const sent: Mail[] = [];
+  const sent: Array<Mail> = [];
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
   const query = counted(db);
-  const pending = await (await loginFrom(query, "10.0.0.1", EMAIL, PASSWORD)).json() as Err;
-  const unknown = await (await loginFrom(query, "10.0.0.1", "nobody@push.app", PASSWORD)).json() as Err;
-  assert.equal(pending.error.code, "INVALID_CREDENTIALS");
-  assert.equal(pending.error.message, unknown.error.message);
+  const pending = await readJson(await loginFrom(query, "10.0.0.1", EMAIL, PASSWORD));
+  const unknown = await readJson(await loginFrom(query, "10.0.0.1", "nobody@push.app", PASSWORD));
+  assert.equal(at(pending, "error", "code"), "INVALID_CREDENTIALS");
+  assert.equal(at(pending, "error", "message"), at(unknown, "error", "message"));
 });
 
 test("a password is guessed at most 30 times an hour", async () => {
   resetLimits();
-  const sent: Mail[] = [];
+  const sent: Array<Mail> = [];
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
@@ -1108,24 +1113,24 @@ test("a password is guessed at most 30 times an hour", async () => {
   const query = counted(db);
   const attempt = (password: string) => loginFrom(query, "10.0.0.1", EMAIL, password, new Date(now));
   for (let i = 0; i < 30; i++) {
-    if (i > 0 && i % 10 === 0) now += 60 * 1000;
+    if (i > 0 && i % 10 === 0) {now += 60 * 1000;}
     assert.equal((await attempt("wrong-password-" + i)).status, 401, "guess " + i);
   }
   now += 60 * 1000;
   const locked = await attempt(PASSWORD);
   assert.equal(locked.status, 429);
-  assert.equal((await locked.json() as Err).error.details?.retryAfterSec, 3600);
+  assert.equal(at(await readJson(locked), "error", "details", "retryAfterSec"), 3600);
   now += 61 * 60 * 1000;
   assert.equal((await attempt(PASSWORD)).status, 200);
 });
 
 test("signup and reset mails are limited per email", async () => {
   resetLimits();
-  const sent: Mail[] = [];
+  const sent: Array<Mail> = [];
   const db = createDb();
   const query = counted(db);
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
-  const statuses: number[] = [];
+  const statuses: Array<number> = [];
   for (let i = 0; i < 4; i++) {
     const res = await handle(post("/api/v1/auth/email/signup", signupBody(), { "cf-connecting-ip": `10.0.1.${i}` }), env(), { query, now: () => NOW, mailer });
     statuses.push(res.status);
@@ -1136,7 +1141,7 @@ test("signup and reset mails are limited per email", async () => {
 
 test("a new reset link revokes the previous unused one", async () => {
   resetLimits();
-  const sent: Mail[] = [];
+  const sent: Array<Mail> = [];
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
@@ -1166,7 +1171,7 @@ test("an unknown email still pays the password hash cost", async () => {
 
 const resetSetup = async () => {
   resetLimits();
-  const sent: Mail[] = [];
+  const sent: Array<Mail> = [];
   const db = createDb();
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
   await handle(post("/api/v1/auth/email/signup", signupBody()), env(), deps(db, mailer));
@@ -1187,9 +1192,9 @@ test("reset confirm with an expired unused token is 410 TOKEN_EXPIRED with the a
   const previous = db.users[0].password_hash;
   const res = await confirm(token);
   assert.equal(res.status, 410);
-  const body = await res.json() as Err;
-  assert.equal(body.error.code, "TOKEN_EXPIRED");
-  assert.deepEqual(body.error.details, { email: EMAIL });
+  const body = await readJson(res);
+  assert.equal(at(body, "error", "code"), "TOKEN_EXPIRED");
+  assert.deepEqual(at(body, "error", "details"), { email: EMAIL });
   assert.equal(reset.used_at, null);
   assert.equal(db.users[0].password_hash, previous);
   assert.equal((await confirm("nope")).status, 401);
@@ -1200,7 +1205,7 @@ test("GET password-reset lookup returns the email and never consumes the token",
   const before = db.sqls.length;
   const res = await peek(token);
   assert.equal(res.status, 200);
-  assert.deepEqual((await res.json() as { data: unknown }).data, { email: EMAIL });
+  assert.deepEqual(at(await readJson(res), "data"), { email: EMAIL });
   assert.equal(reset.used_at, null);
   assert.equal(db.sqls.slice(before).some((call) => /^(UPDATE|DELETE|INSERT)/.test(call.sql) && !call.sql.includes("rate_limits")), false);
   assert.equal((await confirm(token)).status, 204);
@@ -1212,9 +1217,9 @@ test("GET password-reset lookup: expired is 410 with the email, unknown and used
   reset.expires_at = new Date(NOW.getTime() - 1000).toISOString();
   const expired = await peek(token);
   assert.equal(expired.status, 410);
-  const body = await expired.json() as Err;
-  assert.equal(body.error.code, "TOKEN_EXPIRED");
-  assert.deepEqual(body.error.details, { email: EMAIL });
+  const body = await readJson(expired);
+  assert.equal(at(body, "error", "code"), "TOKEN_EXPIRED");
+  assert.deepEqual(at(body, "error", "details"), { email: EMAIL });
   reset.expires_at = new Date(NOW.getTime() + 60_000).toISOString();
   assert.equal((await confirm(token)).status, 204);
   assert.equal((await peek(token)).status, 401);
@@ -1236,9 +1241,8 @@ test("oauth callback consumes the state in one statement", async () => {
 });
 
 test("without a mail provider only development prints the link", async () => {
-  const logs: string[] = [];
-  const original = console.log;
-  console.log = (...args: unknown[]) => { logs.push(args.join(" ")); };
+  const logs: Array<string> = [];
+  const log = mock.method(console, "info", (...args: Array<unknown>) => { logs.push(args.join(" ")); });
   try {
     const mail = { to: EMAIL, subject: "s", text: "https://web/auth/reset?token=secret-token", html: "" };
     await createMailer({ APP_ENV: "production" }).send(mail);
@@ -1247,13 +1251,13 @@ test("without a mail provider only development prints the link", async () => {
     assert.equal(logs[0]?.includes("secret-token"), false);
     assert.equal(logs[1]?.includes("secret-token"), true);
   } finally {
-    console.log = original;
+    log.mock.restore();
   }
 });
 
 test("verification resend is 204 without saying whether the email exists", async () => {
   resetLimits();
-  const sent: Mail[] = [];
+  const sent: Array<Mail> = [];
   const db = createDb();
   const query = counted(db);
   const mailer = { send: async (mail: Mail) => { sent.push(mail); } };
@@ -1282,7 +1286,7 @@ test("verification resend is 204 without saying whether the email exists", async
   assert.match(sent[1].text, /\/auth\/verify\?token=/);
   const second = tokenFrom(sent[1]);
   assert.notEqual(second, first);
-  assert.equal(db.tokens.some((row) => row.token_hash && row.kind === "VERIFY" && row.used_at == null), true);
+  assert.equal(db.tokens.some((row) => row.token_hash && row.kind === "VERIFY" && (row.used_at === null || row.used_at === undefined)), true);
   const dead = await handle(post("/api/v1/auth/email/verify", { token: first, password: PASSWORD }, { "cf-connecting-ip": "10.9.0.4" }), env(), { query, now: () => now, mailer });
   assert.equal(dead.status, 401);
   assert.equal(db.users.length, 0);
@@ -1296,11 +1300,27 @@ test("verification resend is 204 without saying whether the email exists", async
 
   const limited = await call(EMAIL, "10.9.0.7");
   assert.equal(limited.status, 429);
-  const limitedBody = await limited.json() as Err;
-  assert.equal(limitedBody.error.code, "RATE_LIMITED");
-  assert.equal(limitedBody.error.details?.retryAfterSec, 60);
+  const limitedBody = await readJson(limited);
+  assert.equal(at(limitedBody, "error", "code"), "RATE_LIMITED");
+  assert.equal(at(limitedBody, "error", "details", "retryAfterSec"), 60);
   assert.equal(sent.length, 2);
 
   const fresh = await handle(post("/api/v1/auth/email/verify", { token: second, password: PASSWORD }, { "cf-connecting-ip": "10.9.0.8" }), env(), { query, now: () => now, mailer });
   assert.equal(fresh.status, 200);
 });
+
+// One typed boundary for response bodies in this test file.
+async function readJson(res: Pick<Response, "json">): Promise<Json> {
+  const body: Json = await res.json();
+  return body;
+}
+
+// Walks a JSON path; undefined when any step is missing.
+function at(value: Json | undefined, ...path: Array<string | number>): Json | undefined {
+  let cur = value;
+  for (const key of path) {
+    if (cur === null || typeof cur !== "object") {return undefined;}
+    cur = Array.isArray(cur) ? cur[Number(key)] : cur[key];
+  }
+  return cur;
+}

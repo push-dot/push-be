@@ -9,18 +9,18 @@ import { readFileSync } from "node:fs";
 const PREPARABLE = /^\s*(WITH|SELECT|INSERT|UPDATE|DELETE|VALUES)\b/i;
 const [input, flag, ...sources] = process.argv.slice(2);
 const read = (path) => readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
-const norm = (s) => s.replace(/\s+/g, " ").trim();
+const norm = (s) => s.replaceAll(/\s+/g, " ").trim();
 const known = flag === "--source"
   ? sources.flatMap(read).flatMap((f) => norm(f.fragment).split(/\{[^}]*\}|\$\{[^}]*\}/)).map((p) => p.trim()).filter((p) => p.length >= 12)
   : null;
 const statements = [...new Set(read(input))]
   .filter((sql) => PREPARABLE.test(sql))
   .filter((sql) => !known || known.some((part) => norm(sql).includes(part)))
-  .sort();
+  .sort((a, b) => Number(a > b) - Number(a < b));
 
 const quote = (sql, n) => {
   const tag = "$s" + n + "$";
-  if (sql.includes(tag)) throw new Error("statement contains " + tag);
+  if (sql.includes(tag)) {throw new Error("statement contains " + tag);}
   return tag + sql + tag;
 };
 
@@ -32,8 +32,5 @@ statements.forEach((sql, i) => {
     + " EXCEPTION WHEN others THEN INSERT INTO prepare_failures VALUES (" + text + ", SQLSTATE, SQLERRM); END;",
   );
 });
-out.push("END $do$;");
-out.push("\\echo checked " + statements.length + " statements");
-out.push("SELECT sqlstate, message, left(regexp_replace(statement, '\\s+', ' ', 'g'), 400) AS statement FROM prepare_failures ORDER BY message;");
-out.push("DO $$ BEGIN IF EXISTS (SELECT 1 FROM prepare_failures) THEN RAISE EXCEPTION '% statements failed PREPARE', (SELECT count(*) FROM prepare_failures); END IF; END $$;");
+out.push("END $do$;", String.raw`\echo checked ` + statements.length + " statements", String.raw`SELECT sqlstate, message, left(regexp_replace(statement, '\s+', ' ', 'g'), 400) AS statement FROM prepare_failures ORDER BY message;`, "DO $$ BEGIN IF EXISTS (SELECT 1 FROM prepare_failures) THEN RAISE EXCEPTION '% statements failed PREPARE', (SELECT count(*) FROM prepare_failures); END IF; END $$;");
 process.stdout.write(out.join("\n") + "\n");

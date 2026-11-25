@@ -1,0 +1,108 @@
+{
+  "type": "a2ui",
+  "kind": "approval",
+  "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+  "messages": [
+    {
+      "version": "v0.9.1",
+      "createSurface": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "catalogId": "https://push.app/a2ui/catalogs/push/v1/catalog.json"
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateComponents": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "components": [
+          {
+            "id": "root",
+            "component": "Column",
+            "children": [
+              "title",
+              "diff",
+              "choice"
+            ]
+          },
+          {
+            "id": "title",
+            "component": "Text",
+            "text": "수정 적용",
+            "variant": "h3"
+          },
+          {
+            "id": "diff",
+            "component": "PushDiff",
+            "title": "1줄을 더하고 1줄을 뺐어요",
+            "lines": [
+              {
+                "sign": "",
+                "text": "경력"
+              },
+              {
+                "sign": "-",
+                "text": "결제 서버를 운영했어요"
+              },
+              {
+                "sign": "+",
+                "text": "결제 서버 트래픽을 3배로 늘렸어요"
+              },
+              {
+                "sign": "",
+                "text": "학력"
+              }
+            ],
+            "documentId": "00000000-0000-4000-8000-00000000d0c1"
+          },
+          {
+            "id": "choice",
+            "component": "PushChoice",
+            "form": "buttons",
+            "questions": [
+              {
+                "id": "q",
+                "choices": [
+                  {
+                    "id": "skip",
+                    "label": "되돌리기"
+                  },
+                  {
+                    "id": "apply",
+                    "label": "적용"
+                  }
+                ]
+              }
+            ],
+            "answer": "pick",
+            "open": {
+              "path": "/open"
+            },
+            "picked": {
+              "path": "/picked"
+            },
+            "selected": {
+              "path": "/selected"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "version": "v0.9.1",
+      "updateDataModel": {
+        "surfaceId": "00000000-0000-4000-8000-00000000c0de",
+        "path": "/",
+        "value": {
+          "open": true,
+          "picked": [],
+          "selected": {
+            "q": []
+          }
+        }
+      }
+    }
+  ],
+  "seq": 1,
+  "at": "2026-11-23T00:00:00.000000Z",
+  "turn": "00000000-0000-4000-8000-00000000a001"
+}

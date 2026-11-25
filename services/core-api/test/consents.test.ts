@@ -3,16 +3,19 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
 import { TERMS_VERSION } from "../src/routes/consents.ts";
+import { parseJson } from "../test-support/recorder.ts";
+import type { Row } from "../test-support/recorder.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const NOW = "2026-10-21T00:00:00.000Z";
 const STORED_AT = "2026-10-21T03:04:05.000Z";
 const PATH = "/api/v1/me/consents";
 
-type Call = { sql: string; params: unknown[] };
+type Call = { sql: string; params: Array<unknown> };
 type Terms = {
   version: string | null;
   age14At: string | null;
@@ -47,14 +50,14 @@ const tokenRow = () => ({
   is_employer: false,
 });
 
-const authed = (seen: Call[], extra: Deps["query"]): Deps["query"] => async (sql, params = []) => {
+const authed = (seen: Array<Call>, extra: Deps["query"]): Deps["query"] => async (sql, params = []) => {
   seen.push({ sql, params });
-  if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-  if (sql.includes("access_tokens")) return { rows: [tokenRow()], rowCount: 1 };
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+  if (sql.includes("access_tokens")) {return { rows: [tokenRow()], rowCount: 1 };}
   return extra(sql, params);
 };
 
-const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
+const empty = { rows: [] as Array<Row>, rowCount: 0 };
 
 const get = (): Request => new Request("https://core.example" + PATH, {
   headers: { authorization: "Bearer secret-token" },
@@ -66,15 +69,15 @@ const put = (body: unknown): Request => new Request("https://core.example" + PAT
   body: JSON.stringify(body),
 });
 
-const read = async (res: Response): Promise<ConsentBody> => JSON.parse(await res.text()) as ConsentBody;
+const read = async (res: Response): Promise<ConsentBody> => parseJson<ConsentBody>(await res.text());
 
-const consentSql = (seen: Call[], verb: string): Call[] =>
+const consentSql = (seen: Array<Call>, verb: string): Array<Call> =>
   seen.filter((call) => call.sql.includes("user_consents") || call.sql.includes("reference_samples"))
     .filter((call) => call.sql.includes(verb));
 
 test("missing consent row is false and does not insert", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(get(), env(), deps(authed(seen, async () => empty)));
   assert.equal(res.status, 200);
   const body = await read(res);
@@ -88,7 +91,7 @@ test("missing consent row is false and does not insert", async () => {
 
 test("existing consent returns the stored choice", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(get(), env(), deps(authed(seen, async (sql) => {
     if (sql.includes("user_consents")) {
       return { rows: [{ reference_data: true, updated_at: STORED_AT }], rowCount: 1 };
@@ -103,7 +106,7 @@ test("existing consent returns the stored choice", async () => {
 
 test("turning reference data on upserts and keeps samples", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(put({ referenceData: true }), env(), deps(authed(seen, async () => empty)));
   assert.equal(res.status, 200);
   const body = await read(res);
@@ -117,7 +120,7 @@ test("turning reference data on upserts and keeps samples", async () => {
 
 test("turning reference data off deletes samples and stores false", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(put({ referenceData: false }), env(), deps(authed(seen, async () => empty)));
   assert.equal(res.status, 200);
   const body = await read(res);
@@ -134,10 +137,10 @@ test("turning reference data off deletes samples and stores false", async () => 
 
 test("a non-boolean referenceData is a validation error", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(put({ referenceData: "true" }), env(), deps(authed(seen, async () => empty)));
   assert.equal(res.status, 400);
-  const body = JSON.parse(await res.text()) as Err;
+  const body = parseJson<Err>(await res.text());
   assert.equal(body.error.code, "VALIDATION_ERROR");
   assert.equal(body.error.details?.field, "referenceData");
   assert.equal(consentSql(seen, "INSERT").length, 0);
@@ -163,12 +166,12 @@ const agreedRow = (version: string, marketing: boolean) => ({
 
 test("signup terms store the version and marketing, and the default version is used", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(termsPut({
     age14: true, serviceTerms: true, privacy: true, marketing: true, termsVersion: "v9",
   }), env(), deps(authed(seen, async (sql) => {
-    if (sql.includes("INSERT INTO user_consents")) return empty;
-    if (sql.includes("FROM user_consents")) return { rows: [agreedRow("v9", true)], rowCount: 1 };
+    if (sql.includes("INSERT INTO user_consents")) {return empty;}
+    if (sql.includes("FROM user_consents")) {return { rows: [agreedRow("v9", true)], rowCount: 1 };}
     return empty;
   })));
   assert.equal(res.status, 200);
@@ -184,7 +187,7 @@ test("signup terms store the version and marketing, and the default version is u
   assert.deepEqual(upsert?.params, [USER, NOW, true, "v9", true, true]);
 
   resetLimits();
-  const again: Call[] = [];
+  const again: Array<Call> = [];
   const omitted = await handle(termsPut({ age14: true, serviceTerms: true, privacy: true }), env(), deps(authed(again, async () => empty)));
   assert.equal(omitted.status, 200);
   const fallback = again.find((call) => call.sql.includes("INSERT INTO user_consents"));
@@ -193,13 +196,13 @@ test("signup terms store the version and marketing, and the default version is u
 
 test("required terms cannot be turned off or agreed one at a time", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const off = await handle(termsPut({ age14: false, serviceTerms: true, privacy: true }), env(), deps(authed(seen, async () => empty)));
   assert.equal(off.status, 400);
-  assert.equal((JSON.parse(await off.text()) as Err).error.details?.field, "age14");
+  assert.equal((parseJson<Err>(await off.text())).error.details?.field, "age14");
   const partial = await handle(termsPut({ age14: true }), env(), deps(authed(seen, async () => empty)));
   assert.equal(partial.status, 400);
-  assert.equal((JSON.parse(await partial.text()) as Err).error.details?.field, "serviceTerms");
+  assert.equal((parseJson<Err>(await partial.text())).error.details?.field, "serviceTerms");
   const none = await handle(termsPut({}), env(), deps(authed(seen, async () => empty)));
   assert.equal(none.status, 400);
   assert.equal(consentSql(seen, "INSERT").length, 0);
@@ -207,9 +210,9 @@ test("required terms cannot be turned off or agreed one at a time", async () => 
 
 test("marketing can change without restating the required terms", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const res = await handle(termsPut({ marketing: false }), env(), deps(authed(seen, async (sql) => {
-    if (sql.includes("INSERT INTO user_consents")) return empty;
+    if (sql.includes("INSERT INTO user_consents")) {return empty;}
     if (sql.includes("FROM user_consents")) {
       return { rows: [{ reference_data: true, updated_at: STORED_AT, marketing: false }], rowCount: 1 };
     }
@@ -226,11 +229,11 @@ test("marketing can change without restating the required terms", async () => {
 
 test("the same terms version is idempotent and a new version archives the old agreement", async () => {
   resetLimits();
-  const same: Call[] = [];
+  const same: Array<Call> = [];
   const sameRes = await handle(termsPut({
     age14: true, serviceTerms: true, privacy: true, termsVersion: "1.0",
   }), env(), deps(authed(same, async (sql) => {
-    if (sql.includes("FROM user_consents")) return { rows: [agreedRow("1.0", false)], rowCount: 1 };
+    if (sql.includes("FROM user_consents")) {return { rows: [agreedRow("1.0", false)], rowCount: 1 };}
     return empty;
   })));
   assert.equal(sameRes.status, 200);
@@ -241,7 +244,7 @@ test("the same terms version is idempotent and a new version archives the old ag
   assert.deepEqual(kept?.params, [USER, NOW, true, "1.0", false, false]);
 
   resetLimits();
-  const next: Call[] = [];
+  const next: Array<Call> = [];
   let stored = agreedRow("1.0", true);
   const nextRes = await handle(termsPut({
     age14: true, serviceTerms: true, privacy: true, termsVersion: "2.0",
@@ -252,7 +255,7 @@ test("the same terms version is idempotent and a new version archives the old ag
       stored = agreedRow("2.0", true);
       return empty;
     }
-    if (sql.includes("FROM user_consents")) return { rows: [stored], rowCount: 1 };
+    if (sql.includes("FROM user_consents")) {return { rows: [stored], rowCount: 1 };}
     return empty;
   })));
   assert.equal(nextRes.status, 200);
@@ -264,11 +267,11 @@ test("the same terms version is idempotent and a new version archives the old ag
   assert.equal(next.filter((call) => call.sql.includes("user_consent_history")).length, 1);
 
   resetLimits();
-  const legacy: Call[] = [];
+  const legacy: Array<Call> = [];
   await handle(termsPut({
     age14: true, serviceTerms: true, privacy: true, termsVersion: TERMS_VERSION,
   }), env(), deps(authed(legacy, async (sql) => {
-    if (sql.includes("FROM user_consents")) return { rows: [agreedRow("2026-10-29", false)], rowCount: 1 };
+    if (sql.includes("FROM user_consents")) {return { rows: [agreedRow("2026-10-29", false)], rowCount: 1 };}
     return empty;
   })));
   assert.equal(legacy.filter((call) => call.sql.includes("user_consent_history")).length, 1);
@@ -287,6 +290,6 @@ test("the terms version is defined once and every consumer reads the same value"
     assert.doesNotMatch(read(file), /2026-10-29/, file);
   }
   for (const file of ["packages/contracts/spec/account.ts", "packages/contracts/openapi.json", "packages/contracts/src/schema.ts"]) {
-    assert.match(read(file), new RegExp(`Omitted version is ${TERMS_VERSION.replace(".", "\\.")}\\.`), file);
+    assert.match(read(file), new RegExp(`Omitted version is ${TERMS_VERSION.replace(".", String.raw`\.`)}\\.`), file);
   }
 });

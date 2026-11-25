@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import logging
@@ -29,10 +30,10 @@ from app.harness.approval import (
     user_supplied,
 )
 from app.harness.memory import memory_update, merge_memory
-from app.harness.policy import TRUSTED_READS, Decision, Exposure, Tier, decide
+from app.harness.policy import FLOW_STARTS, TRUSTED_READS, Decision, Exposure, Tier, decide
 from app.harness.sources import note_tool
 from app.harness.state import ThreadMemory
-from app.harness.status import job_of, thinking, tool_status, waiting, working
+from app.harness.status import job_of, running_job, thinking, tool_status, waiting, working
 from app.harness.tools import (
     RETRY_WARNING,
     ToolContext,
@@ -69,11 +70,13 @@ class PersonalState(HarnessState, ThreadMemory, total=False):
     context: dict | None
     quick_start: dict | None
     quick_start_done: bool
+    # Text the user sent while the flow ran with no gate open; resume_flow hands it over once.
+    steer: str | None
 
 
 _FLOW_DONE = {
     "cancelled": "서류 작성을 그만뒀어요.",
-    "done": "서류 작성을 끝냈어요.",
+    "done": "서류 작업을 마쳤어요.",
 }
 
 
@@ -206,6 +209,20 @@ def _seen_text(state: dict) -> str:
         if isinstance(message, HumanMessage))
 
 
+async def drop_flow_notes(db, conversation_id) -> None:
+    """The notes ledger and stage entries live per conversation, a flow per posting: a flow that
+    starts without the last flow's inputs must not read its evidence, ask slot or steer."""
+    from app.harness.kstyle.workspace import NOTES_FILE
+
+    if db is None or not conversation_id:
+        return
+    await db.q().execute(
+        "DELETE FROM workspace_files WHERE conversation_id = $1 "
+        "AND (name = $2 OR starts_with(name, '01_agent_'))",
+        conversation_id, NOTES_FILE,
+    )
+
+
 def leave_flow(summary: str, **update) -> Command:
     return Command(
         update={"messages": [SystemMessage(content=summary)], **update},
@@ -278,9 +295,10 @@ def _route_resume(state: PersonalState) -> str:
 
 
 def _after_resume(state: PersonalState) -> str:
-    if _resume_dict(state).get("status") == "active":
+    status = _resume_dict(state).get("status")
+    if status == "active":
         return "resume_flow"
-    return "agent"
+    return "end" if status == "done" else "agent"
 
 
 def _public_resume(result: dict) -> dict:
@@ -298,6 +316,13 @@ def _child_resume(state: dict) -> dict:
     child["job_id"] = state.get("job_id") or child.get("job_id") or ""
     child.setdefault("status", "active")
     child.setdefault("phase", "mode_select")
+    steer = str(state.get("steer") or "").strip()
+    if steer:
+        inputs = dict(child.get("inputs") or {})
+        said = [str(item) for item in inputs.get("steer") or []]
+        if steer not in said:
+            inputs["steer"] = [*said, steer]
+        child["inputs"] = inputs
     return child
 
 
@@ -453,6 +478,86 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         update = {"others_in_prompt": bool(lines)} if spec.id == "personal" else {}
         return {"messages": [reply], **update} if reply is not None else update
 
+    def _context(state: dict, call_id: str, mode: AccessMode, exposure: Exposure,
+                 supplied: bool | None = None) -> ToolContext:
+        return ToolContext(
+            user_id=str(state.get("user_id") or ""),
+            company_id=state.get("company_id"),
+            conversation_id=str(state.get("conversation_id") or ""),
+            job_id=str(state.get("job_id") or ""),
+            tool_call_id=call_id,
+            db=db,
+            core=core,
+            access_mode=mode.value,
+            supplied=supplied,
+            exposure=exposure,
+            user_text=_seen_text(state),
+        )
+
+    def _read_batch(state: dict, pending: list, room: int, mode: AccessMode) -> list:
+        """The leading run of pending calls that only read inside Push and never ask: they can run
+        together. An outside read, a write, an unknown tool or bad args ends the run."""
+        exposure = _exposure(state, tools_by_name)
+        batch = []
+        for call in pending[:room]:
+            name, raw_args, call_id = _parts(call)
+            tool = tools_by_name.get(name)
+            if (tool is None or tool.tier is not Tier.READ or name in FLOW_STARTS
+                    or write_needs_approval(mode, tool.tier, state.get("quick_start"), name,
+                                            exposure=exposure)):
+                break
+            try:
+                args = tool.args_model.model_validate(raw_args)
+            except ValidationError:
+                break
+            batch.append((tool, args, call_id))
+        return batch
+
+    async def _run_reads(state: dict, batch: list, used: int, mode: AccessMode) -> Command:
+        # None of the batch's results existed when the model made these calls, so one exposure holds.
+        exposure = _exposure(state, tools_by_name)
+        lines = []
+        for tool, args, _call_id in batch:
+            meta = structured[tool.name].metadata
+            lines.append((meta["summary"](args), meta["tier"].value))
+        working(tool_status(batch[0][0].name))
+        for (tool, _args, _call_id), (summary, tier) in zip(batch, lines, strict=True):
+            emit(_tool_event(tool.name, "run", summary, tier))
+
+        async def one(item, line):
+            tool, args, call_id = item
+            summary, tier = line
+            result, ok, retried = await call_retrying(
+                tool, args, _context(state, call_id, mode, exposure))
+            if isinstance(result, Command):
+                return result
+            emit(_tool_event(tool.name, "ok" if ok else "err", summary, tier, result, retried))
+            if ok:
+                await note_tool(
+                    tool.name, args, result, user_id=str(state.get("user_id") or ""), db=db)
+            return ToolMessage(
+                content=as_data(json.dumps(result, ensure_ascii=False), tool.name),
+                tool_call_id=call_id)
+
+        results = await asyncio.gather(*(one(item, line) for item, line in zip(batch, lines, strict=True)))
+        messages, flow = [], None
+        for (tool, _args, call_id), (summary, tier), result in zip(batch, lines, results, strict=True):
+            if not isinstance(result, Command):
+                messages.append(result)
+                continue
+            # A read that opens a flow: the first one goes, as on the single path; a second waits.
+            answer = {"entered": result.goto} if flow is None else {"error": "ONE_FLOW_AT_A_TIME"}
+            emit(_tool_event(tool.name, "ok" if flow is None else "err", summary, tier, answer))
+            flow = flow or result
+            messages.append(ToolMessage(content=json.dumps(answer), tool_call_id=call_id))
+        answered = {call_id for _tool, _args, call_id in batch}
+        if flow is None:
+            return _tool_command(state, messages, answered, tool_calls_used=used + len(batch))
+        update = dict(flow.update or {})
+        update["messages"] = [*(update.get("messages") or []), *messages]
+        update["tool_calls_used"] = used + len(batch)
+        return Command(update=update, goto=flow.goto)
+
     async def tools(state: HarnessState) -> Command:
         pending = _open_calls(state)
         used = int(state.get("tool_calls_used") or 0)
@@ -461,6 +566,10 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             return _tool_command(state, [
                 ToolMessage(content=_CAP_NOTE, tool_call_id=_parts(call)[2]) for call in pending
             ], {_parts(call)[2] for call in pending})
+        mode = AccessMode(state.get("access_mode") or AccessMode.AUTO)
+        batch = _read_batch(state, pending, _CAP - used, mode)
+        if len(batch) > 1:
+            return await _run_reads(state, batch, used, mode)
         name, raw_args, call_id = _parts(pending[0])
         tool = tools_by_name.get(name)
         bound = structured.get(name)
@@ -481,7 +590,6 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 {call_id},
                 tool_calls_used=used + 1,
             )
-        mode = AccessMode(state.get("access_mode") or AccessMode.AUTO)
         meta = bound.metadata
         summary = meta["summary"](args)
         # shortcut: an outside read goes out as READ, because the api-client's ToolTier has three
@@ -533,18 +641,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 )
             if answer.get("option_id") == APPROVE_ALWAYS:
                 await remember_site(db, state.get("conversation_id"), args.url)
-        ctx = ToolContext(
-            user_id=str(state.get("user_id") or ""),
-            company_id=state.get("company_id"),
-            conversation_id=str(state.get("conversation_id") or ""),
-            job_id=str(state.get("job_id") or ""),
-            tool_call_id=call_id,
-            db=db,
-            core=core,
-            access_mode=mode.value,
-            supplied=page.get("supplied"),
-            exposure=exposure,
-        )
+        ctx = _context(state, call_id, mode, exposure, page.get("supplied"))
         working(tool_status(tool.name))
         emit(_tool_event(tool.name, "run", summary, tier))
         result, ok, retried = await call_retrying(tool, args, ctx)
@@ -604,6 +701,8 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 return finish(enter_flow("resume_flow", resume=seed))
             attached = await _resume_from_attachment(db, state)
             if attached is not None:
+                if _resume_dict(state).get("inputs"):
+                    await drop_flow_notes(db, state.get("conversation_id"))
                 return finish(enter_flow("resume_flow", resume=attached))
             from app.domain.quick_starts import quick_start_seed
 
@@ -651,10 +750,22 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                     result = chunk
             resume = _public_resume(result or {})
             await _mirror_resume(db, state.get("conversation_id"), resume)
-            summary = _FLOW_DONE.get(str(resume.get("status") or ""))
+            status = str(resume.get("status") or "")
+            if status == "done":
+                # The flow already told the user; an agent turn here sees only the old request
+                # and the summary, so it redoes the work or denies the result.
+                said = (result or {}).get("reply")
+                # A reply stamped by an earlier job was that turn's; this turn says its own line.
+                # The flow stamps running_job(), which is "" when no run is bound (scripts, tests).
+                if not (isinstance(said, str) and said.strip()
+                        and (result or {}).get("reply_job") in {running_job(), job_of(state)}):
+                    said = _FLOW_DONE["done"]
+                    emit({"token": said})
+                return {"messages": [AIMessage(content=said)], "resume": resume, "steer": None}
+            summary = _FLOW_DONE.get(status)
             if summary is not None:
-                return leave_flow(summary, resume=resume)
-            return {"resume": resume}
+                return leave_flow(summary, resume=resume, steer=None)
+            return {"resume": resume, "steer": None}
 
     graph = StateGraph(PersonalState if use_resume else HarnessState)
     graph.add_node("agent", agent)
@@ -667,7 +778,8 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
             "route", _route_resume,
             {"resume_flow": "resume_flow", "agent": "agent", "end": END})
         graph.add_conditional_edges(
-            "resume_flow", _after_resume, {"resume_flow": "resume_flow", "agent": "agent"})
+            "resume_flow", _after_resume,
+            {"resume_flow": "resume_flow", "agent": "agent", "end": END})
     else:
         graph.add_edge(START, "agent")
     graph.add_conditional_edges("agent", after_agent, {"tools": "tools", "end": END})
@@ -715,7 +827,8 @@ def _build_employer_graph(agent, tools, after_agent, checkpointer, *, db, core=N
 
     state_type, flows = build_flows(
         db=db, generate_for=generate_for, research_text=research_text,
-        plan_of=lambda _state: current_employer_plan() or "", call_tool=call_tool)
+        plan_of=lambda _state: current_employer_plan() or "", call_tool=call_tool,
+        model_for=lambda _state: turn_model.get())
     flow_nodes = {f"{name}_flow": f"{name}_flow" for name in FLOWS}
 
     def _target(state) -> str:
@@ -757,9 +870,11 @@ def _build_employer_graph(agent, tools, after_agent, checkpointer, *, db, core=N
 
 
 async def astream_harness(graph, payload, config):
-    async for mode, chunk in graph.astream(payload, config, stream_mode=["custom", "values"]):
+    async for namespace, mode, chunk in graph.astream(
+            payload, config, stream_mode=["custom", "values"], subgraphs=True):
         if mode == "custom" and isinstance(chunk, dict):
             yield chunk
             continue
-        if mode == "values" and isinstance(chunk, dict) and chunk.get("__interrupt__"):
+        if (not namespace and mode == "values" and isinstance(chunk, dict)
+                and chunk.get("__interrupt__")):
             yield {"type": "done", "awaiting": "approval"}

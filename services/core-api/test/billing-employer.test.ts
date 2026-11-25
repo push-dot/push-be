@@ -3,19 +3,35 @@ import { test } from "node:test";
 
 import { createStoreReceipts } from "../src/billing/stores.ts";
 import { hmacSha256Hex } from "../src/crypto.ts";
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import type { QueryResult } from "../src/db.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
+
+const jsonOf = <T>(res: Response): Promise<T> => res.json();
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const COMPANY = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const NOW = new Date("2026-10-21T00:00:00.000Z");
 const MONTH = "monthly:2026-10";
 
-type Call = { sql: string; params: unknown[] };
+type Call = { sql: string; params: Array<unknown> };
 type LedgerRow = { reference: string; amount: number; userId: string | null; companyId: string | null };
 type Err = { error: { code: string; message: string; details: { field?: string } | null } };
 
-const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
+type JwsHeader = { x5c?: Array<string> };
+type Claims = { iss?: string; aud?: string; exp?: number; email?: string | undefined; email_verified?: boolean };
+type Jwk = { kty: string; alg: string; use: string; kid: string; n?: string; e?: string };
+type JwtPart = { kid?: string; iss?: string; aud?: string; bid?: string };
+
+const parseAs = <T>(text: string): T => {
+  const parsed: T = JSON.parse(text);
+  return parsed;
+};
+
+const empty: QueryResult = { rows: [], rowCount: 0 };
+
+const query: Deps["query"] = async (sql) => sql.includes("rate_limits") ? { rows: [{ hits: 1 }], rowCount: 1 } : empty;
 
 const BUNDLE_ID = "com.push.app";
 const PUBSUB_SENDER = "play-rtdn@push.iam.gserviceaccount.com";
@@ -55,7 +71,7 @@ const tokenRow = (employer: boolean, role: string | null, plan = "FREE", subscri
 });
 
 const authed = (
-  seen: Call[],
+  seen: Array<Call>,
   employer: boolean,
   role: string | null,
   extra: Deps["query"],
@@ -64,34 +80,32 @@ const authed = (
   stripeCustomerId: string | null = null,
 ): Deps["query"] => async (sql, params = []) => {
   seen.push({ sql, params });
-  if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-  if (sql.includes("access_tokens")) return { rows: [tokenRow(employer, role, plan, subscription, stripeCustomerId)], rowCount: 1 };
-  if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem-1" }], rowCount: 1 };
-  if (sql.includes("idempotency_keys")) return empty;
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+  if (sql.includes("access_tokens")) {return { rows: [tokenRow(employer, role, plan, subscription, stripeCustomerId)], rowCount: 1 };}
+  if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {return { rows: [{ id: "idem-1" }], rowCount: 1 };}
+  if (sql.includes("idempotency_keys")) {return empty;}
   return extra(sql, params);
 };
 
 const duplicate = (): Error => {
-  const err = new Error("duplicate key value violates unique constraint");
-  (err as unknown as { code: string }).code = "23505";
-  return err;
+  return Object.assign(new Error("duplicate key value violates unique constraint"), { code: "23505" });
 };
 
-const takeLedger = (ledger: LedgerRow[]) => (sql: string, params: unknown[]) => {
-  if (!sql.includes("INSERT INTO billing_ledger")) return null;
-  const reference = params.find((item) => typeof item === "string" && (item.startsWith("monthly:") || item.startsWith("tx-") || item.startsWith("top-") || item.startsWith("cs_"))) as string | undefined;
-  const amount = params.find((item) => typeof item === "number") as number | undefined;
+const takeLedger = (ledger: Array<LedgerRow>) => (sql: string, params: Array<unknown>) => {
+  if (!sql.includes("INSERT INTO billing_ledger")) {return null;}
+  const reference = params.find((item): item is string => typeof item === "string" && (item.startsWith("monthly:") || item.startsWith("tx-") || item.startsWith("top-") || item.startsWith("cs_")));
+  const amount = params.find((item): item is number => typeof item === "number");
   const userId = params.includes(USER) ? USER : null;
   const companyId = params.includes(COMPANY) ? COMPANY : null;
   if (reference && ledger.some((row) => row.reference === reference)) {
-    if (!sql.includes("ON CONFLICT")) throw duplicate();
-    return { rows: [] as Record<string, unknown>[], rowCount: 0 };
+    if (!sql.includes("ON CONFLICT")) {throw duplicate();}
+    return empty;
   }
   ledger.push({ reference: reference ?? "", amount: amount ?? 0, userId, companyId });
   return { rows: [{ id: "ledger-" + ledger.length }], rowCount: 1 };
 };
 
-const oneOwner = (row: LedgerRow): boolean => Number(row.userId != null) + Number(row.companyId != null) === 1;
+const oneOwner = (row: LedgerRow): boolean => Number((row.userId !== null && row.userId !== undefined)) + Number((row.companyId !== null && row.companyId !== undefined)) === 1;
 
 const post = (path: string, body: unknown, key: string): Request => new Request("https://core.example" + path, {
   method: "POST",
@@ -107,15 +121,15 @@ const get = (path: string): Request => new Request("https://core.example" + path
   headers: { authorization: "Bearer secret-token" },
 });
 
-const codeOf = async (res: Response): Promise<Err["error"]> => (await res.json() as Err).error;
+const codeOf = async (res: Response): Promise<Err["error"]> => (await jsonOf<Err>(res)).error;
 
-const stripeFetch = (calls: { url: string; body: string }[]): typeof fetch => (async (input, init) => {
-  calls.push({ url: String(input), body: init?.body == null ? "" : String(init.body) });
-  return new Response(JSON.stringify({ url: "https://pay.example/basic", expires_at: 1761000000 }), {
+const stripeFetch = (calls: Array<{ url: string; body: string }>): typeof fetch => (async (input, init) => {
+  calls.push({ url: String(input), body: (init?.body === null || init?.body === undefined) ? "" : String(init.body) });
+  return new Response(JSON.stringify({ url: "https://pay.example/basic", expires_at: 1_761_000_000 }), {
     status: 200,
     headers: { "content-type": "application/json" },
   });
-}) as typeof fetch;
+});
 
 const signedStripe = async (payload: string): Promise<Request> => {
   const stamp = Math.floor(NOW.getTime() / 1000);
@@ -134,10 +148,10 @@ const signedStripe = async (payload: string): Promise<Request> => {
 
 test("employer admin checkout uses the employer price and audience", async () => {
   resetLimits();
-  const seen: Call[] = [];
-  const calls: { url: string; body: string }[] = [];
+  const seen: Array<Call> = [];
+  const calls: Array<{ url: string; body: string }> = [];
   const query = authed(seen, true, "ADMIN", async (sql) => {
-    if (sql.includes("FROM companies")) return { rows: [{ stripe_customer_id: "cus_co", plan: "BASIC" }], rowCount: 1 };
+    if (sql.includes("FROM companies")) {return { rows: [{ stripe_customer_id: "cus_co", plan: "BASIC" }], rowCount: 1 };}
     return empty;
   });
   const res = await handle(
@@ -146,7 +160,7 @@ test("employer admin checkout uses the employer price and audience", async () =>
     { query, now: () => NOW, fetch: stripeFetch(calls) },
   );
   assert.equal(res.status, 200);
-  assert.equal((await res.json() as { data: { url: string } }).data.url, "https://pay.example/basic");
+  assert.equal((await jsonOf<{ data: { url: string } }>(res)).data.url, "https://pay.example/basic");
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.url, "https://api.stripe.com/v1/checkout/sessions");
   const form = new URLSearchParams(calls[0]?.body);
@@ -161,8 +175,8 @@ test("employer admin checkout uses the employer price and audience", async () =>
 
 test("employer member checkout is forbidden", async () => {
   resetLimits();
-  const calls: { url: string; body: string }[] = [];
-  const seen: Call[] = [];
+  const calls: Array<{ url: string; body: string }> = [];
+  const seen: Array<Call> = [];
   const query = authed(seen, true, "MEMBER", async () => empty);
   const res = await handle(
     post("/api/v1/billing/checkout", { planId: "PRO" }, "22222222-2222-4222-8222-222222222222"),
@@ -176,8 +190,8 @@ test("employer member checkout is forbidden", async () => {
 
 test("personal checkout is forbidden", async () => {
   resetLimits();
-  const calls: { url: string; body: string }[] = [];
-  const seen: Call[] = [];
+  const calls: Array<{ url: string; body: string }> = [];
+  const seen: Array<Call> = [];
   const query = authed(seen, false, null, async () => empty);
   for (const planId of ["BASIC", "PRO", "ULTRA"]) {
     resetLimits();
@@ -194,7 +208,7 @@ test("personal checkout is forbidden", async () => {
 
 test("iap verify while stripe is active returns 409", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   let verified = 0;
   const query = authed(seen, false, null, async () => empty, "PRO", "ACTIVE", "cus_live");
   const res = await handle(
@@ -223,13 +237,13 @@ test("iap verify while stripe is active returns 409", async () => {
 
 test("iap top-up is allowed during an active stripe subscription and does not double insert", async () => {
   resetLimits();
-  const seen: Call[] = [];
-  const ledger: LedgerRow[] = [];
+  const seen: Array<Call> = [];
+  const ledger: Array<LedgerRow> = [];
   const capture = takeLedger(ledger);
   const query = authed(seen, false, null, async (sql, params = []) => {
     const taken = capture(sql, params);
-    if (taken) return taken;
-    if (sql.includes("INSERT INTO iap_subscriptions")) return { rows: [{ user_id: USER }], rowCount: 1 };
+    if (taken) {return taken;}
+    if (sql.includes("INSERT INTO iap_subscriptions")) {return { rows: [{ user_id: USER }], rowCount: 1 };}
     return empty;
   }, "PRO", "ACTIVE");
   const stores: NonNullable<Deps["stores"]> = {
@@ -250,28 +264,33 @@ test("iap top-up is allowed during an active stripe subscription and does not do
   assert.equal(ledger.length, 1);
   assert.equal(ledger[0]?.amount, 1_800_000);
   assert.equal(ledger[0]?.reference, "top-1");
-  assert.equal(oneOwner(ledger[0] as LedgerRow), true);
+  assert.equal(oneOwner(ledger[0]), true);
   assert.equal(ledger[0]?.userId, USER);
   assert.equal(seen.some((call) => call.sql.includes("UPDATE users")), false);
 });
 
+const appStoreReq = (): Request => new Request("https://core.example/api/v1/billing/webhook/app-store", {
+  method: "POST",
+  body: "signed-payload",
+});
+
 test("apple webhook inserts one ledger row and ignores the same transaction id", async () => {
   resetLimits();
-  const ledger: LedgerRow[] = [];
+  const ledger: Array<LedgerRow> = [];
   const capture = takeLedger(ledger);
   let decoded = 0;
   const query: Deps["query"] = async (sql, params = []) => {
-    if (sql.includes("access_tokens")) return empty;
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("access_tokens")) {return empty;}
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     const taken = capture(sql, params);
-    if (taken) return taken;
+    if (taken) {return taken;}
     if (sql.includes("SELECT original_transaction_id FROM iap_subscriptions WHERE user_id")) {
       return { rows: [{ original_transaction_id: "tx-1" }], rowCount: 1 };
     }
     if (sql.includes("iap_subscriptions") && sql.toLowerCase().includes("select")) {
       return { rows: [{ user_id: USER }], rowCount: 1 };
     }
-    if (sql.includes("UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
+    if (sql.includes("UPDATE")) {return { rows: [{ id: USER }], rowCount: 1 };}
     return empty;
   };
   const stores: NonNullable<Deps["stores"]> = {
@@ -284,13 +303,9 @@ test("apple webhook inserts one ledger row and ignores the same transaction id",
     },
     decodeGoogleNotification: async () => { throw new Error("google"); },
   };
-  const req = (): Request => new Request("https://core.example/api/v1/billing/webhook/app-store", {
-    method: "POST",
-    body: "signed-payload",
-  });
-  const first = await handle(req(), envOf(), { query, now: () => NOW, stores });
+  const first = await handle(appStoreReq(), envOf(), { query, now: () => NOW, stores });
   assert.equal(first.status, 200);
-  const second = await handle(req(), envOf(), { query, now: () => NOW, stores });
+  const second = await handle(appStoreReq(), envOf(), { query, now: () => NOW, stores });
   assert.equal(second.status, 200);
   assert.equal(decoded, 2);
   assert.equal(ledger.length, 1);
@@ -298,24 +313,24 @@ test("apple webhook inserts one ledger row and ignores the same transaction id",
   assert.equal(ledger[0]?.reference, "tx-1");
   assert.equal(ledger[0]?.userId, USER);
   assert.equal(ledger[0]?.companyId, null);
-  assert.equal(oneOwner(ledger[0] as LedgerRow), true);
+  assert.equal(oneOwner(ledger[0]), true);
 });
 
 test("employer checkout with no subscription records the payment once and changes no plan", async () => {
   resetLimits();
-  const ledger: LedgerRow[] = [];
+  const ledger: Array<LedgerRow> = [];
   const capture = takeLedger(ledger);
-  const updates: string[] = [];
+  const updates: Array<string> = [];
   let events = 0;
   const query: Deps["query"] = async (sql, params = []) => {
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     if (sql.includes("INSERT INTO stripe_events")) {
       events += 1;
-      if (events > 1) return empty;
+      if (events > 1) {return empty;}
       return { rows: [{ event_id: "evt_emp" }], rowCount: 1 };
     }
     const taken = capture(sql, params);
-    if (taken) return taken;
+    if (taken) {return taken;}
     if (sql.includes("UPDATE companies")) {
       updates.push(sql + " " + JSON.stringify(params));
       return { rows: [{ id: COMPANY }], rowCount: 1 };
@@ -350,14 +365,14 @@ test("employer checkout with no subscription records the payment once and change
 
 test("top-up completion inserts micro credits and does not change the plan", async () => {
   resetLimits();
-  const ledger: LedgerRow[] = [];
+  const ledger: Array<LedgerRow> = [];
   const capture = takeLedger(ledger);
-  const seen: string[] = [];
+  const seen: Array<string> = [];
   const query: Deps["query"] = async (sql, params = []) => {
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("INSERT INTO stripe_events")) return { rows: [{ event_id: "evt_top" }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("INSERT INTO stripe_events")) {return { rows: [{ event_id: "evt_top" }], rowCount: 1 };}
     const taken = capture(sql, params);
-    if (taken) return taken;
+    if (taken) {return taken;}
     if (sql.includes("UPDATE users") || sql.includes("UPDATE companies")) {
       seen.push(sql);
       return { rows: [{ id: USER }], rowCount: 1 };
@@ -376,7 +391,7 @@ test("top-up completion inserts micro credits and does not change the plan", asy
   const res = await handle(await signedStripe(payload), envOf(), { query, now: () => NOW });
   assert.equal(res.status, 200);
   assert.equal(ledger.length, 1);
-  assert.equal(ledger[0]?.amount, 18000);
+  assert.equal(ledger[0]?.amount, 18_000);
   assert.equal(ledger[0]?.reference, "cs_top");
   assert.equal(ledger[0]?.userId, USER);
   assert.equal(ledger[0]?.companyId, null);
@@ -387,14 +402,14 @@ test("a company stripe customer cancel does not 500 when no user matches", async
   resetLimits();
   let companySql = "";
   const query: Deps["query"] = async (sql) => {
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("INSERT INTO stripe_events")) return { rows: [{ event_id: "evt_del" }], rowCount: 1 };
-    if (sql.startsWith("SELECT id, stripe_subscription_id FROM companies")) return { rows: [{ id: COMPANY, stripe_subscription_id: "sub_1" }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("INSERT INTO stripe_events")) {return { rows: [{ event_id: "evt_del" }], rowCount: 1 };}
+    if (sql.startsWith("SELECT id, stripe_subscription_id FROM companies")) {return { rows: [{ id: COMPANY, stripe_subscription_id: "sub_1" }], rowCount: 1 };}
     if (sql.includes("UPDATE companies")) {
       companySql = sql;
       return { rows: [{ id: COMPANY }], rowCount: 1 };
     }
-    if (sql.includes("UPDATE users")) return empty;
+    if (sql.includes("UPDATE users")) {return empty;}
     return empty;
   };
   const payload = JSON.stringify({
@@ -409,15 +424,15 @@ test("a company stripe customer cancel does not 500 when no user matches", async
 
 test("employer status grants this month once and leaves periodEndsAt null", async () => {
   resetLimits();
-  const seen: Call[] = [];
-  const ledger: LedgerRow[] = [];
+  const seen: Array<Call> = [];
+  const ledger: Array<LedgerRow> = [];
   const capture = takeLedger(ledger);
   const query = authed(seen, true, "ADMIN", async (sql, params = []) => {
     const taken = capture(sql, params);
-    if (taken) return taken;
-    if (sql.startsWith("SELECT 1 FROM companies")) return empty; // monthGranted: the fake ledger is not queried
-    if (sql.includes("FROM companies")) return { rows: [{ plan: "BASIC" }], rowCount: 1 };
-    if (sql.includes("balance_after")) return { rows: [{ balance_after: 18_000_000 }], rowCount: 1 };
+    if (taken) {return taken;}
+    if (sql.startsWith("SELECT 1 FROM companies")) {return empty;} // monthGranted: the fake ledger is not queried
+    if (sql.includes("FROM companies")) {return { rows: [{ plan: "BASIC" }], rowCount: 1 };}
+    if (sql.includes("balance_after")) {return { rows: [{ balance_after: 18_000_000 }], rowCount: 1 };}
     return empty;
   });
   const deps = { query, now: () => NOW };
@@ -454,15 +469,15 @@ test("employer status grants this month once and leaves periodEndsAt null", asyn
 
 test("a null employer plan grants nothing and has no source", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = authed(seen, true, "MEMBER", async (sql) => {
-    if (sql.includes("FROM companies")) return { rows: [{ plan: null }], rowCount: 1 };
-    if (sql.includes("balance_after")) return { rows: [{ balance_after: 0 }], rowCount: 1 };
+    if (sql.includes("FROM companies")) {return { rows: [{ plan: null }], rowCount: 1 };}
+    if (sql.includes("balance_after")) {return { rows: [{ balance_after: 0 }], rowCount: 1 };}
     return empty;
   });
   const res = await handle(get("/api/v1/billing"), envOf(), { query, now: () => NOW });
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { plan: null; source: null; periodEndsAt: null; subscriptionStatus: string; audience: string } };
+  const body = await jsonOf<{ data: { plan: null; source: null; periodEndsAt: null; subscriptionStatus: string; audience: string } }>(res);
   assert.equal(body.data.audience, "EMPLOYER");
   assert.equal(body.data.plan, null);
   assert.equal(body.data.source, null);
@@ -486,25 +501,25 @@ test("personal status names the first instant of the next UTC month as the credi
     const query = authed([], false, null, async (sql) => sql.includes("balance_after") ? { rows: [{ balance_after: 0 }], rowCount: 1 } : empty);
     const res = await handle(get("/api/v1/billing"), envOf(), { query, now: () => new Date(now) });
     assert.equal(res.status, 200);
-    assert.equal((await res.json() as { data: { creditsRefillAt?: string } }).data.creditsRefillAt, refill, now);
+    assert.equal((await jsonOf<{ data: { creditsRefillAt?: string } }>(res)).data.creditsRefillAt, refill, now);
   }
 });
 
 test("personal status keeps the pro monthly amount and prefers an active store", async () => {
   resetLimits();
-  const seen: Call[] = [];
-  const ledger: LedgerRow[] = [];
+  const seen: Array<Call> = [];
+  const ledger: Array<LedgerRow> = [];
   const capture = takeLedger(ledger);
   const query = authed(seen, false, null, async (sql, params = []) => {
     const taken = capture(sql, params);
-    if (taken) return taken;
-    if (sql.includes("iap_subscriptions")) return { rows: [{ platform: "APP_STORE" }], rowCount: 1 };
-    if (sql.includes("balance_after")) return { rows: [{ balance_after: 30_000_000 }], rowCount: 1 };
+    if (taken) {return taken;}
+    if (sql.includes("iap_subscriptions")) {return { rows: [{ platform: "APP_STORE" }], rowCount: 1 };}
+    if (sql.includes("balance_after")) {return { rows: [{ balance_after: 30_000_000 }], rowCount: 1 };}
     return empty;
   }, "PRO", "ACTIVE");
   const res = await handle(get("/api/v1/billing"), envOf(), { query, now: () => NOW });
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { audience: string; source: string; plan: string; balanceMicroCredits: number } };
+  const body = await jsonOf<{ data: { audience: string; source: string; plan: string; balanceMicroCredits: number } }>(res);
   assert.equal(body.data.audience, "PERSONAL");
   assert.equal(body.data.source, "APP_STORE");
   assert.equal(body.data.plan, "PRO");
@@ -518,18 +533,18 @@ test("personal status keeps the pro monthly amount and prefers an active store",
 
 test("employer pro status reports the allowance and settled member spend", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = authed(seen, true, "ADMIN", async (sql) => {
-    if (sql.includes("FROM companies")) return { rows: [{ plan: "PRO" }], rowCount: 1 };
-    if (sql.includes("balance_after")) return { rows: [{ balance_after: 90_000_000 }], rowCount: 1 };
-    if (sql.includes("ai_usage")) return { rows: [{ spent: 4_200 }], rowCount: 1 };
+    if (sql.includes("FROM companies")) {return { rows: [{ plan: "PRO" }], rowCount: 1 };}
+    if (sql.includes("balance_after")) {return { rows: [{ balance_after: 90_000_000 }], rowCount: 1 };}
+    if (sql.includes("ai_usage")) {return { rows: [{ spent: 4200 }], rowCount: 1 };}
     return empty;
   });
   const res = await handle(get("/api/v1/billing"), envOf(), { query, now: () => NOW });
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { monthlyMicroCredits: number; spentMicroCredits: number } };
+  const body = await jsonOf<{ data: { monthlyMicroCredits: number; spentMicroCredits: number } }>(res);
   assert.equal(body.data.monthlyMicroCredits, 90_000_000);
-  assert.equal(body.data.spentMicroCredits, 4_200);
+  assert.equal(body.data.spentMicroCredits, 4200);
   const spend = seen.find((call) => call.sql.includes("ai_usage"));
   assert.ok(spend);
   assert.equal(spend.sql.includes("SETTLED"), true);
@@ -543,33 +558,33 @@ test("employer pro status reports the allowance and settled member spend", async
 
 test("a null employer plan reports zero monthly credits", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = authed(seen, true, "MEMBER", async (sql) => {
-    if (sql.includes("FROM companies")) return { rows: [{ plan: null }], rowCount: 1 };
-    if (sql.includes("balance_after")) return { rows: [{ balance_after: 0 }], rowCount: 1 };
+    if (sql.includes("FROM companies")) {return { rows: [{ plan: null }], rowCount: 1 };}
+    if (sql.includes("balance_after")) {return { rows: [{ balance_after: 0 }], rowCount: 1 };}
     return empty;
   });
   const res = await handle(get("/api/v1/billing"), envOf(), { query, now: () => NOW });
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { monthlyMicroCredits: number; plan: null } };
+  const body = await jsonOf<{ data: { monthlyMicroCredits: number; plan: null } }>(res);
   assert.equal(body.data.plan, null);
   assert.equal(body.data.monthlyMicroCredits, 0);
 });
 
 test("personal pro status reports the allowance and that user's settled spend", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = authed(seen, false, null, async (sql) => {
-    if (sql.includes("iap_subscriptions")) return empty;
-    if (sql.includes("balance_after")) return { rows: [{ balance_after: 30_000_000 }], rowCount: 1 };
-    if (sql.includes("ai_usage")) return { rows: [{ spent: 9_000 }], rowCount: 1 };
+    if (sql.includes("iap_subscriptions")) {return empty;}
+    if (sql.includes("balance_after")) {return { rows: [{ balance_after: 30_000_000 }], rowCount: 1 };}
+    if (sql.includes("ai_usage")) {return { rows: [{ spent: 9000 }], rowCount: 1 };}
     return empty;
   }, "PRO", "ACTIVE");
   const res = await handle(get("/api/v1/billing"), envOf(), { query, now: () => NOW });
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { monthlyMicroCredits: number; spentMicroCredits: number } };
+  const body = await jsonOf<{ data: { monthlyMicroCredits: number; spentMicroCredits: number } }>(res);
   assert.equal(body.data.monthlyMicroCredits, 27_000_000);
-  assert.equal(body.data.spentMicroCredits, 9_000);
+  assert.equal(body.data.spentMicroCredits, 9000);
   const spend = seen.find((call) => call.sql.includes("ai_usage"));
   assert.ok(spend);
   assert.equal(spend.sql.includes("company_members"), false);
@@ -579,14 +594,14 @@ test("personal pro status reports the allowance and that user's settled spend", 
 
 test("a blank personal plan uses the free monthly allowance", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = authed(seen, false, null, async (sql) => {
-    if (sql.includes("balance_after")) return { rows: [{ balance_after: 0 }], rowCount: 1 };
+    if (sql.includes("balance_after")) {return { rows: [{ balance_after: 0 }], rowCount: 1 };}
     return empty;
   }, "");
   const res = await handle(get("/api/v1/billing"), envOf(), { query, now: () => NOW });
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { plan: string | null; monthlyMicroCredits: number; spentMicroCredits: number } };
+  const body = await jsonOf<{ data: { plan: string | null; monthlyMicroCredits: number; spentMicroCredits: number } }>(res);
   assert.equal(body.data.plan, null);
   assert.equal(body.data.monthlyMicroCredits, 1_800_000);
   assert.equal(body.data.spentMicroCredits, 0);
@@ -594,18 +609,17 @@ test("a blank personal plan uses the free monthly allowance", async () => {
 
 test("a missing ai_usage relation reports zero spend", async () => {
   resetLimits();
-  const seen: Call[] = [];
-  const missing = new Error('relation "ai_usage" does not exist');
-  (missing as unknown as { code: string }).code = "42P01";
+  const seen: Array<Call> = [];
+  const missing = Object.assign(new Error('relation "ai_usage" does not exist'), { code: "42P01" });
   const query = authed(seen, true, "ADMIN", async (sql) => {
-    if (sql.includes("FROM companies")) return { rows: [{ plan: "BASIC" }], rowCount: 1 };
-    if (sql.includes("balance_after")) return { rows: [{ balance_after: 18_000_000 }], rowCount: 1 };
-    if (sql.includes("ai_usage")) throw missing;
+    if (sql.includes("FROM companies")) {return { rows: [{ plan: "BASIC" }], rowCount: 1 };}
+    if (sql.includes("balance_after")) {return { rows: [{ balance_after: 18_000_000 }], rowCount: 1 };}
+    if (sql.includes("ai_usage")) {throw missing;}
     return empty;
   });
   const res = await handle(get("/api/v1/billing"), envOf(), { query, now: () => NOW });
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: { spentMicroCredits: number; monthlyMicroCredits: number } };
+  const body = await jsonOf<{ data: { spentMicroCredits: number; monthlyMicroCredits: number } }>(res);
   assert.equal(body.data.monthlyMicroCredits, 18_000_000);
   assert.equal(body.data.spentMicroCredits, 0);
 });
@@ -613,7 +627,7 @@ test("a missing ai_usage relation reports zero spend", async () => {
 test("iap verify without a store port or key is not configured and does not fetch", async () => {
   resetLimits();
   let fetched = 0;
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = authed(seen, false, null, async () => empty, "FREE", "NONE");
   const fetchImpl = (async () => {
     fetched += 1;
@@ -631,7 +645,7 @@ test("iap verify without a store port or key is not configured and does not fetc
 
 const bytesText = (bytes: Uint8Array): string => {
   let bin = "";
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]!);
+  for (let i = 0; i < bytes.length; i++) {bin += String.fromCharCode(bytes[i]);}
   return bin;
 };
 
@@ -642,7 +656,7 @@ const b64std = (bytes: Uint8Array): string => btoa(bytesText(bytes));
 
 const text64 = (value: string): string => b64url(new TextEncoder().encode(value));
 
-const jws = async (payload: unknown, privateKey: CryptoKey, header: Record<string, unknown> = {}): Promise<string> => {
+const jws = async (payload: unknown, privateKey: CryptoKey, header: JwsHeader = {}): Promise<string> => {
   const head = text64(JSON.stringify({ alg: "ES256", ...header }));
   const body = text64(JSON.stringify(payload));
   const sig = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, privateKey, new TextEncoder().encode(`${head}.${body}`)));
@@ -651,7 +665,7 @@ const jws = async (payload: unknown, privateKey: CryptoKey, header: Record<strin
 
 const flipSig = (token: string): string => {
   const parts = token.split(".");
-  const packed = parts[2]!.replaceAll("-", "+").replaceAll("_", "/");
+  const packed = parts[2].replaceAll("-", "+").replaceAll("_", "/");
   const sig = Uint8Array.from(atob(packed + "=".repeat((4 - (packed.length % 4)) % 4)), (char) => char.charCodeAt(0));
   sig[0] ^= 255;
   return `${parts[0]}.${parts[1]}.${b64url(sig)}`;
@@ -676,7 +690,7 @@ const rsaOidc = async (kid: string) => {
   );
   const exported = await crypto.subtle.exportKey("jwk", pair.publicKey);
   const jwk = { kty: "RSA", alg: "RS256", use: "sig", kid, n: exported.n, e: exported.e };
-  const sign = async (payload: Record<string, unknown>) => {
+  const sign = async (payload: Claims) => {
     const head = text64(JSON.stringify({ alg: "RS256", kid, typ: "JWT" }));
     const body = text64(JSON.stringify({ email: PUBSUB_SENDER, email_verified: true, ...payload }));
     const sig = new Uint8Array(await crypto.subtle.sign("RSASSA-PKCS1-v1_5", pair.privateKey, new TextEncoder().encode(`${head}.${body}`)));
@@ -685,14 +699,14 @@ const rsaOidc = async (kid: string) => {
   return { jwk, sign };
 };
 
-const certsFetch = (keys: Record<string, unknown>[], hits?: { n: number }, maxAge = 3600): typeof fetch => (async (input: RequestInfo | URL) => {
-  if (hits) hits.n += 1;
-  if (String(input) !== GOOGLE_CERTS) return new Response("no", { status: 500 });
+const certsFetch = (keys: Array<Jwk>, hits?: { n: number }, maxAge = 3600): typeof fetch => (async (input: RequestInfo | URL) => {
+  if (hits) {hits.n += 1;}
+  if (String(input) !== GOOGLE_CERTS) {return new Response("no", { status: 500 });}
   return new Response(JSON.stringify({ keys }), {
     status: 200,
     headers: { "cache-control": `public, max-age=${maxAge}` },
   });
-}) as typeof fetch;
+});
 
 const serviceAccount = async (email: string): Promise<string> => {
   const pair = await crypto.subtle.generateKey(
@@ -705,7 +719,7 @@ const serviceAccount = async (email: string): Promise<string> => {
   return JSON.stringify({ client_email: email, private_key: pem });
 };
 
-const concat = (...parts: Uint8Array[]): Uint8Array => {
+const concat = (...parts: Array<Uint8Array>): Uint8Array => {
   const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
   let offset = 0;
   for (const part of parts) {
@@ -716,8 +730,8 @@ const concat = (...parts: Uint8Array[]): Uint8Array => {
 };
 
 const derLen = (length: number): Uint8Array => {
-  if (length < 128) return Uint8Array.from([length]);
-  if (length < 256) return Uint8Array.from([0x81, length]);
+  if (length < 128) {return Uint8Array.from([length]);}
+  if (length < 256) {return Uint8Array.from([0x81, length]);}
   return Uint8Array.from([0x82, length >> 8, length & 0xff]);
 };
 
@@ -725,7 +739,7 @@ const tag = (id: number, body: Uint8Array): Uint8Array => concat(Uint8Array.from
 
 const encodeOid = (value: string): Uint8Array => {
   const parts = value.split(".").map(Number);
-  const bytes = [parts[0]! * 40 + parts[1]!];
+  const bytes = [parts[0] * 40 + parts[1]];
   for (const part of parts.slice(2)) {
     const stack = [part & 0x7f];
     let n = part >> 7;
@@ -741,9 +755,9 @@ const encodeOid = (value: string): Uint8Array => {
 const oid = (value: string): Uint8Array => tag(0x06, encodeOid(value));
 const derInt = (bytes: Uint8Array): Uint8Array => {
   let i = 0;
-  while (i < bytes.length - 1 && bytes[i] === 0 && (bytes[i + 1]! & 0x80) === 0) i += 1;
+  while (i < bytes.length - 1 && bytes[i] === 0 && (bytes[i + 1] & 0x80) === 0) {i += 1;}
   const trimmed = bytes.subarray(i);
-  const body = trimmed[0]! & 0x80 ? concat(Uint8Array.from([0x00]), trimmed) : trimmed;
+  const body = trimmed[0] & 0x80 ? concat(Uint8Array.from([0x00]), trimmed) : trimmed;
   return tag(0x02, body);
 };
 
@@ -753,7 +767,7 @@ const certDer = async (
   subject: string,
   issuer: string,
   serial: number,
-  extensions: Uint8Array[] = [],
+  extensions: Array<Uint8Array> = [],
   validity = ["260101000000Z", "361231235959Z"],
 ): Promise<Uint8Array> => {
   const alg = tag(0x30, oid("1.2.840.10045.4.3.2"));
@@ -764,7 +778,7 @@ const certDer = async (
     derInt(Uint8Array.from([serial])),
     alg,
     dn(issuer),
-    tag(0x30, concat(tag(0x17, new TextEncoder().encode(validity[0]!)), tag(0x17, new TextEncoder().encode(validity[1]!)))),
+    tag(0x30, concat(tag(0x17, new TextEncoder().encode(validity[0])), tag(0x17, new TextEncoder().encode(validity[1])))),
     dn(subject),
     spki,
     ...(extensions.length ? [tag(0xa3, tag(0x30, concat(...extensions)))] : []),
@@ -782,7 +796,7 @@ const CA = extension("2.5.29.19", tag(0x30, tag(0x01, Uint8Array.from([0xff]))),
 const APPLE_LEAF = extension("1.2.840.113635.100.6.11.1", tag(0x05, new Uint8Array()));
 const APPLE_MID = extension("1.2.840.113635.100.6.2.1", tag(0x05, new Uint8Array()));
 
-type ChainShape = { mid?: Uint8Array[]; leaf?: Uint8Array[]; leafValidity?: string[] };
+type ChainShape = { mid?: Array<Uint8Array>; leaf?: Array<Uint8Array>; leafValidity?: Array<string> };
 
 // Real App Store chains: a CA intermediate with the WWDR marker, a leaf with the receipt-signing marker.
 const appleChain = async (shape: ChainShape = {}) => {
@@ -803,7 +817,7 @@ const appleChain = async (shape: ChainShape = {}) => {
 
 test("personal top-up is forbidden", async () => {
   resetLimits();
-  const calls: { url: string; body: string }[] = [];
+  const calls: Array<{ url: string; body: string }> = [];
   const res = await handle(
     post("/api/v1/billing/topup", { packs: 3 }, "77777777-7777-4777-8777-777777777777"),
     envOf(),
@@ -816,10 +830,10 @@ test("personal top-up is forbidden", async () => {
 
 test("employer top-up charges one $10 price unit per 1,500-credit pack", async () => {
   resetLimits();
-  const calls: { url: string; body: string }[] = [];
-  const seen: Call[] = [];
+  const calls: Array<{ url: string; body: string }> = [];
+  const seen: Array<Call> = [];
   const query = authed(seen, true, "ADMIN", async (sql) => {
-    if (sql.includes("FROM companies")) return { rows: [{ stripe_customer_id: "cus_co" }], rowCount: 1 };
+    if (sql.includes("FROM companies")) {return { rows: [{ stripe_customer_id: "cus_co" }], rowCount: 1 };}
     return empty;
   });
   const res = await handle(
@@ -842,8 +856,8 @@ const storeHook = (path: string, body: string, authorization?: string): Request 
 });
 
 const rejectQuery = (): Deps["query"] => async (sql) => {
-  if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-  if (sql.includes("INSERT INTO billing_ledger")) throw new Error("ledger");
+  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+  if (sql.includes("INSERT INTO billing_ledger")) {throw new Error("ledger");}
   return empty;
 };
 
@@ -855,7 +869,7 @@ test("an unverified store webhook is rejected", async () => {
   const oidc = await rsaOidc("oidc-webhook");
   const query = rejectQuery();
   const audience = "push-google-webhook";
-  const inner = await jws({ originalTransactionId: "tx-1", productId: "ios.pro", expiresDate: 1792886400000 }, chain.privateKey);
+  const inner = await jws({ originalTransactionId: "tx-1", productId: "ios.pro", expiresDate: 1_792_886_400_000 }, chain.privateKey);
   const appleBody = await jws({ notificationType: "DID_RENEW", data: { bundleId: BUNDLE_ID, signedTransactionInfo: inner } }, chain.privateKey, { x5c: chain.x5c });
   const playBody = JSON.stringify({ signedPayload: "not.a.pubsub" });
   const oidcJwt = await oidc.sign({ iss: "https://accounts.google.com", aud: audience, exp: NOW.getTime() / 1000 + 600 });
@@ -974,22 +988,22 @@ test("an unverified store webhook is rejected", async () => {
   assert.equal((await codeOf(googleWrongKey)).message, "invalid webhook signature");
 });
 
+const appleNote = async (shape: ChainShape = {}) => {
+  const chain = await appleChain(shape);
+  const inner = await jws({ originalTransactionId: "tx-1", productId: "ios.pro", expiresDate: 1_792_886_400_000 }, chain.privateKey);
+  const body = await jws({ notificationType: "DID_RENEW", data: { bundleId: BUNDLE_ID, signedTransactionInfo: inner } }, chain.privateKey, { x5c: chain.x5c });
+  return handle(storeHook("/api/v1/billing/webhook/app-store", body), envOf({ APPLE_ROOT_PEM: chain.rootPem }), { query, now: () => NOW });
+};
+
 test("an app store chain that only reaches Apple's root is not enough", async () => {
   resetLimits();
-  const query: Deps["query"] = async (sql) => sql.includes("rate_limits") ? { rows: [{ hits: 1 }], rowCount: 1 } : empty;
-  const note = async (shape: ChainShape = {}) => {
-    const chain = await appleChain(shape);
-    const inner = await jws({ originalTransactionId: "tx-1", productId: "ios.pro", expiresDate: 1792886400000 }, chain.privateKey);
-    const body = await jws({ notificationType: "DID_RENEW", data: { bundleId: BUNDLE_ID, signedTransactionInfo: inner } }, chain.privateKey, { x5c: chain.x5c });
-    return handle(storeHook("/api/v1/billing/webhook/app-store", body), envOf({ APPLE_ROOT_PEM: chain.rootPem }), { query, now: () => NOW });
-  };
-  assert.equal((await note()).status, 200);
+  assert.equal((await appleNote()).status, 200);
   const forged = {
     // A certificate Apple issued for something else, used to sign a leaf of the sender's own.
-    endEntityIssuer: await note({ mid: [APPLE_MID] }),
-    noReceiptMarker: await note({ leaf: [] }),
-    noWwdrMarker: await note({ mid: [CA] }),
-    expiredLeaf: await note({ leafValidity: ["240101000000Z", "250101000000Z"] }),
+    endEntityIssuer: await appleNote({ mid: [APPLE_MID] }),
+    noReceiptMarker: await appleNote({ leaf: [] }),
+    noWwdrMarker: await appleNote({ mid: [CA] }),
+    expiredLeaf: await appleNote({ leafValidity: ["240101000000Z", "250101000000Z"] }),
     leafOnly: await (async () => {
       const chain = await appleChain();
       const body = await jws({ notificationType: "DID_RENEW", data: { bundleId: BUNDLE_ID } }, chain.privateKey, { x5c: chain.x5c.slice(0, 1) });
@@ -1004,10 +1018,9 @@ test("an app store chain that only reaches Apple's root is not enough", async ()
 
 test("an app store notification for another app is rejected", async () => {
   resetLimits();
-  const query: Deps["query"] = async (sql) => sql.includes("rate_limits") ? { rows: [{ hits: 1 }], rowCount: 1 } : empty;
   const chain = await appleChain();
-  const inner = await jws({ originalTransactionId: "tx-1", productId: "ios.pro", expiresDate: 1792886400000 }, chain.privateKey);
-  const note = async (data: Record<string, unknown>, env: Partial<CoreEnv> = {}) => {
+  const inner = await jws({ originalTransactionId: "tx-1", productId: "ios.pro", expiresDate: 1_792_886_400_000 }, chain.privateKey);
+  const note = async (data: { bundleId?: string }, env: Partial<CoreEnv> = {}) => {
     const body = await jws({ notificationType: "DID_RENEW", data: { signedTransactionInfo: inner, ...data } }, chain.privateKey, { x5c: chain.x5c });
     return handle(storeHook("/api/v1/billing/webhook/app-store", body), envOf({ APPLE_ROOT_PEM: chain.rootPem, ...env }), { query, now: () => NOW });
   };
@@ -1024,7 +1037,7 @@ test("a google play push signed for another service account is rejected", async 
   const oidc = await rsaOidc("oidc-sender");
   const audience = "push-google-webhook";
   const body = JSON.stringify({ message: { data: btoa(JSON.stringify({ subscriptionNotification: { notificationType: 2 } })) } });
-  const send = async (claims: Record<string, unknown>, extra: Partial<CoreEnv> = {}) => handle(
+  const send = async (claims: Claims, extra: Partial<CoreEnv> = {}) => handle(
     storeHook("/api/v1/billing/webhook/google-play", body, "Bearer " + await oidc.sign({ iss: "https://accounts.google.com", aud: audience, exp: NOW.getTime() / 1000 + 600, ...claims })),
     envOf({ GOOGLE_OIDC_AUDIENCE: audience, ...extra }),
     { query: rejectQuery(), now: () => NOW, fetch: certsFetch([oidc.jwk]) },
@@ -1048,12 +1061,12 @@ const noStores = {
 
 test("a store transaction already claimed by another account is refused", async () => {
   resetLimits();
-  const seen: Call[] = [];
-  const ledger: LedgerRow[] = [];
+  const seen: Array<Call> = [];
+  const ledger: Array<LedgerRow> = [];
   const capture = takeLedger(ledger);
   const query = authed(seen, false, null, async (sql, params = []) => {
     const taken = capture(sql, params);
-    if (taken) return taken;
+    if (taken) {return taken;}
     return empty;
   });
   const stores: NonNullable<Deps["stores"]> = {
@@ -1075,8 +1088,8 @@ test("a store transaction already claimed by another account is refused", async 
 
 test("a consumed top-up transaction cannot be replayed from another account", async () => {
   resetLimits();
-  const seen: Call[] = [];
-  const ledger: LedgerRow[] = [];
+  const seen: Array<Call> = [];
+  const ledger: Array<LedgerRow> = [];
   const capture = takeLedger(ledger);
   const query = authed(seen, false, null, async (sql, params = []) => capture(sql, params) ?? empty);
   const stores: NonNullable<Deps["stores"]> = {
@@ -1097,7 +1110,7 @@ test("a consumed top-up transaction cannot be replayed from another account", as
 
 test("an expired subscription receipt does not upgrade the plan", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query = authed(seen, false, null, async () => empty);
   const stores: NonNullable<Deps["stores"]> = {
     ...noStores,
@@ -1112,15 +1125,15 @@ test("an expired subscription receipt does not upgrade the plan", async () => {
   assert.equal(seen.some((call) => call.sql.includes("iap_subscriptions") || call.sql.includes("UPDATE users")), false);
 });
 
-const claimQuery = (seen: Call[]): Deps["query"] => authed(seen, false, null, async (sql) => {
-  if (sql.includes("INSERT INTO iap_subscriptions")) return { rows: [{ user_id: USER }], rowCount: 1 };
+const claimQuery = (seen: Array<Call>): Deps["query"] => authed(seen, false, null, async (sql) => {
+  if (sql.includes("INSERT INTO iap_subscriptions")) {return { rows: [{ user_id: USER }], rowCount: 1 };}
   return empty;
 });
 
-const partJson = (part: string): Record<string, unknown> => {
+const partJson = (part: string): JwtPart => {
   const pad = part.replaceAll("-", "+").replaceAll("_", "/");
   const padded = pad + "=".repeat((4 - (pad.length % 4)) % 4);
-  return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(padded), (char) => char.charCodeAt(0)))) as Record<string, unknown>;
+  return parseAs<JwtPart>(new TextDecoder().decode(Uint8Array.from(atob(padded), (char) => char.charCodeAt(0))));
 };
 
 test("device apple verify checks the x5c chain then the App Store Server API", async () => {
@@ -1129,7 +1142,7 @@ test("device apple verify checks the x5c chain then the App Store Server API", a
   const signing = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
   const pkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", signing.privateKey));
   const apiKey = `-----BEGIN PRIVATE KEY-----\n${b64std(pkcs8)}\n-----END PRIVATE KEY-----`;
-  const signed = (bundleId: string, extra: Record<string, unknown> = {}) => jws({
+  const signed = (bundleId: string, extra: { revocationDate?: number } = {}) => jws({
     bundleId, productId: "ios.pro", originalTransactionId: "tx-apple", transactionId: "tx-apple", expiresDate: Date.parse("2026-11-21T00:00:00Z"), type: "Auto-Renewable Subscription", ...extra,
   }, chain.privateKey, { x5c: chain.x5c });
   const env = envOf({
@@ -1157,13 +1170,13 @@ test("device apple verify checks the x5c chain then the App Store Server API", a
       : await jws({ bundleId: "com.push.app", productId: "ios.other", originalTransactionId: "tx-apple", expiresDate: Date.parse("2026-11-21T00:00:00Z") }, chain.privateKey, { x5c: chain.x5c });
     return Response.json({ signedTransactionInfo: signedInfo });
   }) as typeof fetch;
-  const verify = async (token: string, key: string, use: CoreEnv = env, seen: Call[] = []) => handle(
+  const verify = async (token: string, key: string, use: CoreEnv = env, seen: Array<Call> = []) => handle(
     post("/api/v1/billing/iap/verify", { platform: "APP_STORE", productId: "ios.pro", signedTransaction: token }, key),
     use,
     { query: claimQuery(seen), now: () => NOW, fetch: fetchImpl },
   );
   echo = await signed("com.push.app");
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const ok = await verify(echo, "99999999-9999-4999-8999-999999999991", env, seen);
   assert.equal(ok.status, 200);
   assert.equal(seen.find((call) => call.sql.includes("INSERT INTO iap_subscriptions"))?.params[7], false);
@@ -1210,7 +1223,7 @@ test("apple verify follows the signed environment and marks sandbox", async () =
     expiresDate: Date.parse("2026-11-21T00:00:00Z"),
     type: "Auto-Renewable Subscription",
   }, chain.privateKey, { x5c: chain.x5c });
-  const hosts: string[] = [];
+  const hosts: Array<string> = [];
   let echoed = "";
   let swap = false;
   const fetchImpl = (async (input: RequestInfo | URL) => {
@@ -1221,7 +1234,7 @@ test("apple verify follows the signed environment and marks sandbox", async () =
     return Response.json({ signedTransactionInfo: info });
   }) as typeof fetch;
   const run = async (token: string, id: string, key: string) => {
-    const seen: Call[] = [];
+    const seen: Array<Call> = [];
     const res = await handle(
       post("/api/v1/billing/iap/verify", { platform: "APP_STORE", productId: "ios.pro", signedTransaction: token }, key),
       env,
@@ -1250,13 +1263,13 @@ test("apple verify follows the signed environment and marks sandbox", async () =
 test("a sandbox app store notification is marked sandbox", async () => {
   resetLimits();
   const chain = await appleChain();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query: Deps["query"] = async (sql, params = []) => {
     seen.push({ sql, params });
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("SELECT user_id FROM iap_subscriptions")) return { rows: [{ user_id: USER }], rowCount: 1 };
-    if (sql.includes("UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
-    if (sql.includes("INSERT INTO billing_ledger")) return empty;
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("SELECT user_id FROM iap_subscriptions")) {return { rows: [{ user_id: USER }], rowCount: 1 };}
+    if (sql.includes("UPDATE")) {return { rows: [{ id: USER }], rowCount: 1 };}
+    if (sql.includes("INSERT INTO billing_ledger")) {return empty;}
     return empty;
   };
   const note = async (environment: "Sandbox" | "Production", id: string) => {
@@ -1298,13 +1311,13 @@ test("a non-json google play key is not sent as a bearer", async () => {
 
 test("google verify grants only a purchased product or a live subscription", async () => {
   resetLimits();
-  const urls: string[] = [];
+  const urls: Array<string> = [];
   const reply = (body: unknown): typeof fetch => (async (input: RequestInfo | URL) => {
     const url = String(input);
     urls.push(url);
-    if (url === OAUTH_TOKEN) return Response.json({ access_token: "ya29.play", expires_in: 3600 });
+    if (url === OAUTH_TOKEN) {return Response.json({ access_token: "ya29.play", expires_in: 3600 });}
     return Response.json(body);
-  }) as typeof fetch;
+  });
   const env = envOf({
     GOOGLE_PLAY_KEY: await serviceAccount("play-state@push.iam.gserviceaccount.com"),
     GOOGLE_PLAY_PACKAGE: "com.push.app",
@@ -1332,11 +1345,11 @@ test("google verify grants only a purchased product or a live subscription", asy
 test("google verify exchanges a service account for an access token", async () => {
   resetLimits();
   const key = await serviceAccount("play-exchange@push.iam.gserviceaccount.com");
-  const calls: { url: string; auth: string }[] = [];
+  const calls: Array<{ url: string; auth: string }> = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     calls.push({ url, auth: new Headers(init?.headers).get("authorization") ?? "" });
-    if (url === OAUTH_TOKEN) return Response.json({ access_token: "ya29.test", expires_in: 3600 });
+    if (url === OAUTH_TOKEN) {return Response.json({ access_token: "ya29.test", expires_in: 3600 });}
     return Response.json({ purchaseState: 0, orderId: "GPA.1" });
   }) as typeof fetch;
   const env = envOf({ GOOGLE_PLAY_KEY: key, GOOGLE_PLAY_PACKAGE: "app.push.mobile", IAP_PRODUCT_TOPUP: "push.credits.topup" });
@@ -1362,14 +1375,14 @@ test("google verify exchanges a service account for an access token", async () =
 
 test("an active in-app plan can change without a second grant for the same transaction", async () => {
   resetLimits();
-  const seen: Call[] = [];
-  const ledger: LedgerRow[] = [];
+  const seen: Array<Call> = [];
+  const ledger: Array<LedgerRow> = [];
   const capture = takeLedger(ledger);
   const query = authed(seen, false, null, async (sql, params = []) => {
     const taken = capture(sql, params);
-    if (taken) return taken;
-    if (sql.includes("INSERT INTO iap_subscriptions")) return { rows: [{ user_id: USER }], rowCount: 1 };
-    if (sql.includes("UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
+    if (taken) {return taken;}
+    if (sql.includes("INSERT INTO iap_subscriptions")) {return { rows: [{ user_id: USER }], rowCount: 1 };}
+    if (sql.includes("UPDATE")) {return { rows: [{ id: USER }], rowCount: 1 };}
     return empty;
   }, "PRO", "ACTIVE");
   const stores: NonNullable<Deps["stores"]> = {
@@ -1385,31 +1398,32 @@ test("an active in-app plan can change without a second grant for the same trans
   assert.equal(ledger.filter((row) => row.reference === "tx-up").length, 1);
 });
 
+const storeReq = () => storeHook("/api/v1/billing/webhook/app-store", "signed");
+
 test("a store expiration drops the personal plan", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query: Deps["query"] = async (sql, params = []) => {
     seen.push({ sql, params });
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("SELECT user_id, status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions")) return { rows: [{ user_id: USER, topup: false }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("SELECT user_id, status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions")) {return { rows: [{ user_id: USER, topup: false }], rowCount: 1 };}
     if (sql.includes("SELECT original_transaction_id FROM iap_subscriptions WHERE user_id")) {
       return { rows: [{ original_transaction_id: "tx-1" }], rowCount: 1 };
     }
-    if (sql.includes("UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
+    if (sql.includes("UPDATE")) {return { rows: [{ id: USER }], rowCount: 1 };}
     return empty;
   };
   const stores: NonNullable<Deps["stores"]> = {
     ...noStores,
     decodeAppleNotification: async () => ({ notificationType: "EXPIRED", originalTransactionId: "tx-1", productId: "ios.pro", expiresAt: "2026-10-01T00:00:00.000Z" }),
   };
-  const req = () => storeHook("/api/v1/billing/webhook/app-store", "signed");
-  const first = await handle(req(), envOf(), { query, now: () => NOW, stores });
+  const first = await handle(storeReq(), envOf(), { query, now: () => NOW, stores });
   assert.equal(first.status, 200);
   const update = seen.find((call) => call.sql.includes("UPDATE users"));
   assert.match(update?.sql ?? "", /plan = 'FREE'/);
   assert.match(update?.sql ?? "", /subscription_status = 'CANCELED'/);
   assert.equal(update?.params[0], USER);
-  const second = await handle(req(), envOf(), { query, now: () => NOW, stores });
+  const second = await handle(storeReq(), envOf(), { query, now: () => NOW, stores });
   assert.equal(second.status, 200);
 });
 
@@ -1417,19 +1431,19 @@ test("a google pubsub renewal updates the plan once", async () => {
   resetLimits();
   const oidc = await rsaOidc("oidc-renew");
   const audience = "push-google-webhook";
-  const ledger: LedgerRow[] = [];
+  const ledger: Array<LedgerRow> = [];
   const capture = takeLedger(ledger);
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query: Deps["query"] = async (sql, params = []) => {
     seen.push({ sql, params });
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     const taken = capture(sql, params);
-    if (taken) return taken;
+    if (taken) {return taken;}
     if (sql.includes("SELECT original_transaction_id FROM iap_subscriptions WHERE user_id")) {
       return { rows: [{ original_transaction_id: "tx-renew" }], rowCount: 1 };
     }
-    if (sql.includes("iap_subscriptions") && sql.toLowerCase().includes("select")) return { rows: [{ user_id: USER }], rowCount: 1 };
-    if (sql.includes("UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
+    if (sql.includes("iap_subscriptions") && sql.toLowerCase().includes("select")) {return { rows: [{ user_id: USER }], rowCount: 1 };}
+    if (sql.includes("UPDATE")) {return { rows: [{ id: USER }], rowCount: 1 };}
     return empty;
   };
   const note = {
@@ -1481,17 +1495,17 @@ test("a google pubsub renewal updates the plan once", async () => {
 
 test("a stale store expiration does not downgrade a newer subscription", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query: Deps["query"] = async (sql, params = []) => {
     seen.push({ sql, params });
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     if (sql.includes("SELECT user_id, status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions")) {
       return { rows: [{ user_id: USER, topup: false }], rowCount: 1 };
     }
     if (sql.includes("SELECT original_transaction_id FROM iap_subscriptions WHERE user_id")) {
       return { rows: [{ original_transaction_id: "tx-new" }], rowCount: 1 };
     }
-    if (sql.includes("UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
+    if (sql.includes("UPDATE")) {return { rows: [{ id: USER }], rowCount: 1 };}
     return empty;
   };
   const stores: NonNullable<Deps["stores"]> = {
@@ -1510,21 +1524,21 @@ test("a stale store expiration does not downgrade a newer subscription", async (
 
 test("a stale store renewal does not overwrite the current plan", async () => {
   resetLimits();
-  const seen: Call[] = [];
-  const ledger: LedgerRow[] = [];
+  const seen: Array<Call> = [];
+  const ledger: Array<LedgerRow> = [];
   const capture = takeLedger(ledger);
   const query: Deps["query"] = async (sql, params = []) => {
     seen.push({ sql, params });
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     const taken = capture(sql, params);
-    if (taken) return taken;
+    if (taken) {return taken;}
     if (sql.includes("SELECT user_id FROM iap_subscriptions WHERE original_transaction_id")) {
       return { rows: [{ user_id: USER }], rowCount: 1 };
     }
     if (sql.includes("SELECT original_transaction_id FROM iap_subscriptions WHERE user_id")) {
       return { rows: [{ original_transaction_id: "tx-new" }], rowCount: 1 };
     }
-    if (sql.includes("UPDATE")) return { rows: [{ id: USER }], rowCount: 1 };
+    if (sql.includes("UPDATE")) {return { rows: [{ id: USER }], rowCount: 1 };}
     return empty;
   };
   const stores: NonNullable<Deps["stores"]> = {
@@ -1548,10 +1562,10 @@ test("google oidc keys are cached until a new kid or the max-age", async () => {
   const secondKey = await rsaOidc("oidc-cache-b");
   const audience = "push-google-webhook";
   let calls = 0;
-  let keys: Record<string, unknown>[] = [firstKey.jwk];
+  let keys: Array<Jwk> = [firstKey.jwk];
   const fetchImpl = (async (input: RequestInfo | URL) => {
     calls += 1;
-    if (String(input) !== GOOGLE_CERTS) return new Response("no", { status: 500 });
+    if (String(input) !== GOOGLE_CERTS) {return new Response("no", { status: 500 });}
     return new Response(JSON.stringify({ keys }), {
       status: 200,
       headers: { "cache-control": "public, max-age=60" },
@@ -1585,7 +1599,7 @@ test("an expired google oidc bearer is rejected", async () => {
   const audience = "push-google-webhook";
   const env = envOf({ GOOGLE_OIDC_AUDIENCE: audience });
   const body = JSON.stringify({ message: { data: btoa(JSON.stringify({ subscriptionNotification: { notificationType: 2 } })) } });
-  const hook = async (claims: Record<string, unknown>) => handle(
+  const hook = async (claims: Claims) => handle(
     storeHook("/api/v1/billing/webhook/google-play", body, "Bearer " + await oidc.sign({ iss: "https://accounts.google.com", aud: audience, ...claims })),
     env,
     { query: rejectQuery(), now: () => NOW, fetch: certsFetch([oidc.jwk]) },
@@ -1595,19 +1609,20 @@ test("an expired google oidc bearer is rejected", async () => {
   assert.equal((await hook({ exp: NOW.getTime() / 1000 + 60 })).status, 200);
 });
 
+const session = (paymentStatus: string) => ({
+  id: "cs_async", client_reference_id: USER, payment_status: paymentStatus,
+  metadata: { amountMicroCredits: "60000", audience: "PERSONAL", ownerId: USER },
+});
+
 test("an unpaid checkout grants nothing until the async payment succeeds", async () => {
   resetLimits();
-  const ledger: LedgerRow[] = [];
+  const ledger: Array<LedgerRow> = [];
   const capture = takeLedger(ledger);
   const query: Deps["query"] = async (sql, params = []) => {
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("INSERT INTO stripe_events")) return { rows: [{ event_id: params[0] }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("INSERT INTO stripe_events")) {return { rows: [{ event_id: String(params[0]) }], rowCount: 1 };}
     return capture(sql, params) ?? empty;
   };
-  const session = (paymentStatus: string) => ({
-    id: "cs_async", client_reference_id: USER, payment_status: paymentStatus,
-    metadata: { amountMicroCredits: "60000", audience: "PERSONAL", ownerId: USER },
-  });
   const unpaid = await handle(await signedStripe(JSON.stringify({ id: "evt_1", type: "checkout.session.completed", data: { object: session("unpaid") } })), envOf(), { query, now: () => NOW });
   assert.equal(unpaid.status, 200);
   assert.equal(ledger.length, 0);
@@ -1619,17 +1634,17 @@ test("an unpaid checkout grants nothing until the async payment succeeds", async
 
 test("an unpaid stripe subscription drops the user to FREE", async () => {
   resetLimits();
-  const seen: Call[] = [];
+  const seen: Array<Call> = [];
   const query: Deps["query"] = async (sql, params = []) => {
     seen.push({ sql, params });
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("INSERT INTO stripe_events")) return { rows: [{ event_id: params[0] }], rowCount: 1 };
-    if (sql.startsWith("SELECT id FROM users")) return { rows: [{ id: USER }], rowCount: 1 };
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("INSERT INTO stripe_events")) {return { rows: [{ event_id: String(params[0]) }], rowCount: 1 };}
+    if (sql.startsWith("SELECT id FROM users")) {return { rows: [{ id: USER }], rowCount: 1 };}
     return empty;
   };
   const sub = { id: "sub_1", customer: "cus_1", status: "unpaid", items: { data: [{ price: { id: "price_pro" } }] } };
   const event = { id: "evt_3", type: "customer.subscription.updated", data: { object: { ...sub, status: "active" } } };
-  const fetchSub = (async () => new Response(JSON.stringify(sub), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+  const fetchSub: typeof fetch = async () => new Response(JSON.stringify(sub), { status: 200, headers: { "content-type": "application/json" } });
   const res = await handle(await signedStripe(JSON.stringify(event)), envOf(), { query, now: () => NOW, fetch: fetchSub });
   assert.equal(res.status, 200);
   const update = seen.find((call) => call.sql.includes("UPDATE users"));
@@ -1639,7 +1654,7 @@ test("an unpaid stripe subscription drops the user to FREE", async () => {
 
 test("a top-up above the cap is rejected before stripe is called", async () => {
   resetLimits();
-  const calls: { url: string; body: string }[] = [];
+  const calls: Array<{ url: string; body: string }> = [];
   const res = await handle(
     post("/api/v1/billing/topup", { amount: 100_001 }, "77777777-7777-4777-8777-777777777778"),
     envOf(),
@@ -1658,10 +1673,10 @@ test("a refunded credit top-up keeps the plan; a refunded subscription still end
   };
   for (const [id, productId, downgrades] of [["tx-topup", "ios.topup", false], ["tx-pro", "ios.pro", true]] as const) {
     resetLimits();
-    const seen: Call[] = [];
+    const seen: Array<Call> = [];
     const query: Deps["query"] = async (sql, params = []) => {
       seen.push({ sql, params });
-      if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
+      if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
       if (sql.includes("SELECT user_id, status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions")) {
         return { rows: [{ user_id: USER, topup: productId === "ios.topup" }], rowCount: 1 };
       }
@@ -1689,11 +1704,11 @@ test("google play: a voided one-time purchase is a refund; a canceled pending pu
   ] as const;
   for (const [note, refunds] of cases) {
     resetLimits();
-    const seen: Call[] = [];
+    const seen: Array<Call> = [];
     const query: Deps["query"] = async (sql, params = []) => {
       seen.push({ sql, params });
-      if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-      if (sql.includes("FROM iap_subscriptions")) return { rows: [{ user_id: USER, topup: true }], rowCount: 1 };
+      if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+      if (sql.includes("FROM iap_subscriptions")) {return { rows: [{ user_id: USER, topup: true }], rowCount: 1 };}
       return empty;
     };
     const body = JSON.stringify({ message: { data: btoa(JSON.stringify({ packageName: "app.push.mobile", ...note })) } });

@@ -1,6 +1,7 @@
 import { parseTimeField, strictBody } from "../body.ts";
 import { base64ToBytes, bytesToBase64, decryptAes, encryptAes, masterKey, verifyPkce } from "../crypto.ts";
 import { one, query } from "../db.ts";
+import type { QueryResult } from "../db.ts";
 import { HttpError, data, fieldError, noContent, parseUuid, randomToken } from "../http.ts";
 import { listPage, pageOf, ts } from "../page.ts";
 import { formatJsonTimestamp, pyJson } from "../time.ts";
@@ -19,11 +20,22 @@ const GI_COLS = "user_id, encode(access_ciphertext, 'base64') AS access_cipherte
 const GM_COLS = "id, user_id, external_id, thread_id, application_id, sender, subject, snippet, received_at, created_at";
 const EVENT_COLS = "id, user_id, revision, application_id, type, title, starts_at, ends_at, time_zone, source, external_id, notes, created_at, updated_at";
 
-type Row = Record<string, unknown>;
-type Integration = Row & { scopes: string[] };
+type Row = QueryResult["rows"][number];
+type NewIntegration = {
+  access_ciphertext: string; access_nonce: string; refresh_ciphertext: string | null; refresh_nonce: string | null; scopes: Array<string>;
+  token_expires_at: string | null; gmail_history_id: string | null; calendar_sync_token: string | null; last_synced_at: string | null;
+  created_at: string | null; updated_at: string | null;
+};
+type MessageList = { ids: Array<string>; next: string; history: string };
+type EventList = { events: Array<GoogleEvent>; next: string };
+type Integration = Row & { scopes: Array<string> };
 type Tokens = { accessToken: string; refreshToken: string; expiresIn: number; scope: string };
 type MessageMeta = { id: string; threadId: string; sender: string; subject: string; snippet: string; receivedAt: string | null };
 type GoogleEvent = { id: string; status: string; summary: string; timeZone: string; startsAt: string; endsAt: string };
+
+const isRow = (value: unknown): value is Row => typeof value === "object" && value !== null && !Array.isArray(value);
+const objectOf = (value: unknown): Row => (isRow(value) ? value : {});
+const rowList = (value: unknown): Array<Row> => (Array.isArray(value) ? value.filter(isRow) : []);
 
 class SyncTokenInvalid extends Error {}
 
@@ -39,13 +51,13 @@ const http = (ctx: Ctx): typeof fetch => ctx.deps.fetch ?? fetch;
 const addMs = (ctx: Ctx, ms: number): string => formatJsonTimestamp(new Date(ctx.now.getTime() + ms));
 
 const routerCheck = (ctx: Ctx): void => {
-  if (!configured(ctx)) throw notConfigured("google integration is not configured");
+  if (!configured(ctx)) {throw notConfigured("google integration is not configured");}
 };
 
 /** `GoogleService._check`: client credentials and the token cipher. */
 const cipher = async (ctx: Ctx): Promise<CryptoKey> => {
-  if (!configured(ctx)) throw notConfigured("google integration is not configured");
-  if (!ctx.env.TOKEN_ENCRYPTION_KEY) throw notConfigured("token encryption is not configured");
+  if (!configured(ctx)) {throw notConfigured("google integration is not configured");}
+  if (!ctx.env.TOKEN_ENCRYPTION_KEY) {throw notConfigured("token encryption is not configured");}
   return masterKey(ctx.env.TOKEN_ENCRYPTION_KEY);
 };
 
@@ -55,11 +67,11 @@ const seal = async (key: CryptoKey, text: string, userId: string): Promise<{ ct:
 };
 
 const open = (key: CryptoKey, ct: unknown, nonce: unknown, userId: string): Promise<string> =>
-  decryptAes(key, base64ToBytes(String(ct).replace(/\s+/g, "")), base64ToBytes(String(nonce).replace(/\s+/g, "")), userId, PURPOSE);
+  decryptAes(key, base64ToBytes(String(ct).replaceAll(/\s+/g, "")), base64ToBytes(String(nonce).replaceAll(/\s+/g, "")), userId, PURPOSE);
 
 const loadIntegration = async (ctx: Ctx): Promise<Integration | null> => {
   const row = await one(ctx.deps.query, `SELECT ${GI_COLS} FROM google_integrations WHERE user_id = $1`, [ctx.user.id]);
-  if (!row) return null;
+  if (!row) {return null;}
   return { ...row, scopes: Array.isArray(row.scopes) ? row.scopes.map(String) : [] };
 };
 
@@ -67,11 +79,11 @@ const putIntegration = async (ctx: Ctx, gi: Row): Promise<void> => {
   await query(ctx.deps.query,
     "INSERT INTO google_integrations (user_id, access_ciphertext, access_nonce, refresh_ciphertext, refresh_nonce, scopes, token_expires_at, gmail_history_id, calendar_sync_token, last_synced_at, created_at, updated_at) VALUES ($1, decode($2, 'base64'), decode($3, 'base64'), decode($4, 'base64'), decode($5, 'base64'), $6::jsonb, $7, $8, $9, $10, $11, $12) ON CONFLICT (user_id) DO UPDATE SET access_ciphertext = decode($2, 'base64'), access_nonce = decode($3, 'base64'), refresh_ciphertext = decode($4, 'base64'), refresh_nonce = decode($5, 'base64'), scopes = $6::jsonb, token_expires_at = $7, gmail_history_id = $8, calendar_sync_token = $9, last_synced_at = $10, updated_at = $12",
     [ctx.user.id, gi.access_ciphertext, gi.access_nonce, gi.refresh_ciphertext ?? null, gi.refresh_nonce ?? null,
-      JSON.stringify(gi.scopes ?? []), gi.token_expires_at == null ? null : ts(gi.token_expires_at), gi.gmail_history_id ?? null,
-      gi.calendar_sync_token ?? null, gi.last_synced_at == null ? null : ts(gi.last_synced_at), ts(gi.created_at), ts(gi.updated_at)]);
+      JSON.stringify(gi.scopes ?? []), (gi.token_expires_at === null || gi.token_expires_at === undefined) ? null : ts(gi.token_expires_at), gi.gmail_history_id ?? null,
+      gi.calendar_sync_token ?? null, (gi.last_synced_at === null || gi.last_synced_at === undefined) ? null : ts(gi.last_synced_at), ts(gi.created_at), ts(gi.updated_at)]);
 };
 
-const statusOf = (ctx: Ctx, gi: Integration | null): Row => {
+const statusOf = (ctx: Ctx, gi: Integration | null) => {
   const beta = gmailBeta(ctx);
   if (!gi) {
     return { enabled: configured(ctx), connected: false, scopes: [], gmailStatus: beta ? "DISCONNECTED" : "DISABLED", calendarStatus: "DISCONNECTED", lastSyncedAt: null };
@@ -86,10 +98,10 @@ const statusOf = (ctx: Ctx, gi: Integration | null): Row => {
   };
 };
 
-const messageDto = (row: Row): Row => ({
+const messageDto = (row: Row) => ({
   id: String(row.id),
   threadId: String(row.thread_id ?? ""),
-  applicationId: row.application_id == null ? null : String(row.application_id),
+  applicationId: (row.application_id === null || row.application_id === undefined) ? null : String(row.application_id),
   sender: String(row.sender ?? ""),
   subject: String(row.subject ?? ""),
   snippet: String(row.snippet ?? ""),
@@ -97,17 +109,17 @@ const messageDto = (row: Row): Row => ({
   createdAt: ts(row.created_at),
 });
 
-const eventDto = (row: Row): Row => ({
+const eventDto = (row: Row) => ({
   id: String(row.id),
   revision: Number(row.revision),
-  applicationId: row.application_id == null ? null : String(row.application_id),
+  applicationId: (row.application_id === null || row.application_id === undefined) ? null : String(row.application_id),
   type: String(row.type),
   title: String(row.title ?? ""),
   startsAt: ts(row.starts_at),
   endsAt: ts(row.ends_at),
   timeZone: String(row.time_zone ?? "UTC"),
   source: String(row.source ?? "LOCAL"),
-  externalId: row.external_id == null ? null : String(row.external_id),
+  externalId: (row.external_id === null || row.external_id === undefined) ? null : String(row.external_id),
   notes: String(row.notes ?? ""),
   createdAt: ts(row.created_at),
   updatedAt: ts(row.updated_at),
@@ -116,7 +128,7 @@ const eventDto = (row: Row): Row => ({
 
 const requireConnection = async (ctx: Ctx): Promise<Integration> => {
   const gi = await loadIntegration(ctx);
-  if (!gi) throw integrationRequired();
+  if (!gi) {throw integrationRequired();}
   return gi;
 };
 
@@ -128,8 +140,8 @@ const tokenRequest = async (ctx: Ctx, form: Record<string, string>): Promise<Tok
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(form).toString(),
   });
-  const body = await res.json().catch(() => ({})) as Row;
-  if (res.status !== 200 || !body.access_token) throw new Error(`google token request failed: status ${res.status}`);
+  const body = objectOf(await res.json().catch(() => ({})));
+  if (res.status !== 200 || !body.access_token) {throw new Error(`google token request failed: status ${res.status}`);}
   return {
     accessToken: String(body.access_token),
     refreshToken: String(body.refresh_token ?? ""),
@@ -140,16 +152,15 @@ const tokenRequest = async (ctx: Ctx, form: Record<string, string>): Promise<Tok
 
 const getJson = async (ctx: Ctx, token: string, url: string): Promise<{ status: number; body: Row }> => {
   const res = await http(ctx)(url, { headers: { authorization: "Bearer " + token } });
-  const body = await res.json().catch(() => ({})) as Row;
-  return { status: res.status, body: body && typeof body === "object" ? body : {} };
+  return { status: res.status, body: objectOf(await res.json().catch(() => ({}))) };
 };
 
-const listMessageIds = async (ctx: Ctx, token: string, pageToken: string): Promise<{ ids: string[]; next: string; history: string }> => {
+const listMessageIds = async (ctx: Ctx, token: string, pageToken: string): Promise<MessageList> => {
   let url = "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=50";
-  if (pageToken) url += "&pageToken=" + encodeURIComponent(pageToken);
+  if (pageToken) {url += "&pageToken=" + encodeURIComponent(pageToken);}
   const { status, body } = await getJson(ctx, token, url);
-  if (status !== 200) throw new Error(`gmail list failed: status ${status}`);
-  const messages = Array.isArray(body.messages) ? body.messages as Row[] : [];
+  if (status !== 200) {throw new Error(`gmail list failed: status ${status}`);}
+  const messages = rowList(body.messages);
   return { ids: messages.map((m) => String(m.id)), next: String(body.nextPageToken ?? ""), history: String(body.historyId ?? "") };
 };
 
@@ -157,18 +168,17 @@ const getMessage = async (ctx: Ctx, token: string, id: string): Promise<MessageM
   const url = "https://gmail.googleapis.com/gmail/v1/users/me/messages/" + encodeURIComponent(id)
     + "?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date";
   const { status, body } = await getJson(ctx, token, url);
-  if (status !== 200) throw new Error(`gmail get failed: status ${status}`);
+  if (status !== 200) {throw new Error(`gmail get failed: status ${status}`);}
   const meta: MessageMeta = {
     id: String(body.id ?? ""), threadId: String(body.threadId ?? ""), sender: "", subject: "", snippet: String(body.snippet ?? ""), receivedAt: null,
   };
-  const headers = ((body.payload ?? {}) as Row).headers;
-  for (const h of Array.isArray(headers) ? headers as Row[] : []) {
+  for (const h of rowList(objectOf(body.payload).headers)) {
     const name = String(h.name ?? "").toLowerCase();
-    if (name === "from") meta.sender = String(h.value ?? "");
-    else if (name === "subject") meta.subject = String(h.value ?? "");
+    if (name === "from") {meta.sender = String(h.value ?? "");}
+    else if (name === "subject") {meta.subject = String(h.value ?? "");}
   }
   const internal = String(body.internalDate ?? "");
-  if (/^[+-]?\d+$/.test(internal.trim())) meta.receivedAt = formatJsonTimestamp(new Date(Number(internal)));
+  if (/^[+-]?\d+$/.test(internal.trim())) {meta.receivedAt = formatJsonTimestamp(new Date(Number(internal)));}
   return meta;
 };
 
@@ -182,20 +192,20 @@ const googleTime = (dateTime: string, date: string): string => {
   return formatJsonTimestamp(new Date(0));
 };
 
-const listEvents = async (ctx: Ctx, token: string, syncToken: string): Promise<{ events: GoogleEvent[]; next: string }> => {
+const listEvents = async (ctx: Ctx, token: string, syncToken: string): Promise<EventList> => {
   let url = "https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=100";
-  if (syncToken) url += "&syncToken=" + encodeURIComponent(syncToken);
+  if (syncToken) {url += "&syncToken=" + encodeURIComponent(syncToken);}
   else {
     const since = new Date(ctx.now.getTime() - 90 * 24 * 3600 * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
     url += "&singleEvents=true&timeMin=" + encodeURIComponent(since);
   }
   const { status, body } = await getJson(ctx, token, url);
-  if (status === 410) throw new SyncTokenInvalid();
-  if (status !== 200) throw new Error(`calendar list failed: status ${status}`);
-  const items = Array.isArray(body.items) ? body.items as Row[] : [];
+  if (status === 410) {throw new SyncTokenInvalid();}
+  if (status !== 200) {throw new Error(`calendar list failed: status ${status}`);}
+  const items = rowList(body.items);
   const events = items.map((it) => {
-    const start = (it.start ?? {}) as Row;
-    const end = (it.end ?? {}) as Row;
+    const start = objectOf(it.start);
+    const end = objectOf(it.end);
     return {
       id: String(it.id ?? ""), status: String(it.status ?? ""), summary: String(it.summary ?? ""),
       timeZone: String(start.timeZone ?? ""),
@@ -211,14 +221,14 @@ const revoke = async (ctx: Ctx, token: string): Promise<void> => {
 };
 
 /** Runs `task` over `items`, at most `size` at a time, keeping input order. */
-const inBatches = async <T, R>(items: T[], size: number, task: (item: T) => Promise<R>): Promise<R[]> => {
-  const out: R[] = [];
-  for (let i = 0; i < items.length; i += size) out.push(...await Promise.all(items.slice(i, i + size).map(task)));
+const inBatches = async <T, R>(items: Array<T>, size: number, task: (item: T) => Promise<R>): Promise<Array<R>> => {
+  const out: Array<R> = [];
+  for (let i = 0; i < items.length; i += size) {out.push(...await Promise.all(items.slice(i, i + size).map(task)));}
   return out;
 };
 
 /** Last occurrence wins, as the old one-row-at-a-time upserts did; one statement cannot touch a row twice. */
-const lastById = <T extends { id: string }>(items: T[]): T[] => [...new Map(items.map((item) => [item.id, item])).values()];
+const lastById = <T extends { id: string }>(items: Array<T>): Array<T> => [...new Map(items.map((item) => [item.id, item])).values()];
 
 const SYNC_SQL = `WITH msg AS (
     INSERT INTO google_messages (${GM_COLS})
@@ -234,7 +244,7 @@ const SYNC_SQL = `WITH msg AS (
   ON CONFLICT (user_id, external_id) WHERE external_id IS NOT NULL DO UPDATE SET title = EXCLUDED.title, starts_at = EXCLUDED.starts_at, ends_at = EXCLUDED.ends_at, time_zone = EXCLUDED.time_zone, notes = '', revision = calendar_events.revision + 1, updated_at = EXCLUDED.updated_at`;
 
 /** Every synced message and event in one round trip instead of one per row. */
-const persistSync = async (ctx: Ctx, messages: MessageMeta[], events: GoogleEvent[], now: string | null): Promise<void> => {
+const persistSync = async (ctx: Ctx, messages: Array<MessageMeta>, events: Array<GoogleEvent>, now: string | null): Promise<void> => {
   const rows = lastById(messages).map((m) => ({
     id: crypto.randomUUID(), external_id: m.id, thread_id: m.threadId, sender: m.sender, subject: m.subject, snippet: m.snippet, received_at: m.receivedAt,
   }));
@@ -242,7 +252,7 @@ const persistSync = async (ctx: Ctx, messages: MessageMeta[], events: GoogleEven
   const cancelled = latest.filter((ev) => ev.status === "cancelled").map((ev) => ev.id);
   const upserts = latest.filter((ev) => ev.status !== "cancelled").map((ev) => ({
     id: crypto.randomUUID(), title: ev.summary, starts_at: ev.startsAt, time_zone: ev.timeZone || "UTC", external_id: ev.id,
-    ends_at: Date.parse(ev.endsAt) <= Date.parse(ev.startsAt) ? formatJsonTimestamp(new Date(Date.parse(ev.startsAt) + 3600_000)) : ev.endsAt,
+    ends_at: Date.parse(ev.endsAt) <= Date.parse(ev.startsAt) ? formatJsonTimestamp(new Date(Date.parse(ev.startsAt) + 3_600_000)) : ev.endsAt,
   }));
   await query(ctx.deps.query, SYNC_SQL, [ctx.user.id, now, JSON.stringify(rows), JSON.stringify(cancelled), JSON.stringify(upserts)]);
 };
@@ -259,10 +269,10 @@ export const googleConnect = async (ctx: Ctx): Promise<Response> => {
   });
   routerCheck(ctx);
   await cipher(ctx);
-  if (values.codeChallengeMethod !== "S256") throw fieldError("codeChallengeMethod", "must be S256");
-  if (!values.codeChallenge) throw fieldError("codeChallenge", "required");
+  if (values.codeChallengeMethod !== "S256") {throw fieldError("codeChallengeMethod", "must be S256");}
+  if (!values.codeChallenge) {throw fieldError("codeChallenge", "required");}
   const redirectUri = String(values.redirectUri);
-  if (redirectUri !== APP_CALLBACK && !WEB_CALLBACK.test(redirectUri)) throw fieldError("redirectUri", "not allowed");
+  if (redirectUri !== APP_CALLBACK && !WEB_CALLBACK.test(redirectUri)) {throw fieldError("redirectUri", "not allowed");}
   const state = randomToken();
   const callbackUrl = ctx.url.origin + "/api/v1/integrations/google/callback";
   const expiresAt = addMs(ctx, STATE_TTL_MS);
@@ -284,8 +294,8 @@ export const googleCallback = async (ctx: Ctx): Promise<Response> => {
   // One statement consumes the state, so two callbacks racing on it cannot both pass.
   const rec = await one(ctx.deps.query,
     "DELETE FROM oauth_states WHERE state = $1 RETURNING state, provider, code_challenge, redirect_uri, final_uri, expires_at, created_at, user_id, purpose", [state]);
-  if (!rec) throw unauthenticated("invalid state");
-  if (ctx.now.getTime() > Date.parse(String(ts(rec.expires_at))) || rec.purpose !== "GOOGLE" || rec.user_id == null) {
+  if (!rec) {throw unauthenticated("invalid state");}
+  if (ctx.now.getTime() > Date.parse(String(ts(rec.expires_at))) || rec.purpose !== "GOOGLE" || (rec.user_id === null || rec.user_id === undefined)) {
     throw unauthenticated("state expired");
   }
   const userId = String(rec.user_id);
@@ -318,44 +328,44 @@ export const googleComplete = async (ctx: Ctx): Promise<Response> => {
   const code = String(values.integrationCode);
   const rec = await one(ctx.deps.query,
     "SELECT code, user_id, code_challenge, payload, expires_at, used_at FROM integration_codes WHERE code = $1", [code]);
-  if (!rec) throw unauthenticated("invalid code");
-  if (rec.used_at != null || ctx.now.getTime() > Date.parse(String(ts(rec.expires_at)))) throw unauthenticated("code expired or already used");
-  if (String(rec.user_id) !== ctx.user.id) throw unauthenticated("code belongs to a different account");
+  if (!rec) {throw unauthenticated("invalid code");}
+  if ((rec.used_at !== null && rec.used_at !== undefined) || ctx.now.getTime() > Date.parse(String(ts(rec.expires_at)))) {throw unauthenticated("code expired or already used");}
+  if (String(rec.user_id) !== ctx.user.id) {throw unauthenticated("code belongs to a different account");}
   const verifier = String(values.codeVerifier);
-  if (!verifier || !(await verifyPkce(verifier, String(rec.code_challenge)))) throw unauthenticated("pkce verification failed");
+  if (!verifier || !(await verifyPkce(verifier, String(rec.code_challenge)))) {throw unauthenticated("pkce verification failed");}
   let payload: Row;
   try {
-    const bundle = rec.payload as Row;
-    payload = JSON.parse(await open(key, bundle.ciphertext, bundle.nonce, ctx.user.id)) as Row;
+    const bundle = objectOf(rec.payload);
+    payload = objectOf(JSON.parse(await open(key, bundle.ciphertext, bundle.nonce, ctx.user.id)));
   } catch {
     throw new HttpError(500, "INTERNAL", "internal error");
   }
   const now = ts(ctx.now);
   const access = await seal(key, String(payload.accessToken), ctx.user.id);
-  const gi: Row = {
+  const gi: NewIntegration = {
     access_ciphertext: access.ct, access_nonce: access.nonce, refresh_ciphertext: null, refresh_nonce: null,
     scopes: String(payload.scope ?? "").split(/\s+/).filter(Boolean), token_expires_at: null,
     gmail_history_id: null, calendar_sync_token: null, last_synced_at: null, created_at: now, updated_at: now,
   };
-  if (payload.expiresIn) gi.token_expires_at = addMs(ctx, Number(payload.expiresIn) * 1000);
+  if (payload.expiresIn) {gi.token_expires_at = addMs(ctx, Number(payload.expiresIn) * 1000);}
   if (payload.refreshToken) {
     const refresh = await seal(key, String(payload.refreshToken), ctx.user.id);
     gi.refresh_ciphertext = refresh.ct;
     gi.refresh_nonce = refresh.nonce;
   }
   const marked = await query(ctx.deps.query, "UPDATE integration_codes SET used_at = $2 WHERE code = $1 AND used_at IS NULL", [code, now]);
-  if (!marked.rowCount) throw unauthenticated("code expired or already used");
+  if (!marked.rowCount) {throw unauthenticated("code expired or already used");}
   await putIntegration(ctx, gi);
   return data(200, statusOf(ctx, await loadIntegration(ctx)), ctx.rid);
 };
 
 export const googleDisconnect = async (ctx: Ctx): Promise<Response> => {
   const gi = await loadIntegration(ctx);
-  if (!gi) return noContent(ctx.rid);
-  let key: CryptoKey | null = null;
+  if (!gi) {return noContent(ctx.rid);}
+  let key: CryptoKey | null;
   try { key = ctx.env.TOKEN_ENCRYPTION_KEY ? await masterKey(ctx.env.TOKEN_ENCRYPTION_KEY) : null; } catch { key = null; }
   try {
-    if (!key) throw new Error("no cipher");
+    if (!key) {throw new Error("no cipher");}
     await revoke(ctx, await open(key, gi.access_ciphertext, gi.access_nonce, ctx.user.id));
   } catch {
     if (key && gi.refresh_ciphertext) {
@@ -368,7 +378,7 @@ export const googleDisconnect = async (ctx: Ctx): Promise<Response> => {
   return noContent(ctx.rid);
 };
 
-const operationDto = (op: Row): Row => ({
+const operationDto = (op: Row) => ({
   id: op.id, type: "GOOGLE_SYNC", applicationId: null, status: op.status, progress: null,
   result: op.result ?? null, error: op.error ?? null, inputRequest: null, createdAt: op.created_at, updatedAt: op.updated_at,
 });
@@ -377,7 +387,7 @@ export const googleSync = async (ctx: Ctx): Promise<Response> => {
   routerCheck(ctx);
   const gi = await requireConnection(ctx);
   const now = ts(ctx.now);
-  const op: Row = { id: crypto.randomUUID(), status: "RUNNING", created_at: now, updated_at: now };
+  const op = { id: crypto.randomUUID(), status: "RUNNING", created_at: now, updated_at: now };
   await query(ctx.deps.query,
     "INSERT INTO operations (id, user_id, type, application_id, status, progress, result, error, input_request, pending_payload, created_at, updated_at) VALUES ($1,$2,'GOOGLE_SYNC',NULL,'RUNNING',NULL,NULL,NULL,NULL,NULL,$3,$3) ON CONFLICT (id) DO NOTHING",
     [op.id, ctx.user.id, now]);
@@ -393,7 +403,7 @@ export const googleSync = async (ctx: Ctx): Promise<Response> => {
   try {
     key = await masterKey(String(ctx.env.TOKEN_ENCRYPTION_KEY || ""));
     token = await open(key, gi.access_ciphertext, gi.access_nonce, ctx.user.id);
-    const expires = gi.token_expires_at == null ? null : Date.parse(String(ts(gi.token_expires_at)));
+    const expires = (gi.token_expires_at === null || gi.token_expires_at === undefined) ? null : Date.parse(String(ts(gi.token_expires_at)));
     if (expires !== null && ctx.now.getTime() > expires - 60_000 && gi.refresh_ciphertext) {
       const refresh = await open(key, gi.refresh_ciphertext, gi.refresh_nonce, ctx.user.id);
       const fresh = await tokenRequest(ctx, {
@@ -403,40 +413,40 @@ export const googleSync = async (ctx: Ctx): Promise<Response> => {
       const sealed = await seal(key, fresh.accessToken, ctx.user.id);
       gi.access_ciphertext = sealed.ct;
       gi.access_nonce = sealed.nonce;
-      if (fresh.expiresIn > 0) gi.token_expires_at = addMs(ctx, fresh.expiresIn * 1000);
+      if (fresh.expiresIn > 0) {gi.token_expires_at = addMs(ctx, fresh.expiresIn * 1000);}
       await putIntegration(ctx, gi);
       token = fresh.accessToken;
     }
   } catch {
     await fail("PROVIDER_ERROR", "google access token unavailable");
   }
-  const messages: MessageMeta[] = [];
-  let events: GoogleEvent[] = [];
-  let historyId = gi.gmail_history_id == null ? null : String(gi.gmail_history_id);
-  let syncToken = gi.calendar_sync_token == null ? null : String(gi.calendar_sync_token);
+  const messages: Array<MessageMeta> = [];
+  let events: Array<GoogleEvent> = [];
+  let historyId = (gi.gmail_history_id === null || gi.gmail_history_id === undefined) ? null : String(gi.gmail_history_id);
+  let syncToken = (gi.calendar_sync_token === null || gi.calendar_sync_token === undefined) ? null : String(gi.calendar_sync_token);
   if (gmailBeta(ctx) && gi.scopes.includes(SCOPE_GMAIL)) {
     let pageToken = "";
     for (let i = 0; i < 5; i += 1) {
-      let listed: { ids: string[]; next: string; history: string } = { ids: [], next: "", history: "" };
+      let listed: MessageList = { ids: [], next: "", history: "" };
       try { listed = await listMessageIds(ctx, token, pageToken); } catch { await fail("PROVIDER_ERROR", "gmail message list failed"); }
       try { messages.push(...await inBatches(listed.ids, GMAIL_FETCH_CONCURRENCY, (id) => getMessage(ctx, token, id))); } catch {
         await fail("PROVIDER_ERROR", "gmail message fetch failed");
       }
-      if (listed.history && listed.history !== "0") historyId = listed.history;
-      if (!listed.next) break;
+      if (listed.history && listed.history !== "0") {historyId = listed.history;}
+      if (!listed.next) {break;}
       pageToken = listed.next;
     }
   }
   if (gi.scopes.includes(SCOPE_CALENDAR)) {
-    let listed: { events: GoogleEvent[]; next: string } = { events: [], next: "" };
+    let listed: EventList = { events: [], next: "" };
     try {
       listed = await listEvents(ctx, token, syncToken ?? "");
-    } catch (err) {
-      if (!(err instanceof SyncTokenInvalid)) await fail("PROVIDER_ERROR", "calendar event list failed");
+    } catch (error) {
+      if (!(error instanceof SyncTokenInvalid)) {await fail("PROVIDER_ERROR", "calendar event list failed");}
       try { listed = await listEvents(ctx, token, ""); } catch { await fail("PROVIDER_ERROR", "calendar event list failed"); }
     }
     events = listed.events;
-    if (listed.next) syncToken = listed.next;
+    if (listed.next) {syncToken = listed.next;}
   }
   const result = { kind: "GOOGLE_SYNC", value: { messages: messages.length, events: events.length, lastSyncedAt: now } };
   try {
@@ -452,9 +462,9 @@ export const googleSync = async (ctx: Ctx): Promise<Response> => {
 
 const queryUuid = (ctx: Ctx, name: string): string | null => {
   const raw = ctx.url.searchParams.get(name);
-  if (!raw) return null;
+  if (!raw) {return null;}
   const id = parseUuid(raw);
-  if (!id) throw fieldError(name, "must be a UUID");
+  if (!id) {throw fieldError(name, "must be a UUID");}
   return id;
 };
 
@@ -465,12 +475,12 @@ const queryTime = (ctx: Ctx, name: string): string | null => {
 
 export const googleMessages = async (ctx: Ctx): Promise<Response> => {
   routerCheck(ctx);
-  if (!gmailBeta(ctx)) throw new HttpError(403, "FEATURE_DISABLED", "gmail sync is not enabled");
+  if (!gmailBeta(ctx)) {throw new HttpError(403, "FEATURE_DISABLED", "gmail sync is not enabled");}
   const applicationId = queryUuid(ctx, "applicationId");
   const page = pageOf(ctx.url);
   await requireConnection(ctx);
   const where = ["user_id = $1"];
-  const params: unknown[] = [ctx.user.id];
+  const params: Array<unknown> = [ctx.user.id];
   if (applicationId) {
     params.push(applicationId);
     where.push(`application_id = $${params.length}`);
@@ -485,9 +495,9 @@ export const googleEvents = async (ctx: Ctx): Promise<Response> => {
   const page = pageOf(ctx.url);
   await requireConnection(ctx);
   const where = ["user_id = $1"];
-  const params: unknown[] = [ctx.user.id];
+  const params: Array<unknown> = [ctx.user.id];
   for (const [value, clause] of [[from, "starts_at >="], [to, "starts_at <="]] as const) {
-    if (value === null) continue;
+    if (value === null) {continue;}
     params.push(value);
     where.push(`${clause} $${params.length}`);
   }
@@ -500,15 +510,15 @@ export const googleLinkMessage = async (ctx: Ctx, idRaw: string): Promise<Respon
   const id = parseUuid(idRaw);
   const { values } = await strictBody(ctx.request, { applicationId: { kind: "uuid", required: true } });
   routerCheck(ctx);
-  if (!id) throw fieldError("id", "must be a UUID");
+  if (!id) {throw fieldError("id", "must be a UUID");}
   await requireConnection(ctx);
   const message = await one(ctx.deps.query, `SELECT ${GM_COLS} FROM google_messages WHERE id = $1 AND user_id = $2`, [id, ctx.user.id]);
-  if (!message) throw notFound();
+  if (!message) {throw notFound();}
   const app = await one(ctx.deps.query, "SELECT id FROM applications WHERE id = $1 AND user_id = $2", [values.applicationId, ctx.user.id]);
-  if (!app) throw notFound();
+  if (!app) {throw notFound();}
   const linked = await query(ctx.deps.query, "UPDATE google_messages SET application_id = $3 WHERE id = $1 AND user_id = $2", [id, ctx.user.id, values.applicationId]);
-  if (!linked.rowCount) throw new HttpError(500, "INTERNAL", "internal error");
-  return data(200, messageDto({ ...message, application_id: values.applicationId }), ctx.rid);
+  if (!linked.rowCount) {throw new HttpError(500, "INTERNAL", "internal error");}
+  return data(200, messageDto({ ...message, application_id: String(values.applicationId) }), ctx.rid);
 };
 
 export const isGoogleCallback = (method: string, path: string): boolean =>
@@ -517,15 +527,15 @@ export const isGoogleCallback = (method: string, path: string): boolean =>
 export const dispatchIntegrations = async (ctx: Ctx, path: string): Promise<Response | null> => {
   const method = ctx.request.method;
   const base = "/api/v1/integrations/google";
-  if (path === base && method === "GET") return googleStatus(ctx);
-  if (path === base && method === "DELETE") return googleDisconnect(ctx);
-  if (path === base + "/connect" && method === "POST") return googleConnect(ctx);
-  if (isGoogleCallback(method, path)) return googleCallback(ctx);
-  if (path === base + "/complete" && method === "POST") return googleComplete(ctx);
-  if (path === base + "/sync" && method === "POST") return googleSync(ctx);
-  if (path === base + "/messages" && method === "GET") return googleMessages(ctx);
-  if (path === base + "/events" && method === "GET") return googleEvents(ctx);
+  if (path === base && method === "GET") {return googleStatus(ctx);}
+  if (path === base && method === "DELETE") {return googleDisconnect(ctx);}
+  if (path === base + "/connect" && method === "POST") {return googleConnect(ctx);}
+  if (isGoogleCallback(method, path)) {return googleCallback(ctx);}
+  if (path === base + "/complete" && method === "POST") {return googleComplete(ctx);}
+  if (path === base + "/sync" && method === "POST") {return googleSync(ctx);}
+  if (path === base + "/messages" && method === "GET") {return googleMessages(ctx);}
+  if (path === base + "/events" && method === "GET") {return googleEvents(ctx);}
   const link = path.match(/^\/api\/v1\/integrations\/google\/messages\/([^/]+)\/link$/);
-  if (link && method === "POST") return googleLinkMessage(ctx, link[1]);
+  if (link && method === "POST") {return googleLinkMessage(ctx, link[1]);}
   return null;
 };

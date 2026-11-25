@@ -5,7 +5,10 @@
 
 import { pyJson } from "./time.ts";
 import { weakEtag } from "./middleware/cache.ts";
-import type { FrontEnv } from "./types.ts";
+import type { FrontEnv, Query } from "./types.ts";
+
+type Row = Awaited<ReturnType<Query>>[number];
+const isRow = (item: unknown): item is Row => typeof item === "object" && item !== null;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ORIGIN_RE = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
@@ -16,7 +19,7 @@ const ALLOWED_ORIGINS = new Set([
 ]);
 const ALLOWED_HEADERS = new Set([
   "origin", "content-type", "accept", "authorization",
-  "idempotency-key", "x-request-id", "x-csrf",
+  "idempotency-key", "x-request-id", "x-csrf", "a2ui-version",
 ]);
 
 export const USER_CACHE_CONTROL = "private, no-cache";
@@ -54,7 +57,7 @@ export function withCors(request: Request, env: FrontEnv, response: Response): R
     for (const [k, v] of corsHeaders(request, env)) {
       if (k.toLowerCase() === "vary") {
         const existing = headers.get("vary");
-        if (!existing) headers.set("vary", v);
+        if (!existing) {headers.set("vary", v);}
         else if (!existing.split(",").some((name) => name.trim().toLowerCase() === v.toLowerCase())) {
           headers.set("vary", `${existing}, ${v}`);
         }
@@ -123,7 +126,7 @@ export function conditional(body: string, request: Request, rid: string, cacheCo
 }
 
 export async function freshRead(loaded: Response, request: Request, rid: string): Promise<Response> {
-  if (loaded.status !== 200) return loaded;
+  if (loaded.status !== 200) {return loaded;}
   return conditional(await loaded.text(), request, rid, USER_CACHE_CONTROL);
 }
 
@@ -134,12 +137,12 @@ export async function sha256Hex(value: string): Promise<string> {
 
 /** Compares digests, so the time taken does not depend on where the inputs differ. Empty never matches. */
 export async function secretEquals(got: string, want: string): Promise<boolean> {
-  if (!got || !want) return false;
+  if (!got || !want) {return false;}
   return (await sha256Hex(got)) === (await sha256Hex(want));
 }
 
 export function parseUuid(value: string): string | null {
-  if (UUID_RE.test(value)) return value.toLowerCase();
+  if (UUID_RE.test(value)) {return value.toLowerCase();}
   if (/^[0-9a-f]{32}$/i.test(value)) {
     const h = value.toLowerCase();
     return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
@@ -149,8 +152,8 @@ export function parseUuid(value: string): string | null {
 
 export function pageLimit(url: URL, rid: string): { limit: number } | Response {
   const raw = url.searchParams.get("limit");
-  if (!raw) return { limit: 50 };
-  if (!/^[1-9]\d*$/.test(raw)) return fieldError("limit", "must be a positive integer", rid);
+  if (!raw) {return { limit: 50 };}
+  if (!/^[1-9]\d*$/.test(raw)) {return fieldError("limit", "must be a positive integer", rid);}
   return { limit: Math.min(Number(raw), 100) };
 }
 export function preflight(request: Request, env: FrontEnv): Response {
@@ -166,18 +169,18 @@ export function preflight(request: Request, env: FrontEnv): Response {
   headers.set("content-length", String(body.length));
   return new Response(body, { status: 200, headers });
 }
-export function jsonRows(value: unknown): Record<string, unknown>[] {
+export function jsonRows(value: unknown): Array<Row> {
   let raw = value;
   if (typeof raw === "string") {
     try { raw = JSON.parse(raw); } catch { return []; }
   }
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((item) => item && typeof item === "object") as Record<string, unknown>[];
+  if (!Array.isArray(raw)) {return [];}
+  return raw.filter(isRow);
 }
 export function codedError(err: unknown, rid: string): Response {
-  const coded = err as { status?: number; code?: string; message?: string };
-  if (coded.status && coded.code) {
-    return errorResponse(coded.status, coded.code, coded.message || "internal error", rid);
+  if (typeof err === "object" && err !== null && "status" in err && "code" in err && typeof err.status === "number" && typeof err.code === "string" && err.status && err.code) {
+    const message = "message" in err && typeof err.message === "string" ? err.message : "";
+    return errorResponse(err.status, err.code, message || "internal error", rid);
   }
   return errorResponse(500, "INTERNAL", "internal error", rid);
 }

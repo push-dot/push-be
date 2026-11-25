@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import type { Row } from "../src/db.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
+
+const readJson = async <T>(res: Response): Promise<T> => {
+  const body: T = await res.json();
+  return body;
+};
 
 const USER = "12345678-1234-5678-1234-567812345678";
 const JOB = "abababab-abab-4bab-8bab-abababababab";
@@ -23,28 +30,27 @@ const authRow = {
   token_expires_at: "2099-01-01T00:00:00Z",
 };
 
-type Row = Record<string, unknown>;
 
-const scripted = (rows: (sql: string, params: unknown[]) => Row | null, sqls: string[] = []): Deps => ({
+const scripted = (rows: (sql: string, params: Array<unknown>) => Row | null, sqls: Array<string> = []): Deps => ({
   now: () => NOW,
   query: async (sql, params = []) => {
     sqls.push(sql);
-    if (sql.includes("access_tokens")) return { rows: [authRow], rowCount: 1 };
-    if (sql.includes("rate_limits")) return { rows: [{ hits: 1 }], rowCount: 1 };
-    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return { rows: [{ id: "idem" }], rowCount: 1 };
-    if (sql.includes("idempotency_keys")) return { rows: [], rowCount: 1 };
+    if (sql.includes("access_tokens")) {return { rows: [authRow], rowCount: 1 };}
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {return { rows: [{ id: "idem" }], rowCount: 1 };}
+    if (sql.includes("idempotency_keys")) {return { rows: [], rowCount: 1 };}
     const row = rows(sql, params);
     return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
   },
 });
 
-const funded = (sql: string, params: unknown[]): Row | null => {
-  if (sql.includes("count(*)") && sql.includes("FROM ai_jobs")) return { n: 0 };
-  if (sql.includes("idempotency_key") && sql.includes("FROM ai_jobs")) return null;
-  if (sql.includes("billing_ledger")) return { balance_after: "100000000" };
-  if (sql.includes("ai_usage")) return { settled: "0" };
-  if (sql.includes("SUM") && sql.includes("credit_reservations")) return { reserved: "0" };
-  if (sql.includes("INSERT INTO ai_jobs")) return { id: String(params[0]), queue: String(params[2]) };
+const funded = (sql: string, params: Array<unknown>): Row | null => {
+  if (sql.includes("count(*)") && sql.includes("FROM ai_jobs")) {return { n: 0 };}
+  if (sql.includes("idempotency_key") && sql.includes("FROM ai_jobs")) {return null;}
+  if (sql.includes("billing_ledger")) {return { balance_after: "100000000" };}
+  if (sql.includes("ai_usage")) {return { settled: "0" };}
+  if (sql.includes("SUM") && sql.includes("credit_reservations")) {return { reserved: "0" };}
+  if (sql.includes("INSERT INTO ai_jobs")) {return { id: String(params[0]), queue: String(params[2]) };}
   return null;
 };
 
@@ -56,9 +62,9 @@ const request = (method: string, path: string, body?: unknown) => new Request("h
 
 test("job status hides other users' jobs with 404", async () => {
   resetLimits();
-  const params: unknown[][] = [];
+  const params: Array<Array<unknown>> = [];
   const res = await handle(request("GET", `/api/v1/ai/jobs/${JOB}`), env, scripted((sql, p) => {
-    if (sql.includes("FROM ai_jobs")) params.push(p);
+    if (sql.includes("FROM ai_jobs")) {params.push(p);}
     return null;
   }));
   assert.equal(res.status, 404);
@@ -68,7 +74,7 @@ test("job status hides other users' jobs with 404", async () => {
 test("job status returns the owner's job body", async () => {
   resetLimits();
   const res = await handle(request("GET", `/api/v1/ai/jobs/${JOB}`), env, scripted((sql) => {
-    if (!sql.includes("FROM ai_jobs")) return null;
+    if (!sql.includes("FROM ai_jobs")) {return null;}
     return {
       id: JOB,
       type: "fit",
@@ -81,7 +87,7 @@ test("job status returns the owner's job body", async () => {
     };
   }));
   assert.equal(res.status, 200);
-  const body = await res.json() as { data: Row };
+  const body = await readJson<{ data: Row }>(res);
   assert.equal(body.data.status, "DONE");
   assert.deepEqual(body.data.result, { fitScore: 80 });
   assert.deepEqual(body.data.progress, { step: 2 });
@@ -89,20 +95,20 @@ test("job status returns the owner's job body", async () => {
 
 test("posting fit returns 202 with jobId on the document queue", async () => {
   resetLimits();
-  const sqls: string[] = [];
+  const sqls: Array<string> = [];
   const res = await handle(request("POST", `/api/v1/postings/${POSTING}/fit`, { documentId: DOC }), env, scripted((sql, p) => {
-    if (sql.includes("FROM documents d JOIN job_postings")) return { id: DOC };
+    if (sql.includes("FROM documents d JOIN job_postings")) {return { id: DOC };}
     return funded(sql, p);
   }, sqls));
   assert.equal(res.status, 202);
-  const body = await res.json() as { data: { jobId: string } };
+  const body = await readJson<{ data: { jobId: string } }>(res);
   assert.match(body.data.jobId, /^[0-9a-f-]{36}$/);
   assert.ok(sqls.some((sql) => sql.includes("INSERT INTO outbox")));
 });
 
 test("posting fit for someone else's document is 404 and enqueues nothing", async () => {
   resetLimits();
-  const sqls: string[] = [];
+  const sqls: Array<string> = [];
   const res = await handle(request("POST", `/api/v1/postings/${POSTING}/fit`, { documentId: DOC }), env, scripted(funded, sqls));
   assert.equal(res.status, 404);
   assert.equal(sqls.some((sql) => sql.includes("INSERT INTO ai_jobs")), false);
@@ -110,13 +116,13 @@ test("posting fit for someone else's document is 404 and enqueues nothing", asyn
 
 test("document generate returns 202 with jobId and keeps the request body for the worker", async () => {
   resetLimits();
-  const payloads: string[] = [];
+  const payloads: Array<string> = [];
   const res = await handle(request("POST", `/api/v1/documents/${DOC}/generate`, {
     expectedRevision: 3,
     evidenceIds: [EVIDENCE],
   }), env, scripted((sql, p) => {
-    if (sql.includes("FROM documents WHERE id")) return { id: DOC };
-    if (sql.includes("INSERT INTO ai_jobs")) payloads.push(String(p[7]));
+    if (sql.includes("FROM documents WHERE id")) {return { id: DOC };}
+    if (sql.includes("INSERT INTO ai_jobs")) {payloads.push(String(p[7]));}
     return funded(sql, p);
   }));
   assert.equal(res.status, 202);
@@ -136,11 +142,11 @@ test("document generate rejects a missing expectedRevision with 400", async () =
 test("queue over threshold answers 429 QUEUE_BUSY with Retry-After", async () => {
   resetLimits();
   const res = await handle(request("POST", `/api/v1/postings/${POSTING}/fit`, { documentId: DOC }), env, scripted((sql, p) => {
-    if (sql.includes("FROM documents d JOIN job_postings")) return { id: DOC };
-    if (sql.includes("count(*)")) return { n: 10_000 };
+    if (sql.includes("FROM documents d JOIN job_postings")) {return { id: DOC };}
+    if (sql.includes("count(*)")) {return { n: 10_000 };}
     return funded(sql, p);
   }));
   assert.equal(res.status, 429);
   assert.equal(res.headers.get("retry-after"), "30");
-  assert.equal((await res.json() as { error: { code: string } }).error.code, "QUEUE_BUSY");
+  assert.equal((await readJson<{ error: { code: string } }>(res)).error.code, "QUEUE_BUSY");
 });

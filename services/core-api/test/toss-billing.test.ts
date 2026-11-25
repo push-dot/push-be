@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
 
 const USER = "12345678-1234-5678-1234-567812345678";
@@ -9,7 +10,14 @@ const COMPANY = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const OTHER_COMPANY = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const NOW = new Date("2026-11-19T00:00:00.000Z");
 const JOB_TOKEN = "job-token";
-const empty = { rows: [] as Record<string, unknown>[], rowCount: 0 };
+type Row = Awaited<ReturnType<Deps["query"]>>["rows"][number];
+
+const noRows: Array<Row> = [];
+const empty = { rows: noRows, rowCount: 0 };
+
+const isRow = (value: unknown): value is Row => typeof value === "object" && value !== null && !Array.isArray(value);
+const textOrNull = (value: unknown): string | null => (typeof value === "string" ? value : null);
+const numberOrNull = (value: unknown): number | null => (typeof value === "number" ? value : null);
 
 type Bill = {
   customer_key: string; billing_key_enc: string | null; plan: string | null; period_start: string | null;
@@ -17,15 +25,15 @@ type Bill = {
 };
 type Order = { company: string; kind: string; packs: number | null; amount: number; status: string; receipt: string | null };
 type Ledger = { reference: string; amount: number; krw: number | null; description: string | null };
-type Fetched = { url: string; headers: Record<string, string>; body: Record<string, unknown> };
+type Fetched = { url: string; headers: Record<string, string>; body: Row };
 
 const world = {
   bill: null as Bill | null,
   orders: new Map<string, Order>(),
-  ledger: [] as Ledger[],
+  ledger: [] as Array<Ledger>,
   companyPlan: null as string | null,
   companyPeriod: null as string | null,
-  fetched: [] as Fetched[],
+  fetched: [] as Array<Fetched>,
   chargeStatus: "DONE",
   confirmStatus: "DONE",
 };
@@ -44,10 +52,10 @@ beforeEach(() => {
 
 const env: CoreEnv = { APP_ENV: "production", PAYMENTS_ENABLED: "1", TOSS_SECRET_KEY: "test_sk_secret", TOKEN_ENCRYPTION_KEY: "test-master", INTERNAL_JOB_TOKEN: JOB_TOKEN };
 
-const rowOf = (rows: Record<string, unknown>[]) => ({ rows, rowCount: rows.length });
+const rowOf = (rows: Array<Row>) => ({ rows, rowCount: rows.length });
 
 const database = (employer: boolean, role: string | null): Deps["query"] => async (sql, params = []) => {
-  if (sql.includes("rate_limits")) return rowOf([{ hits: 1 }]);
+  if (sql.includes("rate_limits")) {return rowOf([{ hits: 1 }]);}
   if (sql.includes("access_tokens")) {
     return rowOf([{
       id: USER, display_name: "Ada", locale: "ko", plan: "FREE", subscription_status: "NONE", stripe_customer_id: null,
@@ -55,11 +63,11 @@ const database = (employer: boolean, role: string | null): Deps["query"] => asyn
       is_employer: employer, company_id: role ? COMPANY : null, company_role: role,
     }]);
   }
-  if (sql.includes("idempotency_keys") && sql.includes("INSERT")) return rowOf([{ id: crypto.randomUUID() }]);
-  if (sql.includes("idempotency_keys")) return empty;
-  if (sql.includes("FOR NO KEY UPDATE")) return rowOf([{ id: COMPANY }]);
-  if (sql.startsWith("SELECT 1 FROM companies")) return rowOf([{ one: 1 }]);
-  if (sql.startsWith("SELECT plan, credit_period_start FROM companies")) return rowOf([{ plan: world.companyPlan, credit_period_start: world.companyPeriod }]);
+  if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {return rowOf([{ id: crypto.randomUUID() }]);}
+  if (sql.includes("idempotency_keys")) {return empty;}
+  if (sql.includes("FOR NO KEY UPDATE")) {return rowOf([{ id: COMPANY }]);}
+  if (sql.startsWith("SELECT 1 FROM companies")) {return rowOf([{ one: 1 }]);}
+  if (sql.startsWith("SELECT plan, credit_period_start FROM companies")) {return rowOf([{ plan: world.companyPlan, credit_period_start: world.companyPeriod }]);}
   if (sql.startsWith("UPDATE companies SET plan = NULL")) {
     world.companyPlan = null;
     world.companyPeriod = null;
@@ -78,10 +86,10 @@ const database = (employer: boolean, role: string | null): Deps["query"] => asyn
     const due = world.bill?.plan && world.bill.next_charge_at && world.bill.next_charge_at <= String(params[0]);
     return rowOf(due ? [{ company_id: COMPANY, ...world.bill }] : []);
   }
-  if (sql.includes("FROM toss_billing")) return rowOf(world.bill ? [world.bill] : []);
+  if (sql.includes("FROM toss_billing")) {return rowOf(world.bill ? [world.bill] : []);}
   if (sql.startsWith("UPDATE toss_billing SET billing_key_enc = COALESCE") && world.bill) {
     Object.assign(world.bill, {
-      billing_key_enc: (params[1] as string | null) ?? world.bill.billing_key_enc, plan: params[2], period_start: params[3],
+      billing_key_enc: textOrNull(params[1]) ?? world.bill.billing_key_enc, plan: params[2], period_start: params[3],
       period_end: params[4], next_charge_at: params[4], canceled_at: null, failures: 0,
     });
     return empty;
@@ -100,7 +108,7 @@ const database = (employer: boolean, role: string | null): Deps["query"] => asyn
   }
   if (sql.startsWith("INSERT INTO toss_orders")) {
     if (!world.orders.has(String(params[0]))) {
-      world.orders.set(String(params[0]), { company: String(params[1]), kind: String(params[2]), packs: params[4] as number | null, amount: Number(params[5]), status: "PENDING", receipt: null });
+      world.orders.set(String(params[0]), { company: String(params[1]), kind: String(params[2]), packs: numberOrNull(params[4]), amount: Number(params[5]), status: "PENDING", receipt: null });
     }
     return empty;
   }
@@ -110,37 +118,39 @@ const database = (employer: boolean, role: string | null): Deps["query"] => asyn
   }
   if (sql.startsWith("UPDATE toss_orders SET status = 'FAILED'")) {
     const order = world.orders.get(String(params[0]));
-    if (order?.status === "PENDING") order.status = "FAILED";
+    if (order?.status === "PENDING") {order.status = "FAILED";}
     return empty;
   }
   if (sql.startsWith("UPDATE toss_orders SET status = 'DONE'")) {
     const order = world.orders.get(String(params[0]));
-    if (order) Object.assign(order, { status: "DONE", receipt: params[2] });
+    if (order) {Object.assign(order, { status: "DONE", receipt: params[2] });}
     return empty;
   }
   if (sql.includes("INSERT INTO billing_ledger")) {
     const reference = String(params[3]);
-    if (world.ledger.some((row) => row.reference === reference)) return empty;
-    world.ledger.push({ reference, amount: Number(params[2]), krw: sql.includes("amount_krw") ? (params[9] as number | null) : null, description: sql.includes("amount_krw") ? (params[5] as string | null) : null });
+    if (world.ledger.some((row) => row.reference === reference)) {return empty;}
+    world.ledger.push({ reference, amount: Number(params[2]), krw: sql.includes("amount_krw") ? numberOrNull(params[9]) : null, description: sql.includes("amount_krw") ? textOrNull(params[5]) : null });
     return rowOf([{ id: "ledger" }]);
   }
-  if (sql.includes("balance_after")) return rowOf([{ balance_after: 0 }]);
+  if (sql.includes("balance_after")) {return rowOf([{ balance_after: 0 }]);}
   return empty;
 };
 
+const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
+
 const tossFetch = (): typeof fetch => (async (input, init) => {
   const url = String(input);
-  const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-  world.fetched.push({ url, headers: init?.headers as Record<string, string>, body });
-  const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
-  if (url.endsWith("/v1/billing/authorizations/issue")) return json({ billingKey: "bk_plain_secret" });
+  const parsed: unknown = JSON.parse(String(init?.body ?? "{}"));
+  const body: Row = isRow(parsed) ? parsed : {};
+  world.fetched.push({ url, headers: Object.fromEntries(new Headers(init?.headers)), body });
+  if (url.endsWith("/v1/billing/authorizations/issue")) {return json({ billingKey: "bk_plain_secret" });}
   if (url.includes("/v1/billing/")) {
-    if (world.chargeStatus === "DECLINED") return json({ code: "REJECT_CARD_PAYMENT", message: "no" }, 400);
+    if (world.chargeStatus === "DECLINED") {return json({ code: "REJECT_CARD_PAYMENT", message: "no" }, 400);}
     return json({ status: world.chargeStatus, paymentKey: "pk_charge", receipt: { url: "https://dashboard.tosspayments.com/receipt/1" } });
   }
-  if (world.confirmStatus === "DECLINED") return json({ code: "REJECT_CARD_PAYMENT" }, 400);
+  if (world.confirmStatus === "DECLINED") {return json({ code: "REJECT_CARD_PAYMENT" }, 400);}
   return json({ status: world.confirmStatus, paymentKey: body.paymentKey, receipt: { url: "https://dashboard.tosspayments.com/receipt/2" } });
-}) as typeof fetch;
+});
 
 const call = async (path: string, body: unknown, options: { employer?: boolean; role?: string | null; key?: string; env?: CoreEnv } = {}): Promise<Response> => {
   const employer = options.employer ?? true;
@@ -152,8 +162,17 @@ const call = async (path: string, body: unknown, options: { employer?: boolean; 
   }), options.env ?? env, { query: database(employer, role), now: () => NOW, fetch: tossFetch() });
 };
 
-const dataOf = async (res: Response): Promise<Record<string, unknown>> => (await res.json() as { data: Record<string, unknown> }).data;
-const codeOf = async (res: Response): Promise<string> => (await res.json() as { error: { code: string } }).error.code;
+const dataOf = async (res: Response): Promise<Row> => {
+  const body: { data: Row } = await res.json();
+  return body.data;
+};
+const codeOf = async (res: Response): Promise<string> => {
+  const body: { error: { code: string } } = await res.json();
+  return body.error.code;
+};
+
+const readStatus = async () => dataOf(await handle(new Request("https://core.example/api/v1/billing", { headers: { authorization: "Bearer secret-token" } }),
+  env, { query: database(true, "ADMIN"), now: () => NOW }));
 
 const subscribe = async (planId = "PRO"): Promise<string> => {
   const auth = await dataOf(await call("/api/v1/billing/toss/billing-auth", { planId }));
@@ -256,7 +275,7 @@ test("topup creates a pending order priced by the server", async () => {
   assert.equal(body.orderName, "크레딧 3팩");
   assert.ok(body.customerKey);
   assert.equal(world.orders.get(String(body.orderId))?.status, "PENDING");
-  for (const packs of [0, 21, 1.5, "2"]) assert.equal((await call("/api/v1/billing/toss/topup", { packs })).status, 400);
+  for (const packs of [0, 21, 1.5, "2"]) {assert.equal((await call("/api/v1/billing/toss/topup", { packs })).status, 400);}
 });
 
 const order = async (packs = 2): Promise<{ orderId: string; amount: number }> => {
@@ -304,9 +323,7 @@ test("cancel marks the subscription canceled and keeps the plan", async () => {
 
 test("status shows the toss provider, prices, renewal date and cancel flag", async () => {
   await subscribe("PRO");
-  const read = async () => dataOf(await handle(new Request("https://core.example/api/v1/billing", { headers: { authorization: "Bearer secret-token" } }),
-    env, { query: database(true, "ADMIN"), now: () => NOW }));
-  const active = await read();
+  const active = await readStatus();
   assert.equal(active.provider, "toss");
   assert.equal(active.currency, "KRW");
   assert.deepEqual(active.prices, { BASIC: 29_000, PRO: 140_000, ULTRA: 280_000, pack: 14_000 });
@@ -314,7 +331,7 @@ test("status shows the toss provider, prices, renewal date and cancel flag", asy
   assert.equal(active.canceled, false);
   assert.equal(active.source, "TOSS");
   await call("/api/v1/billing/toss/cancel", {});
-  const canceled = await read();
+  const canceled = await readStatus();
   assert.equal(canceled.renewsAt, null);
   assert.equal(canceled.canceled, true);
 });

@@ -8,6 +8,12 @@ import { appendFileSync } from "node:fs";
 import { dirname, relative } from "node:path";
 import ts from "typescript";
 
+// String.raw`...` with no substitutions is constant text; its value is the raw source, escapes kept.
+const isRawTemplate = (node) => ts.isTaggedTemplateExpression(node) && ts.isNoSubstitutionTemplateLiteral(node.template)
+  && ts.isPropertyAccessExpression(node.tag) && ts.isIdentifier(node.tag.expression)
+  && node.tag.expression.text === "String" && node.tag.name.text === "raw";
+const literalText = (node) => (node.parent && isRawTemplate(node.parent) ? node.rawText : node.text);
+
 const SQL = /^\s*(WITH|SELECT|INSERT|UPDATE|DELETE)\b[\s\S]*\b(FROM|INTO|SET|VALUES|AS|RETURNING)\b/i;
 const MAX = 32;
 
@@ -19,23 +25,26 @@ const programs = process.argv.slice(2).map((path) => {
 const statements = new Set();
 const sites = [];
 
+const isQuery = (type) => type?.symbol?.name === "Query";
+
 for (const program of programs) {
   const checker = program.getTypeChecker();
   const resolve = (node) => {
     let symbol = checker.getSymbolAtLocation(node);
-    if (symbol && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
+    if (symbol && symbol.flags & ts.SymbolFlags.Alias) {symbol = checker.getAliasedSymbol(symbol);}
     return symbol?.valueDeclaration;
   };
   const fold = (node, seen = new Set()) => {
-    if (!node || seen.has(node)) return null;
+    if (!node || seen.has(node)) {return null;}
     seen = new Set(seen).add(node);
-    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return [node.text];
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {return [literalText(node)];}
+    if (isRawTemplate(node)) {return [literalText(node.template)];}
     if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isSatisfiesExpression(node)
-      || ts.isNonNullExpression(node)) return fold(node.expression, seen);
+      || ts.isNonNullExpression(node)) {return fold(node.expression, seen);}
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
       const left = fold(node.left, seen);
       const right = left && fold(node.right, seen);
-      if (!left || !right) return null;
+      if (!left || !right) {return null;}
       const out = left.flatMap((a) => right.map((b) => a + b));
       return out.length > MAX ? null : out;
     }
@@ -43,9 +52,9 @@ for (const program of programs) {
       let out = [node.head.text];
       for (const span of node.templateSpans) {
         const value = fold(span.expression, seen);
-        if (!value) return null;
+        if (!value) {return null;}
         out = out.flatMap((a) => value.map((b) => a + b + span.literal.text));
-        if (out.length > MAX) return null;
+        if (out.length > MAX) {return null;}
       }
       return out;
     }
@@ -59,21 +68,21 @@ for (const program of programs) {
       const base = fold(node.expression.expression, seen);
       const from = fold(node.arguments[0], seen);
       const to = fold(node.arguments[1], seen);
-      if (!base || !from || !to || from.length !== 1 || to.length !== 1) return null;
+      if (!base || !from || !to || from.length !== 1 || to.length !== 1) {return null;}
       return base.map((s) => s.replace(from[0], to[0]));
     }
     if (ts.isIdentifier(node) || ts.isPropertyAccessExpression(node)) {
       const decl = resolve(node);
       if (decl && ts.isVariableDeclaration(decl) && decl.initializer
-        && ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) return fold(decl.initializer, seen);
-      if (decl && ts.isPropertyAssignment(decl)) return fold(decl.initializer, seen);
+        && ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) {return fold(decl.initializer, seen);}
+      if (decl && ts.isPropertyAssignment(decl)) {return fold(decl.initializer, seen);}
       return null;
     }
     return null;
   };
   // String pieces of a partly constant expression, following consts into their initializers.
   const literals = (node, out = [], seen = new Set()) => {
-    if (seen.has(node)) return out;
+    if (seen.has(node)) {return out;}
     seen.add(node);
     const value = fold(node);
     if (value) {
@@ -83,11 +92,11 @@ for (const program of programs) {
     if (ts.isIdentifier(node) || ts.isPropertyAccessExpression(node)) {
       const decl = resolve(node);
       const init = decl && (ts.isVariableDeclaration(decl) || ts.isPropertyAssignment(decl)) ? decl.initializer : null;
-      if (init) return literals(init, out, seen);
+      if (init) {return literals(init, out, seen);}
     }
     // A nested call is its own site (visited separately); its SQL is not this argument's.
     node.forEachChild((child) => {
-      if (!ts.isCallExpression(child)) literals(child, out, seen);
+      if (!ts.isCallExpression(child)) {literals(child, out, seen);}
     });
     return out;
   };
@@ -96,56 +105,55 @@ for (const program of programs) {
   // is a piece of a larger statement, so it must be reached by a test instead.
   // A wrapper (onePost(ctx, sql), userBy(ctx, sql, ...)) counts too when its body hands
   // that parameter, unchanged, to a call that runs SQL.
-  const isQuery = (type) => type?.symbol?.name === "Query";
   const calleeBody = (call) => {
     const decl = resolve(call.expression);
-    if (!decl) return null;
-    if (ts.isFunctionDeclaration(decl)) return decl;
+    if (!decl) {return null;}
+    if (ts.isFunctionDeclaration(decl)) {return decl;}
     if (ts.isVariableDeclaration(decl) && decl.initializer
-      && (ts.isArrowFunction(decl.initializer) || ts.isFunctionExpression(decl.initializer))) return decl.initializer;
+      && (ts.isArrowFunction(decl.initializer) || ts.isFunctionExpression(decl.initializer))) {return decl.initializer;}
     return null;
   };
   const executes = (call, index, depth = 0) => {
-    if (isQuery(checker.getTypeAtLocation(call.expression))) return true;
+    if (isQuery(checker.getTypeAtLocation(call.expression))) {return true;}
     const signature = checker.getResolvedSignature(call);
-    if (signature?.parameters.some((p) => isQuery(checker.getTypeOfSymbolAtLocation(p, call)))) return true;
+    if (signature?.parameters.some((p) => isQuery(checker.getTypeOfSymbolAtLocation(p, call)))) {return true;}
     const fn = depth < 3 ? calleeBody(call) : null;
     const param = fn?.parameters[index];
-    if (!param || !ts.isIdentifier(param.name)) return false;
+    if (!param || !ts.isIdentifier(param.name)) {return false;}
     const name = param.name.text;
     let found = false;
     const walk = (node) => {
-      if (found) return;
+      if (found) {return;}
       if (ts.isCallExpression(node)) {
         node.arguments.forEach((arg, i) => {
-          if (ts.isIdentifier(arg) && arg.text === name && executes(node, i, depth + 1)) found = true;
+          if (ts.isIdentifier(arg) && arg.text === name && executes(node, i, depth + 1)) {found = true;}
         });
       }
       node.forEachChild(walk);
     };
-    if (fn.body) walk(fn.body);
+    if (fn.body) {walk(fn.body);}
     return found;
   };
   for (const file of program.getSourceFiles()) {
-    if (file.isDeclarationFile || file.fileName.includes("/node_modules/") || !file.fileName.includes("/src/")) continue;
+    if (file.isDeclarationFile || file.fileName.includes("/node_modules/") || !file.fileName.includes("/src/")) {continue;}
     const visit = (node) => {
       if (ts.isCallExpression(node)) {
         node.arguments.forEach((arg, index) => {
           const value = fold(arg);
           const runs = value ? executes(node, index) : false;
           if (value && runs) {
-            for (const s of value) if (SQL.test(s)) statements.add(s);
+            for (const s of value) {if (SQL.test(s)) {statements.add(s);}}
             return;
           }
           if (value) {
             const { line } = file.getLineAndCharacterOfPosition(arg.getStart());
             for (const s of value) {
-              if (SQL.test(s)) sites.push({ file: relative(dirname(dirname(dirname(file.fileName))), file.fileName), line: line + 1, fragment: s });
+              if (SQL.test(s)) {sites.push({ file: relative(dirname(dirname(dirname(file.fileName))), file.fileName), line: line + 1, fragment: s });}
             }
             return;
           }
           const parts = literals(arg).filter((s) => /\b(SELECT|INSERT|UPDATE|DELETE|FROM|WHERE)\b/.test(s));
-          if (parts.length === 0) return;
+          if (parts.length === 0) {return;}
           const { line } = file.getLineAndCharacterOfPosition(arg.getStart());
           const fragment = parts.sort((a, b) => b.length - a.length)[0];
           sites.push({ file: relative(dirname(dirname(dirname(file.fileName))), file.fileName), line: line + 1, fragment });
@@ -162,12 +170,12 @@ const INVENTORY = /\b(SELECT\b[\s\S]*\bFROM|INSERT INTO|UPDATE\s+\w+\s+SET|DELET
 const fragments = [];
 for (const program of programs) {
   for (const file of program.getSourceFiles()) {
-    if (file.isDeclarationFile || file.fileName.includes("/node_modules/") || !file.fileName.includes("/src/")) continue;
+    if (file.isDeclarationFile || file.fileName.includes("/node_modules/") || !file.fileName.includes("/src/")) {continue;}
     const visit = (node) => {
-      const pieces = ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ? [node.text]
+      const pieces = ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ? [literalText(node)]
         : ts.isTemplateExpression(node) ? [node.head.text, ...node.templateSpans.map((s) => s.literal.text)] : [];
       for (const text of pieces) {
-        if (!INVENTORY.test(text)) continue;
+        if (!INVENTORY.test(text)) {continue;}
         const { line } = file.getLineAndCharacterOfPosition(node.getStart());
         fragments.push({ file: relative(dirname(dirname(dirname(file.fileName))), file.fileName), line: line + 1, fragment: text });
       }
@@ -177,7 +185,7 @@ for (const program of programs) {
   }
 }
 
-for (const s of [...statements].sort()) process.stdout.write(JSON.stringify(s) + "\n");
-if (process.env.FRAGMENTS) for (const f of fragments) appendFileSync(process.env.FRAGMENTS, JSON.stringify(f) + "\n");
-if (process.env.SITES) for (const s of sites) appendFileSync(process.env.SITES, JSON.stringify(s) + "\n");
+for (const s of [...statements].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {process.stdout.write(JSON.stringify(s) + "\n");}
+if (process.env.FRAGMENTS) {for (const f of fragments) {appendFileSync(process.env.FRAGMENTS, JSON.stringify(f) + "\n");}}
+if (process.env.SITES) {for (const s of sites) {appendFileSync(process.env.SITES, JSON.stringify(s) + "\n");}}
 process.stderr.write(`extract-ts: ${statements.size} constant statements, ${sites.length} dynamic sites, ${fragments.length} SQL fragments\n`);

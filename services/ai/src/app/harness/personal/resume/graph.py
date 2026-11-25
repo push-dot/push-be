@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import logging
@@ -16,12 +17,22 @@ from langgraph.types import Send, interrupt
 from pydantic import ValidationError
 from typing_extensions import TypedDict
 
+from app.domain.a2ui import auto_pick_line
+from app.domain.posting_text import posting_terms
 from app.framework.models import _content
 from app.framework.untrusted import DATA_RULE, as_data
 from app.harness.approvals import insert_chat_approval
 from app.harness.graph import _CAP, turn_model
+from app.harness.kstyle.ask import ask_once, ask_options, ask_title, needs_ask
+from app.harness.kstyle.final import Final, late_lines, render
+from app.harness.kstyle.ledger import assume
+from app.harness.kstyle.review import Reviewer, run_reviewers
+from app.harness.kstyle.subagent import mid_model, squash
+from app.harness.kstyle.verify import finding, fix_once
 from app.harness.personal.resume.booster import boost_cycle
 from app.harness.personal.resume.drafts import chosen_document_text, draft_text, drafts_from_chosen
+from app.harness.personal.resume.explore import budget_for, prefetch, run_explore
+from app.harness.personal.resume.github_agent import github_agent
 from app.harness.personal.resume.profile_document import (
     load_document_markdown,
     profile_card_names,
@@ -37,6 +48,8 @@ from app.harness.personal.resume.progress import (
     blueprints_text,
     boost_fit,
     boost_line,
+    boost_rounds,
+    company_line,
     craft_text,
     done_summary,
     feedback_line,
@@ -57,11 +70,25 @@ from app.harness.personal.resume.progress import (
     think_event,
     titled_projects,
     todo_event,
+    verify_items,
+    verify_text,
     without_materials,
 )
 from app.harness.personal.resume.prompts import phase_prompt_for_harness
+from app.harness.personal.resume.source_agents import fact_check_agent, stage_one
 from app.harness.personal.resume.state import ResumeState
-from app.harness.personal.resume.tools import RESUME_TOOLS, save_artifact
+from app.harness.personal.resume.subagent import light_model
+from app.harness.personal.resume.subject import github_links
+from app.harness.personal.resume.tools import (
+    RESUME_TOOLS,
+    FitArgs,
+    _fit_document,
+    _github_targets,
+    _repo_target,
+    save_artifact,
+)
+from app.harness.personal.resume.verify import verify_draft
+from app.harness.personal.resume.workspace import ledger_text, load_notes, save_notes
 from app.harness.policy import Tier
 from app.harness.status import (
     SAVE_DOCUMENT,
@@ -238,6 +265,11 @@ _GATES = {
             {"id": "pick", "label": "Push 공고에서 고를게요"},
         ],
     },
+    "ask": {
+        "title": "하나만 확인할게요",
+        "recommended": "",
+        "options": [],
+    },
     "validate_cap": {
         "title": "어떻게 할까요?",
         "recommended": "retry",
@@ -294,6 +326,7 @@ class ResumeGraphState(TypedDict, total=False):
     scores: list
     boost_acked: int
     boost_parts: dict
+    boost_rounds: dict
     boost_stopped: str
     profile_document_id: str
     source_saved: bool | None
@@ -341,9 +374,93 @@ def _read_error(analysis: dict) -> str:
     return reason.strip() if isinstance(reason, str) else ""
 
 
+_JOB_FIELDS = (
+    "company", "title", "required", "requirements", "preferred", "keywords", "read_error",
+)
+
+
+def _job_nodes(output: dict) -> list[dict]:
+    """Every posting shape the analyze model has returned, as a flat list of dicts."""
+    for key in ("jobs", "job", "posting"):
+        value = output.get(key)
+        if isinstance(value, dict) and isinstance(value.get("postings"), list):
+            value = value["postings"]
+        elif (
+            isinstance(value, dict)
+            and value
+            and not any(field in value for field in _JOB_FIELDS)
+            and all(isinstance(item, dict) for item in value.values())
+        ):
+            value = list(value.values())
+        nodes = [value] if isinstance(value, dict) else value if isinstance(value, list) else []
+        nodes = [node for node in nodes if isinstance(node, dict)]
+        if nodes:
+            return nodes
+    return []
+
+
+def _term(item) -> str:
+    if isinstance(item, dict):
+        item = next((value for value in item.values() if isinstance(value, str)), "")
+    return str(item).strip() if isinstance(item, (str, int, float)) else ""
+
+
+def _unique(items) -> list[str]:
+    return list(dict.fromkeys(term for term in map(_term, items) if term))
+
+
+def _gathered(nodes: list[dict], *keys: str) -> list[str]:
+    return _unique(
+        item
+        for node in nodes
+        for key in keys
+        if isinstance(node.get(key), list)
+        for item in node[key]
+    )
+
+
+def _posting_page_text(inputs: dict) -> str:
+    pages = inputs.get("pages") if isinstance(inputs.get("pages"), dict) else {}
+    posting = inputs.get("posting") if isinstance(inputs.get("posting"), dict) else {}
+    chunks = [posting.get("description")] + [
+        body for url, body in pages.items() if "github.com" not in str(url).lower()
+    ]
+    return "\n".join(chunk for chunk in chunks if isinstance(chunk, str) and chunk.strip())
+
+
+def normalize_analysis(inputs: dict, output: dict) -> dict:
+    """One canonical `jobs` dict, filled from the posting we already hold when the model left
+    the terms out, so a readable page never lands on the read_failed gate."""
+    bag = inputs if isinstance(inputs, dict) else {}
+    nodes = _job_nodes(output)
+    required = _gathered(nodes, "requirements", "required")
+    preferred = _gathered(nodes, "preferred")
+    keywords = _gathered(nodes, "keywords")
+    posting = bag.get("posting") if isinstance(bag.get("posting"), dict) else {}
+    if not (required or preferred or keywords):
+        if posting.get("requirements") or posting.get("preferred"):
+            required = _gathered([posting], "requirements")
+            preferred = _gathered([posting], "preferred")
+        else:
+            found = posting_terms(_posting_page_text(bag))
+            required, preferred = found["required"], found["preferred"]
+    if not (nodes or required or preferred):
+        return output
+    job = {key: value for key, value in dict(nodes[0] if nodes else {}).items()
+           if key not in ("requirements", "postings")}
+    for key in ("company", "title"):
+        if not job.get(key) and posting.get(key):
+            job[key] = posting[key]
+    job.update(required=required, preferred=preferred, keywords=keywords)
+    if required or preferred or keywords:
+        job.pop("read_error", None)
+    rest = {key: value for key, value in output.items() if key not in ("job", "posting")}
+    return {**rest, "jobs": job}
+
+
 def posting_unreadable(inputs: dict, analysis: dict | None) -> bool:
     found = analysis if isinstance(analysis, dict) else {}
-    if _read_error(found):
+    if _read_error(found) and not _job_terms(found):
         return True
     bag = inputs if isinstance(inputs, dict) else {}
     steps, _added = analyze_steps(bag, found)
@@ -380,6 +497,20 @@ def _posting(state) -> tuple[list, str]:
     pages = _page_text(state.get("inputs") if isinstance(state.get("inputs"), dict) else {})
     text = f"{blob}\n{pages}" if pages else blob
     return _job_terms(analysis), text[:_POSTING_CAP]
+
+
+def _fit_posting(state) -> dict:
+    """The terms every fit score of one posting reads, so boost rounds compare like with like."""
+    inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
+    if isinstance(inputs.get("fit_posting"), dict):
+        return inputs["fit_posting"]
+    analysis = state.get("analysis") if isinstance(state.get("analysis"), dict) else {}
+    nodes = _job_nodes(analysis)
+    return {
+        "required": _gathered(nodes, "requirements", "required"),
+        "preferred": _gathered(nodes, "preferred"),
+        "keywords": _gathered(nodes, "keywords"),
+    }
 
 
 def _boost_detail(step: dict) -> str:
@@ -461,7 +592,20 @@ def _next_phase(state: dict, phase: str) -> str | None:
 _NEVER_ASKED = frozenset({"present"})
 
 
+def _ask_of(state: dict) -> dict:
+    analysis = state.get("analysis") if isinstance(state.get("analysis"), dict) else {}
+    ask = analysis.get("ask")
+    return ask if isinstance(ask, dict) else {}
+
+
 def _gate_options(state: dict, phase: str) -> list[dict]:
+    if phase == "ask":
+        options = [str(item).strip() for item in _ask_of(state).get("options") or [] if str(item).strip()]
+        return [{"id": f"o{index}", "label": label} for index, label in enumerate(options[:3], 1)]
+    if phase == "strategy" and _strategy_ask(state):
+        keep, restore = ask_options()
+        return [{"id": "continue", "label": keep["label"]}, {"id": "restore", "label": restore["label"]},
+                *[option for option in _GATES[phase]["options"] if option["id"] != "continue"]]
     if phase != "projects":
         return list(_GATES[phase]["options"])
     projects = (state.get("blueprints") or {}).get("projects")
@@ -476,19 +620,28 @@ def _gate_options(state: dict, phase: str) -> list[dict]:
     ]
 
 
+# AUTO stops only where the user really decides something; the rest is answered with the
+# recommended pick and said in the chat, as a Claude Code run would just go on.
+_DECISION_GATES = frozenset({"output_targets", "strategy", "review", "projects", "approach", "level", "prevention"})
+_BLOCKED_GATES = frozenset({"mode_select", "validate_cap", "read_failed", "ask"})
+
+
 def _must_stop(state: dict, phase: str) -> bool:
     if len(_gate_options(state, phase)) < 2:
         return False
-    if phase in {"mode_select", "validate_cap", "read_failed"}:
+    if phase in _BLOCKED_GATES:
         return True
     if phase in _NEVER_ASKED:
         return False
-    if (state.get("access_mode") or "AUTO") != "BYPASS":
+    mode = state.get("access_mode") or "AUTO"
+    if mode == "ALWAYS_ASK":
         return True
     inputs = state.get("inputs") or {}
-    if phase == "intake" and not (inputs.get("attachments") or inputs.get("pages")):
+    if phase == "intake" and not (inputs.get("attachments") or inputs.get("pages") or inputs.get("documentId")):
         return True
-    return False
+    if mode == "BYPASS":
+        return False
+    return phase in _DECISION_GATES
 
 
 _RESUME_EXT = (".pdf", ".docx", ".doc")
@@ -803,6 +956,28 @@ def _review_sections() -> list[dict]:
     ]
 
 
+async def _soft(run, fallback):
+    """A subagent that fails leaves its part out; the flow goes on."""
+    try:
+        return await run
+    except Exception:
+        logging.getLogger(__name__).warning("subagent failed", exc_info=True)
+        return fallback
+
+
+def _answered_ask(current: dict, answer: dict) -> dict:
+    """The answer goes back to the explore loop as steering, and analyze runs again from its notes."""
+    labels = {item["id"]: item["label"] for item in _gate_options(current, "ask")}
+    picked = labels.get(str(answer.get("option_id") or "")) or str(answer.get("text") or "").strip()
+    inputs = dict(current.get("inputs") or {})
+    if picked:
+        question = str(_ask_of(current).get("question") or "")
+        inputs["steer"] = [*(inputs.get("steer") or []), f"{question} → {picked}" if question else picked]
+    analysis = dict(current.get("analysis") or {})
+    analysis.pop("ask", None)
+    return {"inputs": inputs, "analysis": analysis, "status": "active", "phase": "analyze", "goto": "end"}
+
+
 def _choice(
     state: dict,
     phase: str,
@@ -829,6 +1004,10 @@ def _choice(
         "recommended": gate["recommended"] or (options[0]["id"] if options else ""),
         "options": options,
     }
+    if phase == "ask":
+        event["title"] = str(_ask_of(state).get("question") or gate["title"])
+    if phase == "strategy" and _strategy_ask(state):
+        detail = detail or ask_title(_strategy_ask(state))
     if phase == "output_targets":
         event["sections"] = intake_panel(state.get("inputs") or {}, state.get("analysis"))
         event["submit"] = {"label": "이 말투로 쓰기"}
@@ -853,7 +1032,16 @@ def _choice(
         event["multiple"] = True
     if auto:
         event["auto"] = True
+        event["recommended"] = _AUTO_PICK.get(phase, event["recommended"])
     return event
+
+
+def _emit_auto(event: dict) -> None:
+    """A gate the server answered itself draws no surface: the Bot says what it picked instead."""
+    emit(event)
+    line = auto_pick_line(event)
+    if line:
+        emit({"token": f"\n\n{line}\n\n"})
 
 
 async def _ask(db: Any, state: Mapping[str, Any], event: dict[str, Any]) -> None:
@@ -899,14 +1087,38 @@ def _targets(state: dict) -> list[str]:
     return picked or ["resume"]
 
 
+def target_body(state: dict, output: dict, target: str, body: str) -> str:
+    """markdown holds the first target; documents holds every other one."""
+    if target == _targets(state)[0]:
+        return body
+    documents = output.get("documents")
+    text = documents.get(target) if isinstance(documents, dict) else None
+    return text if isinstance(text, str) and text.strip() else body
+
+
+def _draft_bodies(output: dict) -> list[str]:
+    """Every document body an output carries: markdown and each of documents."""
+    documents = output.get("documents") if isinstance(output.get("documents"), dict) else {}
+    bodies = (output.get("markdown"), *documents.values())
+    return [body for body in bodies if isinstance(body, str) and body.strip()]
+
+
 def _bodies(phase: str, state: dict, output: dict) -> list[tuple[str, str]]:
     if phase == "craft":
         version = int(state.get("draft_version") or 1)
         body = _artifact_body(f"03_draft_resume_v{version}.md", output)
-        return [(f"03_draft_{target}_v{version}.md", body) for target in _targets(state)]
+        return [
+            (f"03_draft_{target}_v{version}.md", target_body(state, output, target, body))
+            for target in _targets(state)
+        ]
     if phase == "publish":
         body = _artifact_body("05_final_resume.md", output)
-        return [(f"05_final_{target}.md", body) for target in _targets(state)]
+        drafts = state.get("drafts") if isinstance(state.get("drafts"), dict) else {}
+        return [
+            (f"05_final_{target}.md",
+             target_body(state, output, target, target_body(state, drafts, target, body)))
+            for target in _targets(state)
+        ]
     if phase == "blueprints":
         body = _artifact_body("06_experience_blueprints.json", output)
         return [("06_experience_blueprints.json", body)]
@@ -1076,11 +1288,20 @@ def merge_inputs(inputs: dict, extra: dict) -> dict:
         if item not in attachments:
             attachments.append(item)
     merged["attachments"] = attachments
+    github = [*github_links(inputs.get("github")), *github_links(extra.get("github"))]
+    if github:
+        merged["github"] = list(dict.fromkeys(github))
+    links = [*(inputs.get("links") or []), *(extra.get("links") or [])]
+    if links:
+        merged["links"] = list(dict.fromkeys(links))
     for key in ("documentId", "postingId"):
         if extra.get(key):
             merged[key] = str(extra[key])
     if isinstance(extra.get("posting"), dict):
         merged["posting"] = extra["posting"]
+    # A new posting or page re-freezes the fit terms on the next analyze.
+    if any(extra.get(key) for key in ("pages", "posting", "postingId")):
+        merged.pop("fit_posting", None)
     return merged
 
 
@@ -1098,6 +1319,9 @@ def _parsed(reply) -> dict:
 
 
 _READ_TOOLS = {tool.name: tool for tool in RESUME_TOOLS if tool.tier is Tier.READ}
+# The explore loop reads attachments itself and leaves scoring to classify_scenario.
+_EXPLORE_TOOLS = [tool for name, tool in _READ_TOOLS.items() if name not in {"parse_attachment", "compute_fit"}]
+_LEDGER_PHASES = frozenset({"strategy", "craft", "review", "publish"})
 
 
 async def _read_tool(call: dict, ctx: ToolContext) -> dict:
@@ -1126,9 +1350,7 @@ async def _read_tool(call: dict, ctx: ToolContext) -> dict:
 _RESUME_TEXT_LIMIT = 20_000
 
 
-async def _output(model, phase: str, state: dict, ctx: ToolContext) -> dict:
-    if model is None:
-        return {"summary": phase}
+async def _phase_context(phase: str, state: dict, ctx: ToolContext) -> dict:
     context = {
         key: state.get(key)
         for key in (
@@ -1140,15 +1362,29 @@ async def _output(model, phase: str, state: dict, ctx: ToolContext) -> dict:
             "strategy",
             "drafts",
             "review",
+            "template",
+            "output_targets",
+            "fit_from",
             "approach",
             "bottleneck_level",
             "prevention_categories",
+            "verify_feedback",
+            "review_objections",
         )
     }
     resume_text = await load_document_markdown(ctx.db, state)
     if resume_text:
         cut = len(resume_text) > _RESUME_TEXT_LIMIT
         context["resume_text"] = resume_text[:_RESUME_TEXT_LIMIT] + ("\n…(이하 생략)" if cut else "")
+    if phase in _LEDGER_PHASES:
+        context["evidence_ledger"] = ledger_text(await load_notes(ctx))
+    return context
+
+
+async def _output(model, phase: str, state: dict, ctx: ToolContext) -> dict:
+    if model is None:
+        return {"summary": phase}
+    context = await _phase_context(phase, state, ctx)
     prompt = phase_instructions(phase, state)
     messages = [
         SystemMessage(
@@ -1189,22 +1425,149 @@ def _reply(phase: str, output: dict) -> str:
 
 
 _IMPROVEMENTS_NOTE = (
+    "공고 분석은 jobs 객체 하나에 {company, title, required: [필수 요건], preferred: [우대 사항], "
+    "keywords: [핵심어]}로 넣는다. GitHub 분석은 github 객체에 넣는다. "
+    "inputs.pages에 공고 본문이 있으면 그 본문으로 jobs를 채우고 read_error를 넣지 않는다. "
     "공고에 맞추려면 고칠 점을 짧은 문장 3개로 improvements 배열에 넣는다. "
     "같은 내용을 feedback 배열({tag: 키워드|도메인|성과|기술|경력, problem, fix})로도 넣는다. "
-    "페이지를 읽지 못하면 jobs.read_error에 이유를 '로그인이 필요한 영역'처럼 짧은 명사구로 넣는다."
+    "페이지를 읽지 못하면 jobs.read_error에 이유를 '로그인이 필요한 영역'처럼 짧은 명사구로 넣는다. "
+    "회사 정보는 company 객체 {name, services, stack, news, culture, sources: [출처 URL]}에 넣는다. "
+    "출처 없는 회사 정보는 넣지 않는다. "
+    "회사 사이트나 기술 블로그 주소가 공고 본문, inputs.links, 회사 조사 결과에 있으면 "
+    "open_page로 한두 개 열어 확인한다. "
+    "GitHub은 explore_github로 공고와 맞는 저장소만 예산 안에서 고른 뒤, 저장소마다 read_github를 path 없이 "
+    "불러 파일 목록을 보고 package.json 같은 설정 파일과 핵심 소스 파일 2~3개를 읽는다. "
+    "읽은 파일에서 확인한 기술과 구현만 github.evidence 배열({repo, path, finding})에 넣고 근거로 쓴다."
 )
 _STRATEGY_NOTE = (
     "섹션별 전략을 sections 배열에 넣는다. 각 항목은 "
     "{section, action(keep|modify|expand|add|condense|remove), reason, suggested_keywords}다."
 )
+# Three generic stances; a plan runs the first `budget.reviewers` of them. They object, the main model decides.
+_REVIEWERS = (
+    Reviewer(
+        "review_reader", "서류를 거르는 사람 눈으로 봐요",
+        "너는 이 공고로 지원 서류를 거르는 사람이다. 시간이 없어 서류 하나를 몇 초만 본다.\n"
+        "이 전략대로 쓴 서류에서 읽기를 멈추게 만들 항목을 찾는다: 공고와 이어지지 않는 강조, "
+        "앞에 와야 할 내용이 뒤에 묻힌 배치, 흐릿한 표현.\n"
+        "brief.subject.steer는 사용자가 직접 한 말이다. 사용자가 강조해 달라고 한 것에는 반대하지 않는다.",
+    ),
+    Reviewer(
+        "review_interviewer", "면접관 눈으로 봐요",
+        "너는 서류의 주장을 하나하나 파고들 면접관이다.\n"
+        "이 전략이 강조하려는 내용 가운데 brief.subject.ledger의 확인된 근거(E1 같은 id)가 받쳐 주지 않는 "
+        "항목을 찾는다.\n"
+        "brief.subject.steer는 사용자가 직접 한 말이다. 사용자가 강조해 달라고 한 것에는 반대하지 않는다.",
+    ),
+    Reviewer(
+        "review_editor", "편집자 눈으로 봐요",
+        "너는 이 서류를 3분의 1 줄여야 하는 편집자다.\n"
+        "자리 값을 가장 못 하는 섹션과 다른 섹션과 겹치는 내용을 찾는다.\n"
+        "brief.subject.steer는 사용자가 직접 한 말이다. 사용자가 강조해 달라고 한 것에는 반대하지 않는다.",
+    ),
+)
+_ASK_VERDICT = {"remove": "cut", "condense": "lighten"}
+
+
+def _strategy_items(output: dict) -> list[dict]:
+    """Strategy sections with ids, so a reviewer's objection points at one."""
+    sections = output.get("sections") if isinstance(output, dict) else None
+    return [{"id": f"s{index}", **item} for index, item in enumerate(sections or [], 1) if isinstance(item, dict)]
+
+
+def _strategy_usable(output: dict) -> bool:
+    return output.get("valid") is not False and bool(_strategy_items(output))
+
+
+def _user_words(state: dict, notes) -> list[str]:
+    """What the user said in this flow: steering messages and gate answers typed in."""
+    inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
+    said = [*(inputs.get("steer") or []), inputs.get("gate_text") or "", *(notes.get("steer") or [])]
+    return list(dict.fromkeys(str(item) for item in said if str(item).strip()))
+
+
+def strategy_asks(output: dict, said: list[str]) -> list[dict]:
+    """Sections the plan removes or condenses that the user named in their own words: the only ask."""
+    heard = [squash(text).casefold() for text in said]
+    items = []
+    for item in _strategy_items(output):
+        label = squash(str(item.get("section") or "")).casefold()
+        verdict = _ASK_VERDICT.get(str(item.get("action") or "").strip().lower())
+        if verdict and label and any(label in text for text in heard):
+            items.append({"source": "user", "verdict": verdict, "what": str(item["section"]).strip(),
+                          "why": str(item.get("reason") or "").strip()})
+    return needs_ask(items)
+
+
+def _strategy_ask(state: dict) -> list[dict]:
+    strategy = state.get("strategy") if isinstance(state.get("strategy"), dict) else {}
+    items = strategy.get("ask_items")
+    return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+
+
+def _restored(current: dict) -> dict:
+    """'다시 넣기' steers strategy to keep what it dropped, and strategy runs again without a second ask."""
+    inputs = dict(current.get("inputs") or {})
+    said = [f"다시 넣기: {item['what']}" for item in _strategy_ask(current)]
+    inputs["steer"] = list(dict.fromkeys([*(inputs.get("steer") or []), *said]))
+    strategy = {**(current.get("strategy") or {}), "ask_items": []}
+    return {"inputs": inputs, "strategy": strategy, "status": "active", "phase": "strategy", "goto": "end",
+            "gate_epoch": int(current.get("gate_epoch") or 0) + 1}
+
+
+_TARGET_LABELS = {"resume": "이력서", "portfolio": "포트폴리오", "cover_letter": "자기소개서"}
+_LATE_LABELS = {"posting": "공고 읽기", "resume": "서류 읽기", "company": "회사 조사"}
+
+
+def _stage_label(name: str) -> str:
+    kind, _, what = name.partition(":")
+    if kind == "github" and what:
+        return f"GitHub 읽기 ({what})"
+    if kind == "attachment":
+        return "첨부 파일 읽기"
+    return _LATE_LABELS.get(name, name)
+
+
+def present_message(view: dict, notes, *, extras: bool, saved: str = "") -> str:
+    """The fixed closing message: made, decided for the user, left to check, one next step.
+    `saved` says where the document was saved (a file name, the Push profile); "" when it failed."""
+    made: list[str] = []
+    drafted = bool(draft_text(view.get("drafts")))
+    if drafted:
+        labels = [_TARGET_LABELS[target] for target in _targets(view)]
+        made = [f"{labels[0]} · {saved}" if saved else labels[0], *labels[1:]]
+    drafts = view.get("drafts") if isinstance(view.get("drafts"), dict) else {}
+    analysis = view.get("analysis") if isinstance(view.get("analysis"), dict) else {}
+    left = verify_items([item for item in drafts.get("verify_left") or [] if isinstance(item, dict)])
+    if drafted and not saved:
+        left.append("저장하지 못했어요. 다시 시도해 주세요.")
+    left += late_lines([_stage_label(str(item)) for item in analysis.get("stage_late") or []], {})
+    failed = dict.fromkeys(_stage_label(str(item)) for item in analysis.get("stage_failed") or [])
+    left += [f"{label}: 끝내지 못해 빼고 진행했어요" for label in failed]
+    nxt = ""
+    if extras:
+        missing = [label for target, label in _TARGET_LABELS.items() if target not in _targets(view)]
+        if made and missing:
+            nxt = f"같은 근거로 {', '.join(missing)}도 만들 수 있어요. 원하면 말해 주세요."
+    return render(Final(made=made, decided=list(notes.get("assumptions") or []), left=left, next=nxt))
+
+
+_FIT_NOTE = (
+    "적합도 점수는 fit_from 값을 소수 첫째 자리까지 그대로 쓰고 새로 추정하지 않는다. "
+    "fit_from이 없으면 점수를 말하지 않는다."
+)
 _BODY_NOTE = (
+    "evidence_ledger의 근거를 쓴 문장은 그 id(E3 같은)를 used_evidence 배열에 모두 넣는다. "
+    "근거 없는 수치는 쓰지 않는다. "
+    "verify_feedback이 있으면 그 문제를 모두 고친다. "
     "서류 본문 전체를 마크다운으로 markdown 키에 넣는다. message에는 본문을 넣지 않고 한두 문장만 쓴다. "
     "바꾼 점은 changes 배열에 짧은 문장으로 넣는다."
 )
 _REVIEW_NOTE = (
     "바로 고친 것을 auto_fixes 배열({line, before, after})에, 추천 수정을 "
     "recommendations 배열({label, desc, priority: P1|P2}, 최대 6개)에 넣는다. "
-    "추천 수정은 묻지 않고 모두 반영한다."
+    "추천 수정은 묻지 않고 모두 반영한다. "
+    "디자인을 추천할 때는 화면에 있는 클래식, 모던, 컴팩트, ATS 중에서만 고른다."
 )
 _BLUEPRINTS_NOTE = (
     "기획서 요약을 projects 배열에 넣는다. 각 항목은 {id, title, category, stack}이다. "
@@ -1245,9 +1608,34 @@ def phase_instructions(phase: str, state: dict) -> str:
         text = f"{text}\n{_BLUEPRINTS_NOTE}"
     if phase == "review":
         text = f"{text}\n{_REVIEW_NOTE}"
+    if phase in {"strategy", "craft", "review", "publish", "present"}:
+        text = f"{text}\n{_FIT_NOTE}"
     if phase in {"craft", "publish"}:
         text = f"{text}\n{_BODY_NOTE}"
+        targets = _targets(state)
+        if targets != ["resume"]:
+            text = f"{text}\n{_targets_note(targets)}"
     return text
+
+
+_TARGET_FORMS = {
+    "resume": "이력서",
+    "portfolio": "포트폴리오. 프로젝트마다 문제, 접근, 결과, 기술 선택 이유를 풀어 쓴다",
+    "cover_letter": "자기소개서. 지원 동기와 경험을 문단 글로 쓰고 이력서 항목을 나열하지 않는다",
+}
+
+
+def _targets_note(targets: list[str]) -> str:
+    rest = targets[1:]
+    note = f"markdown에는 {_TARGET_FORMS[targets[0]]} 본문만 넣는다."
+    if rest:
+        forms = ", ".join(f"{target}: {_TARGET_FORMS[target]}" for target in rest)
+        note += (
+            f" 나머지 산출물은 documents 객체에 키마다 마크다운 본문 전체를 따로 넣는다({forms})."
+            " 산출물마다 형식과 문장이 달라야 하고, 같은 본문을 복사하지 않는다."
+            " drafts.documents가 있으면 그것을 고친다."
+        )
+    return note
 
 
 _PHASE_DONE = {
@@ -1285,8 +1673,15 @@ _EXITS = {
 }
 
 
+# A server-answered gate that differs from the recommended pick: a feedback-only request is never
+# turned into a rewrite the user did not ask for.
+_AUTO_PICK = {"feedback": "keep"}
+
+
 def _auto_answer(gate_id: str, state: dict | None = None) -> dict:
     state = state or {}
+    if gate_id in _AUTO_PICK:
+        return {"option_id": _AUTO_PICK[gate_id]}
     if gate_id == "output_targets":
         ids = ["submit"]
         for section in intake_panel(state.get("inputs") or {}, state.get("analysis")):
@@ -1353,7 +1748,7 @@ async def _emit_papers(db, state: dict, stored: dict) -> None:
     name, headline = await profile_card_names(db, state)
     fallback = " · ".join(part for part in (name, headline) if part)
     for target in _targets(state):
-        event = paper_event(target, version, markdown, fallback)
+        event = paper_event(target, version, target_body(state, drafts, target, markdown), fallback)
         if event is not None:
             emit(event)
 
@@ -1384,10 +1779,26 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                 emit(todo_event("analyze", analyze_steps(current.get("inputs") or {})[0], 0))
             chat = turn_model.get() or model
             started = time.monotonic()
-            output = await _output(chat, phase, current, _context(db, current))
+            if phase == "analyze" and chat is not None:
+                output = await explore(chat, current)
+            elif phase == "present":
+                # The closing message is built by code (present_message); no model call for it.
+                output = {"message": _PHASE_DONE["present"]}
+            else:
+                output = await _output(chat, phase, current, _context(db, current))
+            findings: list[dict] = []
+            if phase in {"craft", "publish"} and chat is not None:
+                output, findings = await verified_craft(chat, current, output, phase)
+            if phase == "strategy" and chat is not None:
+                output = await reviewed_strategy(chat, current, output)
             if chat is not None and phase in _THINK_PHASES:
                 emit(think_event(phase, time.monotonic() - started))
+            if phase == "analyze":
+                output = normalize_analysis(current.get("inputs") or {}, output)
             stored = await _store_output(db, current, phase, output)
+            if phase == "publish" and _draft_bodies(output):
+                # The final body replaces the draft's findings: the closing message lists its own.
+                stored["drafts"] = {**(current.get("drafts") or {}), "verify_left": findings}
             if phase == "strategy" and output.get("valid") is not False:
                 plan = strategy_plan(output)
                 if plan is not None:
@@ -1398,6 +1809,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                 doc_id = await save_profile_document({**current, **stored})
                 if doc_id:
                     stored["profile_document_id"] = doc_id
+            saved_to = ""
             if phase == "present":
                 view = {**current, **stored}
                 drafted = bool(draft_text(view.get("drafts")))
@@ -1409,6 +1821,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                     if saved.get("documentId"):
                         stored["profile_document_id"] = saved["documentId"]
                     stored["source_saved"] = bool(saved.get("stored"))
+                    saved_to = str(saved.get("fileName") or "") if saved.get("stored") else ""
                     emit(_todo(_file_steps(view)))
                     emit({**_file_result(saved, view), **_done(view, "external")})
                 elif resume_source(view) != "external" and (drafted or known):
@@ -1419,6 +1832,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                         doc_id = await save_profile_document(view) or known
                     if doc_id:
                         stored["profile_document_id"] = doc_id
+                        saved_to = "Push 프로필에 저장"
                     name, headline = await profile_card_names(db, view)
                     emit(_todo(_PROFILE_STEPS))
                     card = _profile_result(doc_id, name, headline, view)
@@ -1431,8 +1845,16 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                     [str(item) for item in changes] if isinstance(changes, list) else [],
                     str(stored.get("profile_document_id") or current.get("profile_document_id") or ""),
                 ) or reply
+                left = verify_text(findings)
+                if left:
+                    reply = f"{reply}\n\n{left}"
             if phase == "blueprints":
                 reply = blueprints_text(output) or reply
+            if phase == "present":
+                view = {**current, **stored}
+                notes = await load_notes(_context(db, view))
+                extras = budget_for(await user_plan(view)).extras
+                reply = present_message(view, notes, extras=extras, saved=saved_to) or reply
             emit({"token": reply})
             stored = {**stored, "reply": reply, "reply_job": running_job(), "retry": False}
             if stamped.get("inputs"):
@@ -1444,6 +1866,182 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             return stored
 
         return node
+
+    async def user_plan(state: dict) -> str:
+        from app.infrastructure.posting_fit_cache import read_plan
+
+        return await read_plan(None if db is None else db.q(), _fit_user(state)) or ""
+
+    async def explore(chat, current: dict) -> dict:
+        ctx = _context(db, current)
+        terms = _job_terms(current.get("analysis") or {}) if isinstance(current.get("analysis"), dict) else []
+        if not terms:
+            terms = posting_terms(" ".join(str(text) for text in ((current.get("inputs") or {}).get("pages") or {}).values()))
+
+        async def agent(repo: str, focus: str) -> dict:
+            target = await _repo_target(ctx, repo)
+            if isinstance(target, dict):
+                return target
+            owner, name = target
+            # Only an account link names the user: a repo link's owner may be an organisation.
+            targets = await _github_targets(ctx)
+            logins = list(dict.fromkeys(item for item, linked in targets if linked is None))
+            found = await github_agent(light_model(chat) or chat, owner, name, logins=logins, emit=emit,
+                                       focus=focus or ", ".join(list(terms)[:15]))
+            if "error" not in found:
+                await save_artifact(ctx, f"01_github_{owner}_{name}.json",
+                                    json.dumps(found, ensure_ascii=False))
+            return found
+
+        pages = {str(url): str(text) for url, text in ((current.get("inputs") or {}).get("pages") or {}).items()}
+
+        async def search(company: str, focus: str) -> str:
+            from app.harness.personal.tools import bound_services
+
+            svc = bound_services.get()
+            gate = getattr(svc, "ai", None) if svc is not None else None
+            if gate is None or not hasattr(gate, "company_research"):
+                return ""
+            try:
+                user_id = UUID(ctx.user_id)
+            except ValueError:
+                user_id = None
+            posting = "\n\n".join(pages.values())
+            return await gate.company_research(company, context=f"{posting}\n\n조사 초점: {focus}",
+                                               user_id=user_id, job_id=ctx.usage_job_id or None)
+
+        async def stage(documents: list[dict], only: list[str]) -> dict:
+            light = light_model(chat)
+            if light is None:
+                return {}
+
+            async def save(name: str, body: dict) -> None:
+                await save_artifact(ctx, name, json.dumps(body, ensure_ascii=False))
+
+            return await stage_one(light, pages=pages, documents=documents, search=search, emit=emit, save=save,
+                                   only=only)
+
+        turn = getattr(chat, "turn", None)
+        turn = turn if isinstance(turn, dict) else {}
+
+        def main_tokens() -> int:
+            return int(((turn.get("tiers") or {}).get("main") or {}).get("in") or 0)
+
+        spent = main_tokens()
+        return await run_explore(
+            chat, current, ctx,
+            budget=budget_for(await user_plan(current)),
+            # Only what this explore loop reads counts against its input-token budget: its subagents
+            # run on other tiers.
+            used_tokens=lambda: main_tokens() - spent,
+            system=phase_instructions("analyze", current),
+            context=await _phase_context("analyze", current, ctx),
+            tools=_EXPLORE_TOOLS,
+            agent=agent,
+            read_attachment=attachment_reader(ctx),
+            stage=stage,
+        )
+
+    def attachment_reader(ctx: ToolContext):
+        async def read(attachment_id: str) -> dict:
+            spec = _READ_TOOLS["parse_attachment"]
+            args = spec.args_model.model_validate({"attachment_id": attachment_id})
+            return await spec.run(ctx, args)
+
+        return read
+
+    async def user_sources(current: dict, ctx: ToolContext, notes) -> str:
+        """Everything the user gave this flow: the document, every attachment, every page, what
+        they typed. A true fact from any of them must not read as made up."""
+        inputs = current.get("inputs") if isinstance(current.get("inputs"), dict) else {}
+        early = await prefetch(current, read=attachment_reader(ctx))
+        parts = [
+            await resume_text(current),
+            *(item["text"] for item in early["attachments"]),
+            *(str(text) for text in (inputs.get("pages") or {}).values()),
+            *_user_words(current, notes),
+        ]
+        return "\n\n".join(part for part in parts if part.strip())
+
+    async def verified_craft(chat, current: dict, output: dict,
+                             phase: str = "craft") -> tuple[dict, list[dict]]:
+        """Every document body a phase writes (craft, each boost, publish) passes the same checks;
+        one redo, then what is left goes to `verify_left` for the closing message."""
+        ctx = _context(db, current)
+        notes = await load_notes(ctx)
+
+        async def check(result: dict) -> list[dict]:
+            bodies = _draft_bodies(result)
+            if not bodies:
+                return []
+            used = [str(item) for item in result.get("used_evidence") or []
+                    if isinstance(item, str)]
+            found = verify_draft("\n\n".join(bodies), used, notes, resume_text=source_text)
+            light = light_model(chat)
+            if light is None:
+                return found
+            sources = f"{source_text}\n\n{ledger_text(notes)}"
+            checked = await asyncio.gather(
+                *(fact_check_agent(light, body, sources, emit) for body in bodies),
+                return_exceptions=True)
+            failed = [item for item in checked if isinstance(item, BaseException)]
+            if failed:
+                logging.getLogger(__name__).warning("fact check failed: %r", failed[0])
+                # Not checked is not "nothing found": the user is told; no redo for it.
+                found.append(finding("P1", "fact_unchecked", "사실 대조를 끝내지 못했어요"))
+            return found + [{"level": "P0", "rule": "fact_mismatch", "detail": item["sentence"]}
+                            for items in checked if isinstance(items, list) for item in items]
+
+        async def redo(findings: list[dict]) -> dict:
+            return await _output(chat, phase, {**current, "verify_feedback": findings}, ctx)
+
+        source_text = await user_sources(current, ctx, notes)
+        output, findings = await fix_once(
+            output, check, redo, lambda result: bool(str(result.get("markdown") or "").strip()))
+        return {**output, "verify_left": findings}, findings
+
+    async def reviewed_strategy(chat, current: dict, output: dict) -> dict:
+        """Reviewers object, the main model redoes the strategy once, then the ask policy runs."""
+        ctx = _context(db, current)
+        notes = await load_notes(ctx)
+        said = _user_words(current, notes)
+        count = budget_for(await user_plan(current)).reviewers if _strategy_usable(output) else 0
+        if count:
+            analysis = current.get("analysis") if isinstance(current.get("analysis"), dict) else {}
+            subject = {"items": _strategy_items(output), "posting": analysis.get("jobs") or {},
+                       "ledger": ledger_text(notes), "steer": said}
+            reviewed = await _soft(run_reviewers(mid_model(chat), list(_REVIEWERS[:count]), subject, emit), {})
+            objections = reviewed.get("objections") or []
+            if objections:
+                redo = await _output(chat, "strategy", {**current, "review_objections": objections}, ctx)
+                # An invalid redo leaves the first strategy in place.
+                if _strategy_usable(redo):
+                    output = redo
+        if output.get("valid") is False:
+            return output
+        items = strategy_asks(output, said)
+        if items and ask_once(notes):
+            notes["ask"] = {"question": ask_title(items), "options": [option["label"] for option in ask_options()]}
+            await save_notes(ctx, notes)
+        else:
+            items = []
+        return {**output, "ask_items": items}
+
+    async def decided(current: dict, event: dict) -> None:
+        """A decision the server made for the user goes to the assumption log the closing message reads."""
+        line = auto_pick_line(event)
+        if not line:
+            return
+        ctx = _context(db, current)
+        notes = await load_notes(ctx)
+        cut = _strategy_ask(current) if event.get("gate") == "strategy" else []
+        if cut:
+            # Kept the plan: the named items it cut or lightened are the decision made for them.
+            what = ", ".join(item["what"] for item in cut)
+            assume(notes, f"말씀하신 항목을 줄이거나 뺐어요: {what}")
+        else:
+            assume(notes, f"{event['title']} → {line.split(': ', 1)[-1]}")
+        await save_notes(ctx, notes)
 
     async def accepted(current: dict, gate_id: str, answer: dict) -> dict:
         update = _apply_answer(current, gate_id, answer)
@@ -1509,8 +2107,14 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
                 return await accepted(current, gate_id, {"option_id": "continue"})
             if not _must_stop(current, gate_id):
                 if gate_id not in _INTAKE_NEXT and (gate_id in _NEVER_ASKED or len(_gate_options(current, gate_id)) > 1):
-                    emit(_choice(current, gate_id, auto=True))
-                return await accepted(current, gate_id, _auto_answer(gate_id, current))
+                    event = _choice(current, gate_id, auto=True)
+                    _emit_auto(event)
+                    if gate_id in _DECISION_GATES:
+                        await decided(current, event)
+                answer = _auto_answer(gate_id, current)
+                if gate_id == "feedback" and answer.get("option_id") == "keep":
+                    return {"status": "done", "phase": "feedback", "goto": "end"}
+                return await accepted(current, gate_id, answer)
             asks = int(current.get("intake_asks") or 0)
             event = _choice(
                 current,
@@ -1532,6 +2136,10 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             )
             if _cancelled(answer):
                 return {"status": "cancelled", "phase": current["phase"], "goto": "end"}
+            if gate_id == "ask":
+                return _answered_ask(current, answer)
+            if gate_id == "strategy" and answer.get("option_id") == "restore" and _strategy_ask(current):
+                return _restored(current)
             if gate_id == "validate_cap" and answer.get("option_id") == "change":
                 return {
                     "validation_failures": 0,
@@ -1577,16 +2185,21 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         user_id = _fit_user(state)
         query = None if db is None else db.q()
         plan = await read_plan(query, user_id)
-        terms, description = _posting(state)
+        posting = _fit_posting(state)
+        # Preferred items weigh half a required one only when they are passed as preferred.
+        requirements = list(posting["required"]) or list(posting["preferred"])
+        preferred = list(posting["preferred"]) if posting["required"] else []
+        description = _posting(state)[1]
         return await judge_fit(
-            terms,
-            terms,
+            requirements,
+            posting["keywords"] or [*requirements, *preferred],
             description,
             text,
             plan,
             gate=current_ai_gate(),
             job_id=job_of(state) or None,
             user_id=user_id,
+            preferred=preferred,
         )
 
     async def score_draft(state: dict) -> dict:
@@ -1594,11 +2207,11 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
 
     async def resume_text(state: dict) -> str:
         analysis = state.get("analysis") if isinstance(state.get("analysis"), dict) else {}
-        return (
-            chosen_document_text(state.get("inputs"))
-            or await load_document_markdown(db, state)
-            or json.dumps(analysis.get("resume") or {}, ensure_ascii=False)
-        )
+        inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
+        text = chosen_document_text(inputs) or await load_document_markdown(db, state)
+        if not text and not inputs.get("documentId") and _fit_user(state) is not None:
+            text = await _fit_document(_context(db, state), FitArgs())
+        return text or json.dumps(analysis.get("resume") or {}, ensure_ascii=False)
 
     async def analyze_fit(state: dict) -> float | None:
         from app.harness.personal.tools import current_ai_gate
@@ -1623,10 +2236,12 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     async def report_analysis(state: dict) -> float | None:
         analysis = state.get("analysis") if isinstance(state.get("analysis"), dict) else {}
         inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
-        steps, added = analyze_steps(inputs, analysis)
+        company = analysis.get("company") if isinstance(analysis.get("company"), dict) else {}
+        steps, added = analyze_steps(inputs, analysis, company=bool(company))
         lines = {
             "resume": lambda: resume_line(inputs, analysis),
             "github": lambda: github_line(analysis),
+            "company": lambda: company_line([str(url) for url in company.get("sources") or []]),
             "posting": lambda: posting_line(analysis),
         }
         failed = posting_unreadable(inputs, analysis)
@@ -1666,30 +2281,30 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         started = time.monotonic()
         output = await _output(chat, "craft", current, ctx)
         if chat is not None:
+            output, _left = await verified_craft(chat, current, output)
             emit(think_event("craft", time.monotonic() - started))
         stored = await _store_output(db, current, "craft", output)
         await _emit_papers(db, current, stored)
         view = await score_draft({**view_state, **stored})
         scores.append(float(view["fitScore"]))
         terms, _description = _posting(view_state)
-        emit(
-            boost_line(
-                len(scores) - 1,
-                scores[-2],
-                scores[-1],
-                parts,
-                view.get("parts"),
-                added=added_keywords(
-                    terms, draft_text(drafts), draft_text(stored.get("drafts"))
-                ),
-                company=_target_company(view_state),
-            )
+        line = boost_line(
+            len(scores) - 1,
+            scores[-2],
+            scores[-1],
+            parts,
+            view.get("parts"),
+            added=added_keywords(terms, draft_text(drafts), draft_text(stored.get("drafts"))),
+            company=_target_company(view_state),
         )
-        emit(boost_fit(scores[0], scores[-1]))
+        emit(line)
+        rounds = boost_rounds(view_state.get("boost_rounds"), job_of(view_state), line)
+        emit(boost_fit(scores[0], scores[-1], rounds["items"]))
         return {
             **stored,
             "scores": scores,
             "boost_parts": view.get("parts") or {},
+            "boost_rounds": rounds,
             "draft_version": version,
         }
 
@@ -1742,8 +2357,14 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             )
             emit({"token": f"{detail} — {note}"})
             return await _finish_boost(state, outcome, stopped)
-        if not _must_stop(state, "boost"):
-            emit(_choice(state, "boost", auto=True, cycle=pending["cycle"], detail=detail))
+        auto = not _must_stop(state, "boost")
+        capped = auto and (state.get("access_mode") or "AUTO") == "AUTO"
+        budget = budget_for(await user_plan(state))
+        if capped and pending["cycle"] >= max(1, budget.boost_cycles):
+            emit({"token": f"{detail} — 이번에는 여기까지 올렸어요."})
+            return await _finish_boost(state, outcome, "budget")
+        if auto:
+            _emit_auto(_choice(state, "boost", auto=True, cycle=pending["cycle"], detail=detail))
             answer: dict = {"option_id": "continue"}
         else:
             event = _choice(state, "boost", auto=False, cycle=pending["cycle"], detail=detail)
@@ -1777,7 +2398,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             }
         return await _finish_boost(state, outcome, stopped)
 
-    async def save_named(state: dict, name: str, payload: dict) -> str:
+    async def save_named(state: dict, name: str, payload: dict | list) -> str:
         body = json.dumps(payload, ensure_ascii=False)
         return await save_artifact(_context(db, state), name, body)
 
@@ -1792,7 +2413,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
 
     async def analyze_job(state: ResumeGraphState) -> dict:
         analysis = state.get("analysis") or {}
-        jobs = analysis.get("jobs") if isinstance(analysis.get("jobs"), dict) else {}
+        jobs = analysis.get("jobs") if isinstance(analysis.get("jobs"), (dict, list)) else {}
         return {"job_file": await save_named(state, "01_job_analyses.json", jobs)}
 
     async def classify_scenario(state: ResumeGraphState) -> dict:
@@ -1807,7 +2428,12 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
             _context(db, state), "02_fit_score.json", fit_body
         )
         update = {"scenario": str(scenario), "artifacts": artifacts}
-        fit_from = await report_analysis(state)
+        inputs = dict(state.get("inputs") or {})
+        frozen = _fit_posting({**state, "inputs": inputs})
+        if not isinstance(inputs.get("fit_posting"), dict) and any(frozen.values()):
+            inputs["fit_posting"] = frozen
+            update["inputs"] = inputs
+        fit_from = await report_analysis({**state, "inputs": inputs})
         if fit_from is not None:
             update["fit_from"] = fit_from
         return update
@@ -2074,6 +2700,8 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
         if posting_unreadable(inputs, analysis):
             return "g_read_failed"
+        if len(_gate_options(dict(state), "ask")) >= 2:
+            return "g_ask"
         return "g1"
 
     def after_strategy(state: ResumeGraphState) -> str:
@@ -2109,6 +2737,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     add("g_quality", quality_gate)
     add("g4a", gate_node("review"))
     add("g_read_failed", read_failed_gate)
+    add("g_ask", gate_node("ask"))
     add("p5_publish", work_node("publish"))
     add("p6_present", work_node("present"))
     add("g6", gate_node("present"))
@@ -2155,7 +2784,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
     graph.add_edge("explore_github", "classify_scenario")
     graph.add_edge("analyze_job", "classify_scenario")
     graph.add_conditional_edges(
-        "classify_scenario", after_classify, {"g1": "g1", "g_read_failed": "g_read_failed"}
+        "classify_scenario", after_classify, {"g1": "g1", "g_read_failed": "g_read_failed", "g_ask": "g_ask"}
     )
     graph.add_edge("p2b_feedback", "g_feedback")
     graph.add_edge("p4b_design", "g4a")
@@ -2199,6 +2828,7 @@ def build_resume_graph(checkpointer, *, model=None, db=None):
         "g4a",
         "g6",
         "g_read_failed",
+        "g_ask",
         "g_approach",
         "g_level",
         "g_prevention",

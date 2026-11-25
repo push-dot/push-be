@@ -4,20 +4,21 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { after, before, test } from "node:test";
 
-import { botsPg, type BotsPg, type Person } from "../test-support/bots-pg.ts";
+import { botsPg } from '../test-support/bots-pg.ts';
+import type { BotsPg, Person } from '../test-support/bots-pg.ts';
 
 const URL_ = process.env.BILLING_PG_URL;
 const SKIP = "set BILLING_PG_URL to a migrated Postgres";
 const AI_DIR = new URL("../../ai/", import.meta.url).pathname;
 
 let db: BotsPg | undefined;
-before(async () => { if (URL_) db = await botsPg(URL_); });
+before(async () => { if (URL_) {db = await botsPg(URL_);} });
 after(async () => { await db?.close(); });
 
-type Item = Record<string, unknown> & { id: string };
-type Section = { section: string; items: Item[]; nextCursor: string | null };
+type Item = { id: string; company?: unknown; closed?: unknown; linkKind?: unknown; host?: unknown; title?: unknown; updatedAt?: unknown };
+type Section = { section: string; items: Array<Item>; nextCursor: string | null };
 
-const sql = async (text: string, params: unknown[] = []) => (await db!.pg.query(text, params)).rows;
+const sql = async (text: string, params: Array<unknown> = []) => (await db!.pg.query(text, params)).rows;
 
 const file = async (user: Person, name: string, minutesAgo: number, more: { mime?: string; maker?: string } = {}): Promise<string> => {
   const id = crypto.randomUUID();
@@ -52,7 +53,21 @@ const link = async (user: Person, url: string, kind: string, minutesAgo: number,
   return id;
 };
 
-const sectionsOf = (data: Record<string, unknown>): Section[] => data.sections as Section[];
+const isItem = (value: unknown): value is Item => typeof value === "object" && value !== null && "id" in value && typeof value.id === "string";
+const isSection = (value: unknown): value is Section => typeof value === "object" && value !== null && "items" in value && Array.isArray(value.items);
+const itemsOf = (data: unknown): Array<Item> => (Array.isArray(data) ? data.filter(isItem) : []);
+const sectionsOf = (data: Answer["data"]): Array<Section> => {
+  const out: Array<Section> = [];
+  for (const section of Array.isArray(data.sections) ? data.sections : []) {
+    if (isSection(section)) {out.push(section);}
+  }
+  return out;
+};
+const jobIdOf = (result: unknown): string => {
+  const value = typeof result === "object" && result !== null && "value" in result ? result.value : null;
+  return String(typeof value === "object" && value !== null && "jobId" in value ? value.jobId : undefined);
+};
+const byText = (a: unknown, b: unknown): number => Number(String(a) > String(b)) - Number(String(a) < String(b));
 
 const companyBot = async (user: Person, company: string): Promise<string> => {
   const bot = await db!.call(user, "POST", "/bots", { postingId: await db!.posting(company) });
@@ -98,10 +113,10 @@ asyncio.run(main(sys.argv[1], sys.argv[2]))
 const aiServiceReady = (): boolean => spawnSync("uv", ["--version"]).status === 0;
 
 /** Sends to the bot through core and lets the AI service finish the turn. */
-const sendAndFinish = async (user: Person, botId: string, attachments: { kind: string; id: string }[]): Promise<void> => {
+const sendAndFinish = async (user: Person, botId: string, attachments: Array<{ kind: string; id: string }>): Promise<void> => {
   const sent = await db!.call(user, "POST", `/bots/${botId}/messages/stream`, { text: "이 자료로 봐 줘", attachments });
   assert.equal(sent.status, 202, JSON.stringify(sent.error));
-  const jobId = String((sent.data.result as { value: { jobId: string } }).value.jobId);
+  const jobId = jobIdOf(sent.data.result);
   const turn = spawnSync("uv", ["run", "--no-sync", "python", "-c", RUN_TURN, URL_!, jobId], { cwd: AI_DIR, encoding: "utf8" });
   assert.equal(turn.status, 0, turn.stderr);
   const [reply] = await sql("SELECT count(*)::int AS n FROM messages WHERE user_id = $1 AND role = 'ASSISTANT' AND operation_id IS NOT NULL", [user.id]);
@@ -109,7 +124,7 @@ const sendAndFinish = async (user: Person, botId: string, attachments: { kind: s
 };
 
 test("the 전체 tab previews 4 docs, 3 bookmarks and 3 links, and counts every section with and without q", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const stranger = await db.person("PRO");
   const docs = [
@@ -135,7 +150,7 @@ test("the 전체 tab previews 4 docs, 3 bookmarks and 3 links, and counts every 
     await link(user, "https://seojun.dev/blog/payment-retry", "blog", 2),
     await link(user, "https://www.LinkedIn.com/in/seojun-kim", "other", 3),
   ];
-  for (let index = 4; index <= 10; index += 1) links.push(await link(user, `https://seojun.dev/post/${index}`, "blog", index));
+  for (let index = 4; index <= 10; index += 1) {links.push(await link(user, `https://seojun.dev/post/${index}`, "blog", index));}
   await link(user, "https://deleted.example", "other", 0, true);
 
   const all = await db.call(user, "GET", "/materials");
@@ -164,19 +179,19 @@ test("the 전체 tab previews 4 docs, 3 bookmarks and 3 links, and counts every 
 });
 
 test("a section tab pages files and documents together, newest first, with no short page", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
-  const expected: string[] = [];
+  const expected: Array<string> = [];
   for (let minute = 1; minute <= 11; minute += 1) {
     expected.push(minute % 3 === 0 ? await doc(user, `문서 ${minute}`, minute) : await file(user, `파일 ${minute}.pdf`, minute));
     // A markdown note between every two rows: filtered after the LIMIT, it would make short pages.
     await file(user, `note-${minute}.md`, minute, { mime: "text/plain" });
   }
 
-  const pages: string[][] = [];
+  const pages: Array<Array<string>> = [];
   let cursor: string | null = "";
-  while (cursor != null) {
-    const page: { status: number; data: Record<string, unknown> } = await db.call(user, "GET", `/materials?tab=doc&limit=3${cursor ? `&cursor=${cursor}` : ""}`);
+  while ((cursor !== null && cursor !== undefined)) {
+    const page: Answer = await db.call(user, "GET", `/materials?tab=doc&limit=3${cursor ? `&cursor=${cursor}` : ""}`);
     assert.equal(page.status, 200);
     const [section] = sectionsOf(page.data);
     pages.push(section.items.map((item) => item.id));
@@ -187,9 +202,11 @@ test("a section tab pages files and documents together, newest first, with no sh
   assert.deepEqual(pages.flat(), expected);
 });
 
+const ref = (id: string, name: string) => ({ id, kind: "company", displayName: name, color: "teal" });
+
 test("a bot's materials are the ones its chat attached and the ones it made, after a real turn", async (t) => {
-  if (!db) return t.skip(SKIP);
-  if (!aiServiceReady()) return t.skip("needs uv and the synced services/ai environment");
+  if (!db) {return t.skip(SKIP);}
+  if (!aiServiceReady()) {return t.skip("needs uv and the synced services/ai environment");}
   const user = await db.person("PRO");
   const moapay = await companyBot(user, "모아페이");
   const dotori = await companyBot(user, "도토리증권");
@@ -221,7 +238,6 @@ test("a bot's materials are the ones its chat attached and the ones it made, aft
   assert.equal((await db.call(user, "GET", `/bots/${dotori}`)).data.materialCount, 1);
   assert.equal((await db.call(user, "GET", "/bots/push")).data.materialCount, 0);
 
-  const ref = (id: string, name: string) => ({ id, kind: "company", displayName: name, color: "teal" });
   const used = await db.call(user, "GET", `/materials/file/${resume}`);
   assert.deepEqual(used.data.usedBy, [ref(moapay, "모아페이"), ref(dotori, "도토리증권")], "most recent chat first");
   assert.equal(used.data.createdBy, null);
@@ -234,7 +250,7 @@ test("a bot's materials are the ones its chat attached and the ones it made, aft
 });
 
 test("a material keeps its maker's name until the bot is deleted, then reads as made by no one known", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const bot = await companyBot(user, "파도AI");
   const made = await doc(user, "파도AI 자기소개서 초안", 1, { maker: bot });
@@ -250,7 +266,7 @@ test("a material keeps its maker's name until the bot is deleted, then reads as 
 });
 
 test("each kind's delete keeps the material, and restore brings it back as it was listed", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const stranger = await db.person("PRO");
   const ids = {
@@ -264,7 +280,7 @@ test("each kind's delete keeps the material, and restore brings it back as it wa
   const listed = Object.fromEntries(sectionsOf((await db.call(user, "GET", "/materials")).data).flatMap((s) => s.items.map((item) => [item.id, item])));
 
   for (const [kind, id] of Object.entries(ids)) {
-    for (const method of ["GET", "DELETE"]) assert.equal((await db.call(stranger, method, `/materials/${kind}/${id}`)).status, 404, `${kind} is not the stranger's`);
+    for (const method of ["GET", "DELETE"]) {assert.equal((await db.call(stranger, method, `/materials/${kind}/${id}`)).status, 404, `${kind} is not the stranger's`);}
     assert.equal((await db.call(stranger, "POST", `/materials/${kind}/${id}/restore`)).status, 404);
 
     assert.equal((await db.call(user, "DELETE", `/materials/${kind}/${id}`)).status, 204, kind);
@@ -289,12 +305,12 @@ test("each kind's delete keeps the material, and restore brings it back as it wa
   const [repinned] = await sql("SELECT resume_source_id FROM profiles WHERE user_id = $1", [user.id]);
   assert.equal(repinned.resume_source_id, ids.file, "the profile's resume is pinned again");
   const reread = await sql("SELECT payload->>'sourceId' AS source, payload->>'documentId' AS document FROM ai_jobs WHERE user_id = $1 AND type = 'ingest'", [user.id]);
-  assert.deepEqual(reread.map((job) => job.source ?? job.document).sort(), [ids.document, ids.file].sort(), "a restored file and document are read again");
+  assert.deepEqual(reread.map((job) => job.source ?? job.document).sort(byText), [ids.document, ids.file].sort(), "a restored file and document are read again");
   assert.equal((await db.call(user, "POST", `/materials/file/${crypto.randomUUID()}/restore`)).status, 404);
 });
 
 test("a file that career evidence cites is refused alike by DELETE /sources and the materials delete", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const cited = await file(user, "경력기술서_2026.pdf", 1);
   await sql(
@@ -321,7 +337,7 @@ const archivedDoc = async (user: Person, finalized: boolean): Promise<string> =>
 };
 
 test("a document is archived and restored alike by the documents routes and the materials routes", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const routes = {
     documents: { archived: 200, archive: (id: string) => db!.call(user, "POST", `/documents/${id}/archive`, { expectedRevision: 1 }),
@@ -341,24 +357,24 @@ test("a document is archived and restored alike by the documents routes and the 
 
     const finalized = await archivedDoc(user, true);
     const draft = await archivedDoc(user, false);
-    for (const id of [finalized, draft]) assert.equal((await route.restore(id)).status, 200, name);
+    for (const id of [finalized, draft]) {assert.equal((await route.restore(id)).status, 200, name);}
     assert.deepEqual([await stateOf(finalized), await stateOf(draft)], [["FINALIZED", 2], ["DRAFT", 2]], `${name} restores to the last state`);
     const reread = await sql("SELECT payload->>'documentId' AS id FROM ai_jobs WHERE user_id = $1 AND type = 'ingest' AND payload->>'documentId' = ANY($2)",
       [user.id, [finalized, draft]]);
-    assert.deepEqual(reread.map((job) => job.id).sort(), [finalized, draft].sort(), `${name} reads a restored document again`);
+    assert.deepEqual(reread.map((job) => job.id).sort(byText), [finalized, draft].sort(), `${name} reads a restored document again`);
   }
 });
 
 test("a link is deleted and restored alike by /me/links and the materials routes", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const routes = {
     me: { remove: (id: string) => db!.call(user, "DELETE", `/me/links/${id}`), restore: (id: string) => db!.call(user, "POST", `/me/links/${id}/restore`) },
     materials: { remove: (id: string) => db!.call(user, "DELETE", `/materials/link/${id}`),
       restore: (id: string) => db!.call(user, "POST", `/materials/link/${id}/restore`) },
   };
-  const listed = async (id: string): Promise<boolean[]> => [
-    ((await db!.call(user, "GET", "/me/links")).data as unknown as Item[]).some((item) => item.id === id),
+  const listed = async (id: string): Promise<Array<boolean>> => [
+    itemsOf((await db!.call(user, "GET", "/me/links")).data).some((item) => item.id === id),
     sectionsOf((await db!.call(user, "GET", "/materials?tab=link")).data)[0].items.some((item) => item.id === id),
   ];
 
@@ -386,7 +402,7 @@ const WAITING = `WITH RECURSIVE behind(pid) AS (
  * Two identical requests that overlap: a transaction holds the row the request locks first until both
  * requests wait for it, then lets them go. Left alone, the second one rarely starts before the first ends.
  */
-const twoAtOnce = async (user: Person, method: string, path: string, hold: string, id: string): Promise<Answer[]> => {
+const twoAtOnce = async (user: Person, method: string, path: string, hold: string, id: string): Promise<Array<Answer>> => {
   const { both } = await db!.pg.transaction!(async (tx) => {
     const [{ pid }] = (await tx("SELECT pg_backend_pid() AS pid")).rows;
     await tx(hold, [id]);
@@ -395,22 +411,22 @@ const twoAtOnce = async (user: Person, method: string, path: string, hold: strin
     const until = Date.now() + 10_000;
     while (Number((await sql(WAITING, [pid]))[0].n) < 2) {
       assert.ok(Date.now() < until, `both requests of ${method} ${path} wait on the held row`);
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => { setTimeout(resolve, 10); });
     }
     return { both };
   });
   return both;
 };
 
-const HOLD_LIVE: Record<string, string> = {
-  file: "SELECT 1 FROM sources WHERE id = $1 FOR UPDATE",
-  document: "SELECT 1 FROM documents WHERE id = $1 FOR UPDATE",
-  posting: "SELECT 1 FROM bookmarks WHERE posting_id = $1 FOR UPDATE",
-  link: "SELECT 1 FROM user_links WHERE id = $1 FOR UPDATE",
-};
-const HOLD_DELETED: Record<string, string> = {
-  ...HOLD_LIVE, file: "SELECT 1 FROM material_bin WHERE id = $1 FOR UPDATE", posting: "SELECT 1 FROM material_bin WHERE id = $1 FOR UPDATE",
-};
+const HOLD_LIVE = new Map([
+  ["file", "SELECT 1 FROM sources WHERE id = $1 FOR UPDATE"],
+  ["document", "SELECT 1 FROM documents WHERE id = $1 FOR UPDATE"],
+  ["posting", "SELECT 1 FROM bookmarks WHERE posting_id = $1 FOR UPDATE"],
+  ["link", "SELECT 1 FROM user_links WHERE id = $1 FOR UPDATE"],
+]);
+const HOLD_DELETED = new Map([
+  ...HOLD_LIVE, ["file", "SELECT 1 FROM material_bin WHERE id = $1 FOR UPDATE"], ["posting", "SELECT 1 FROM material_bin WHERE id = $1 FOR UPDATE"],
+]);
 
 const oneOfEach = async (user: Person) => ({
   file: await file(user, "포트폴리오_2026.pdf", 1),
@@ -420,13 +436,13 @@ const oneOfEach = async (user: Person) => ({
 });
 
 test("two deletes of one material at once both answer 204 and delete it once", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const ids = await oneOfEach(user);
 
-  const answers: Record<string, number[]> = {};
+  const answers: Record<string, Array<number>> = {};
   for (const [kind, id] of Object.entries(ids)) {
-    answers[kind] = (await twoAtOnce(user, "DELETE", `/materials/${kind}/${id}`, HOLD_LIVE[kind], id)).map((answer) => answer.status);
+    answers[kind] = (await twoAtOnce(user, "DELETE", `/materials/${kind}/${id}`, HOLD_LIVE.get(kind) ?? "", id)).map((answer) => answer.status);
   }
 
   assert.deepEqual(answers, { file: [204, 204], document: [204, 204], posting: [204, 204], link: [204, 204] });
@@ -439,13 +455,13 @@ test("two deletes of one material at once both answer 204 and delete it once", a
 });
 
 test("two restores of one material at once both answer it and restore it once", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const ids = await oneOfEach(user);
-  for (const [kind, id] of Object.entries(ids)) assert.equal((await db.call(user, "DELETE", `/materials/${kind}/${id}`)).status, 204, kind);
+  for (const [kind, id] of Object.entries(ids)) {assert.equal((await db.call(user, "DELETE", `/materials/${kind}/${id}`)).status, 204, kind);}
 
   for (const [kind, id] of Object.entries(ids)) {
-    const answers = await twoAtOnce(user, "POST", `/materials/${kind}/${id}/restore`, HOLD_DELETED[kind], id);
+    const answers = await twoAtOnce(user, "POST", `/materials/${kind}/${id}/restore`, HOLD_DELETED.get(kind) ?? "", id);
     assert.deepEqual(answers.map((answer) => answer.status), [200, 200], kind);
     assert.deepEqual(answers[1].data, answers[0].data, `${kind}: both answer the same material`);
   }
@@ -454,11 +470,11 @@ test("two restores of one material at once both answer it and restore it once", 
   const [restored] = await sql("SELECT revision FROM documents WHERE id = $1", [ids.document]);
   assert.equal(Number(restored.revision), 3, "the document is restored once");
   const reread = await sql("SELECT payload->>'sourceId' AS source, payload->>'documentId' AS document FROM ai_jobs WHERE user_id = $1 AND type = 'ingest'", [user.id]);
-  assert.deepEqual(reread.map((job) => job.source ?? job.document).sort(), [ids.document, ids.file].sort(), "each is read again once");
+  assert.deepEqual(reread.map((job) => job.source ?? job.document).sort(byText), [ids.document, ids.file].sort(), "each is read again once");
 });
 
 test("a posting bookmarked again after a delete can be deleted and restored again", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const posting = await bookmark(user, "누리클라우드", 1);
   assert.equal((await db.call(user, "DELETE", `/materials/posting/${posting}`)).status, 204);
@@ -473,7 +489,7 @@ test("a posting bookmarked again after a delete can be deleted and restored agai
 });
 
 test("a bookmark restored after its posting is gone answers 404", async (t) => {
-  if (!db) return t.skip(SKIP);
+  if (!db) {return t.skip(SKIP);}
   const user = await db.person("PRO");
   const posting = await bookmark(user, "소담헬스", 1);
   assert.equal((await db.call(user, "DELETE", `/materials/posting/${posting}`)).status, 204);

@@ -56,7 +56,8 @@ async def load_fit(
         return fit.cached_view(cached)
     view = await judge_fit(
         row["requirements"], row["skills"], row["description"], row["content"], plan,
-        gate=gate, job_id=job_id, user_id=user_id, cls=cls)
+        gate=gate, job_id=job_id, user_id=user_id, cls=cls,
+        purpose=f"fit:{posting_id}:{document_id}")
     await query.execute(
         "INSERT INTO posting_fit_cache "
         "(user_id, posting_id, document_id, fit_score, parts, top_gap, plan, "

@@ -1,8 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from uuid import UUID
 
-from app.domain.posting_match import SCORE_CAP, FIT_FLOOR, present_match, rank_postings, render_matches
+from app.claimctx import ends_the_run
+from app.domain.posting_match import (
+    FIT_FLOOR,
+    SCORE_CAP,
+    present_match,
+    rank_postings,
+    render_matches,
+)
+
+_SCORING = 4
 
 
 def _uuid(value):
@@ -17,10 +28,23 @@ def _uuid(value):
 async def find_matching_postings(postings, user_vectors, conditions, *, score_fit, cap=SCORE_CAP):
     ranked = rank_postings(postings, user_vectors, conditions or {})
     chosen = ranked[:cap]
-    items = []
-    for row in chosen:
-        view = await score_fit(row, (conditions or {}).get("documentId"))
-        items.append(present_match(row, view))
+    limit = asyncio.Semaphore(_SCORING)
+
+    async def score(row):
+        async with limit:
+            try:
+                view = await score_fit(row, (conditions or {}).get("documentId"))
+            except Exception as err:
+                if ends_the_run(err):
+                    raise
+                # One unreadable judge answer must not fail the match and orphan the other scores.
+                logging.getLogger(__name__).warning(
+                    "fit score failed posting=%s", row.get("id"), exc_info=True)
+                view = None
+            return present_match(row, view)
+
+    # gather keeps the ranked order; the sort below decides the final one.
+    items = list(await asyncio.gather(*(score(row) for row in chosen)))
     if (conditions or {}).get("minFit"):
         items = [
             item for item in items
@@ -40,7 +64,11 @@ async def find_matching_postings(postings, user_vectors, conditions, *, score_fi
 async def run_quick_match(db, user_id, inputs, job_id=None):
     from app.harness.personal.tools import current_ai_gate
     from app.infrastructure.posting_fit_cache import load_fit
-    from app.infrastructure.posting_match import load_corpus, latest_document_id, require_live_document
+    from app.infrastructure.posting_match import (
+        latest_document_id,
+        load_corpus,
+        require_live_document,
+    )
 
     conditions = dict(inputs or {})
     user = _uuid(user_id)

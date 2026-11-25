@@ -1,3 +1,5 @@
+import type { Row } from "../db.ts";
+import type { JsonObject } from "../json.ts";
 import { one, query, withCalendar } from "../db.ts";
 import { HttpError, asBool, data, fieldError, noContent, requireUuid } from "../http.ts";
 import { enqueueIngest } from "../jobs/ingest.ts";
@@ -14,7 +16,7 @@ const KIND_NAMES = ["file", "document", "posting", "link"] as const;
 type Kind = (typeof KIND_NAMES)[number];
 const SECTION_NAMES = ["doc", "bookmark", "link"] as const;
 type Section = (typeof SECTION_NAMES)[number];
-type Row = Record<string, unknown>;
+type Dto = JsonObject;
 
 /** Rows per section on the 전체 tab, as the Materials board previews them. */
 const PREVIEW: Record<Section, number> = { doc: 4, bookmark: 3, link: 3 };
@@ -33,11 +35,11 @@ type KindRule = {
   live: string;
   /** The sort key, newest first: the time the material was saved, or a document's last edit. */
   at: string;
-  search: string[];
+  search: Array<string>;
   /** The bot that made it. Bookmarks and links are the user's own. */
   maker: string | null;
   cols: string;
-  dto: (row: Row) => Row;
+  dto: (row: Row) => Dto;
   /** Puts a live material into its deleted state. False when the caller has no such live material. */
   remove: (ctx: Ctx, id: string) => Promise<boolean>;
   /** Finds the caller's material $2 in its deleted state. */
@@ -48,9 +50,9 @@ type KindRule = {
 
 const notFound = (): HttpError => new HttpError(404, "NOT_FOUND", "resource not found");
 
-const textOrNull = (value: unknown): string | null => (value == null ? null : String(value));
-const numberOrNull = (value: unknown): number | null => (value == null ? null : Number(value));
-const makerOf = (row: Row): Row | null => (row.bot_id == null ? null : botRef(row));
+const textOrNull = (value: unknown): string | null => ((value === null || value === undefined) ? null : String(value));
+const numberOrNull = (value: unknown): number | null => ((value === null || value === undefined) ? null : Number(value));
+const makerOf = (row: Row): Dto | null => ((row.bot_id === null || row.bot_id === undefined) ? null : botRef(row));
 
 // The host lets the app mark a LinkedIn link. LinkedIn is not one of the five kinds a link is saved with.
 const hostOf = (url: string): string => {
@@ -61,7 +63,7 @@ const hostOf = (url: string): string => {
   }
 };
 
-const changed = async (ctx: Ctx, sql: string, params: unknown[]): Promise<boolean> =>
+const changed = async (ctx: Ctx, sql: string, params: Array<unknown>): Promise<boolean> =>
   (await query(ctx.deps.query, sql, params)).rows.length > 0;
 
 // Markdown files are the resume flow's working notes, kept off every list the user sees.
@@ -128,14 +130,14 @@ const KINDS: Record<Kind, KindRule> = {
     }),
     remove: async (ctx, id) => {
       const row = await one(ctx.deps.query, BIN_FILE, [ctx.user.id, id, ctx.now.toISOString()]);
-      if (!Number(row?.found)) return false;
+      if (!Number(row?.found)) {return false;}
       refuseCited(row?.used);
       return Number(row?.deleted) > 0;
     },
     kept: "SELECT 1 FROM material_bin WHERE user_id = $1 AND kind = 'file' AND id = $2",
     // Its search nodes went with the row, so the file is read again.
     restore: async (ctx, id) => {
-      if (await changed(ctx, UNBIN_FILE, [ctx.user.id, id])) await enqueueIngest(ctx, { sourceId: id });
+      if (await changed(ctx, UNBIN_FILE, [ctx.user.id, id])) {await enqueueIngest(ctx, { sourceId: id });}
     },
   },
   document: {
@@ -187,7 +189,7 @@ const KINDS: Record<Kind, KindRule> = {
     dto: (row) => ({
       kind: "link", id: String(row.id), title: String(row.title), url: String(row.url), host: hostOf(String(row.url)),
       linkKind: String(row.link_kind), addedAt: ts(row.at), lastCheckedAt: ts(row.last_checked_at),
-      lastCheckOk: row.last_check_ok == null ? null : asBool(row.last_check_ok),
+      lastCheckOk: (row.last_check_ok === null || row.last_check_ok === undefined) ? null : asBool(row.last_check_ok),
     }),
     remove: softDeleteLink,
     kept: "SELECT 1 FROM user_links WHERE user_id = $1 AND id = $2 AND deleted_at IS NOT NULL",
@@ -197,7 +199,7 @@ const KINDS: Record<Kind, KindRule> = {
   },
 };
 
-const kindsOf = (section: Section): Kind[] => KIND_NAMES.filter((kind) => KINDS[kind].section === section);
+const kindsOf = (section: Section): Array<Kind> => KIND_NAMES.filter((kind) => KINDS[kind].section === section);
 
 // What bot $3's chat attached, read once per statement. A probe per material walked the whole thread
 // for each one: 0.4 s for 300 materials and a 2,000-message thread.
@@ -220,17 +222,17 @@ const COUNTS = `${ATTACHED} SELECT ${SECTION_NAMES.map((section) =>
   `(${kindsOf(section).map((kind) => `(SELECT count(*) FROM ${KINDS[kind].from} WHERE ${matching(kind)})`).join(" + ")})::int AS ${section}`).join(", ")}`;
 
 // $4 and $5 are the cursor, $6 the row count.
-const PAGE: Record<Section, string> = Object.fromEntries(SECTION_NAMES.map((section) => [section,
+const PAGE = Object.fromEntries(SECTION_NAMES.map((section) => [section,
   `${ATTACHED} SELECT kind, id, at FROM (${kindsOf(section).map((kind) =>
     `SELECT '${kind}' AS kind, x.id, ${KINDS[kind].at} AS at FROM ${KINDS[kind].from} WHERE ${matching(kind)}`).join(" UNION ALL ")}) m
    WHERE $4::timestamptz IS NULL OR (m.at, m.id) < ($4::timestamptz, $5::uuid)
-   ORDER BY m.at DESC, m.id DESC LIMIT $6`])) as Record<Section, string>;
+   ORDER BY m.at DESC, m.id DESC LIMIT $6`]));
 
-const ROWS: Record<Kind, string> = Object.fromEntries(KIND_NAMES.map((kind) => {
+const ROWS = Object.fromEntries(KIND_NAMES.map((kind) => {
   const { from, live, at, cols, maker } = KINDS[kind];
   const madeBy = maker ? `, cb.id AS bot_id, cb.kind, cb.display_name, cb.color FROM ${from} LEFT JOIN bots cb ON cb.id = ${maker} AND cb.deleted_at IS NULL` : ` FROM ${from}`;
   return [kind, `SELECT x.id, ${at} AS at, ${cols}${madeBy} WHERE ${live} AND x.id = ANY($2::uuid[])`];
-})) as Record<Kind, string>;
+}));
 
 // The containment goes first, through the GIN index. Left to the planner, it walked every thread of the
 // caller instead: 19 ms against 0.4 ms for 31 bots of 2,000 messages.
@@ -244,18 +246,21 @@ const USED_BY = `WITH hits AS MATERIALIZED (
   ORDER BY max(h.created_at) DESC, b.id`;
 
 /** The caller's live materials of one kind, as DTOs in the order of `ids`. One that is gone is left out. */
-const materialsOf = async (ctx: Ctx, kind: Kind, ids: string[]): Promise<Row[]> => {
-  if (ids.length === 0) return [];
+const materialsOf = async (ctx: Ctx, kind: Kind, ids: Array<string>): Promise<Array<Dto>> => {
+  if (ids.length === 0) {return [];}
   const rows = await query(ctx.deps.query, ROWS[kind], [ctx.user.id, ids]);
-  const byId = new Map<string, Row>(rows.rows.map((row) => [String(row.id), KINDS[kind].dto(row)]));
-  return ids.map((id) => byId.get(id)).filter((row): row is Row => row !== undefined);
+  const byId = new Map<string, Dto>(rows.rows.map((row) => [String(row.id), KINDS[kind].dto(row)]));
+  return ids.flatMap((id) => {
+    const row = byId.get(id);
+    return row === undefined ? [] : [row];
+  });
 };
 
 type Filter = [userId: string, q: string | null, botId: string | null];
 
-const countsOf = async (ctx: Ctx, filter: Filter): Promise<Record<Section, number>> => {
+const countsOf = async (ctx: Ctx, filter: Filter) => {
   const row = await one(ctx.deps.query, COUNTS, filter);
-  return Object.fromEntries(SECTION_NAMES.map((section) => [section, Number(row?.[section] ?? 0)])) as Record<Section, number>;
+  return Object.fromEntries(SECTION_NAMES.map((section) => [section, Number(row?.[section] ?? 0)]));
 };
 
 /** Materials made by the bot or attached in its chat. The profile's number equals the count of its materials list. */
@@ -273,7 +278,7 @@ const sectionPage = async (ctx: Ctx, section: Section, filter: Filter, cursor: C
   const loaded = await Promise.all(kindsOf(section).map((kind) =>
     materialsOf(ctx, kind, shown.filter((key) => key.kind === kind).map((key) => String(key.id)))));
   const byKey = new Map(loaded.flat().map((material) => [`${material.kind}:${material.id}`, material]));
-  const last = shown[shown.length - 1];
+  const last = shown.at(-1);
   return {
     items: shown.flatMap((key) => byKey.get(`${key.kind}:${key.id}`) ?? []),
     nextCursor: keys.length > limit && last ? encodeCursor(last.at, String(last.id)) : null,
@@ -284,18 +289,18 @@ const listMaterials = async (ctx: Ctx): Promise<Response> => {
   const params = ctx.url.searchParams;
   const tab = params.get("tab") ?? "all";
   const sections = tab === "all" ? [...SECTION_NAMES] : SECTION_NAMES.filter((name) => name === tab);
-  if (sections.length === 0) throw fieldError("tab", `must be all or one of ${SECTION_NAMES.join(", ")}`);
+  if (sections.length === 0) {throw fieldError("tab", `must be all or one of ${SECTION_NAMES.join(", ")}`);}
   const q = (params.get("q") ?? "").trim();
-  if ([...q].length > Q_MAX) throw fieldError("q", `must be at most ${Q_MAX} characters`);
+  if (Array.from(q).length > Q_MAX) {throw fieldError("q", `must be at most ${Q_MAX} characters`);}
   const page = pageOf(ctx.url);
   const botRaw = params.get("bot");
-  const botId = botRaw == null ? null : String((await resolveBot(ctx, botRaw)).id);
+  const botId = (botRaw === null || botRaw === undefined) ? null : String((await resolveBot(ctx, botRaw)).id);
   const filter: Filter = [ctx.user.id, q || null, botId];
   const limit = params.has("limit") ? page.limit : LIMIT_DEFAULT;
   const [counts, ...pages] = await Promise.all([
     countsOf(ctx, filter),
     ...sections.map(async (section) => {
-      if (tab !== "all") return { section, ...await sectionPage(ctx, section, filter, page.cursor, limit) };
+      if (tab !== "all") {return { section, ...await sectionPage(ctx, section, filter, page.cursor, limit) };}
       const preview = await sectionPage(ctx, section, filter, null, PREVIEW[section]);
       return { section, items: preview.items, nextCursor: null };
     }),
@@ -305,7 +310,7 @@ const listMaterials = async (ctx: Ctx): Promise<Response> => {
 
 const kindOf = (raw: string): Kind => {
   const kind = KIND_NAMES.find((name) => name === raw);
-  if (!kind) throw notFound();
+  if (!kind) {throw notFound();}
   return kind;
 };
 
@@ -313,8 +318,9 @@ const getMaterial = async (ctx: Ctx, kindRaw: string, idRaw: string): Promise<Re
   const kind = kindOf(kindRaw);
   const id = requireUuid(idRaw, "id");
   const [material] = await materialsOf(ctx, kind, [id]);
-  if (!material) throw notFound();
-  const maker = (material.createdBy ?? null) as Row | null;
+  if (!material) {throw notFound();}
+  const createdBy = material.createdBy;
+  const maker: Dto | null = typeof createdBy === "object" && createdBy !== null ? Object.fromEntries(Object.entries(createdBy)) : null;
   const used = (await query(ctx.deps.query, USED_BY, [ctx.user.id, kind, id])).rows.map(botRef);
   const usedBy = maker ? [maker, ...used.filter((bot) => bot.id !== maker.id)] : used;
   return data(200, { ...material, usedBy }, ctx.rid);
@@ -325,7 +331,7 @@ const getMaterial = async (ctx: Ctx, kindRaw: string, idRaw: string): Promise<Re
 const deleteMaterial = async (ctx: Ctx, kindRaw: string, idRaw: string): Promise<Response> => {
   const kind = kindOf(kindRaw);
   const id = requireUuid(idRaw, "id");
-  if (!(await KINDS[kind].remove(ctx, id)) && !(await one(ctx.deps.query, KINDS[kind].kept, [ctx.user.id, id]))) throw notFound();
+  if (!(await KINDS[kind].remove(ctx, id)) && !(await one(ctx.deps.query, KINDS[kind].kept, [ctx.user.id, id]))) {throw notFound();}
   return noContent(ctx.rid);
 };
 
@@ -334,17 +340,17 @@ const restoreMaterial = async (ctx: Ctx, kindRaw: string, idRaw: string): Promis
   const id = requireUuid(idRaw, "id");
   await KINDS[kind].restore(ctx, id);
   const [material] = await materialsOf(ctx, kind, [id]);
-  if (!material) throw notFound();
+  if (!material) {throw notFound();}
   return data(200, material, ctx.rid);
 };
 
 export const dispatchMaterials = async (ctx: Ctx, path: string): Promise<Response | null> => {
   const method = ctx.request.method;
-  if (path === "/api/v1/materials") return method === "GET" ? listMaterials(ctx) : null;
+  if (path === "/api/v1/materials") {return method === "GET" ? listMaterials(ctx) : null;}
   const m = path.match(/^\/api\/v1\/materials\/([^/]+)\/([^/]+)(\/restore)?$/);
-  if (!m) return null;
-  if (m[3]) return method === "POST" ? restoreMaterial(ctx, m[1], m[2]) : null;
-  if (method === "GET") return getMaterial(ctx, m[1], m[2]);
-  if (method === "DELETE") return deleteMaterial(ctx, m[1], m[2]);
+  if (!m) {return null;}
+  if (m[3]) {return method === "POST" ? restoreMaterial(ctx, m[1], m[2]) : null;}
+  if (method === "GET") {return getMaterial(ctx, m[1], m[2]);}
+  if (method === "DELETE") {return deleteMaterial(ctx, m[1], m[2]);}
   return null;
 };

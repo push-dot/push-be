@@ -12,6 +12,7 @@ flow writes a wrong document.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -47,7 +48,7 @@ def _url_key(url: str) -> str:
     )
 
 
-def _own_material(url: str) -> bool:
+def own_material(url: str) -> bool:
     # A GitHub link is the user's own work, never the posting a flow is about.
     try:
         host = (urlsplit(url.strip()).hostname or "").lower()
@@ -66,7 +67,32 @@ def saved_for_turn(saved: dict[str, Any], posting: str | None, links: list[str])
         same = str(inputs.get("postingId") or "") == posting
     else:
         read = {_url_key(url) for url in inputs.get("pages") or {}}
-        same = all(_url_key(url) in read for url in links if not _own_material(url))
+        same = all(_url_key(url) in read for url in links if not own_material(url))
     if same:
         return saved
     return {"tone": saved["tone"]} if saved.get("tone") else {}
+
+
+_DOCUMENT = re.compile(
+    r"이력서|자소서|자기소개서|포트폴리오|\b(?:resume|cv|cover letter|portfolio)\b", re.I
+)
+# "써" only as a request: "이력서에 써 있는" names the document without asking for one.
+_MAKE = re.compile(
+    r"만들|작성|고쳐|고치|수정|맞춰|다듬|써\s*(?:줘|주|봐|달)"
+    r"|\b(?:write|make|tailor|fix|draft|create|edit|polish)\b",
+    re.I,
+)
+
+
+def resume_request(text: str, context: dict[str, Any] | None) -> bool:
+    """A plain chat turn that asks to make or fix a document from material it attaches. Without
+    attachments it is a question about documents, which the agent answers in chat."""
+    context = _dict(context)
+    material = bool(context.get("evidenceIds") or context.get("documentId"))
+    return material and bool(_DOCUMENT.search(text or "")) and bool(_MAKE.search(text or ""))
+
+
+def github_links(value: Any) -> list[str]:
+    """inputs.github is a list of links; a lone string from older saved state still counts."""
+    items = [value] if isinstance(value, str) else value if isinstance(value, list) else []
+    return [str(item).strip() for item in items if str(item).strip()]

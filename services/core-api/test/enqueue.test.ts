@@ -1,35 +1,37 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { Query } from "../src/db.ts";
+import type { Query, Row } from "../src/db.ts";
 import { HttpError, errorOf } from "../src/http.ts";
 import { checkBackpressure } from "../src/jobs/backpressure.ts";
 import { estimateMicro, queueDepthLimit, queueFor } from "../src/jobs/config.ts";
 import { availableMicro, enqueueJob } from "../src/jobs/enqueue.ts";
 
+const jsonOf = <T>(res: Response): Promise<T> => res.json();
+
 const USER = "11111111-1111-4111-8111-111111111111";
 const COMPANY = "22222222-2222-4222-8222-222222222222";
 
 const scripted = (
-  rowsFor: (sql: string, params: unknown[]) => Record<string, unknown> | null,
-  calls: string[],
+  rowsFor: (sql: string, params: Array<unknown>) => Row | null,
+  calls: Array<string>,
 ): Query => async (sql, params = []) => {
   calls.push(sql);
   const row = rowsFor(sql, params);
   return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
 };
 
-const funded = (calls: string[], balance: bigint): Query => scripted((sql, params) => {
-  if (sql.includes("idempotency_key") && sql.includes("FROM ai_jobs")) return null;
-  if (sql.includes("billing_ledger")) return { balance_after: balance.toString() };
-  if (sql.includes("ai_usage")) return { settled: "0" };
-  if (sql.includes("SUM") && sql.includes("credit_reservations")) return { reserved: "0" };
-  if (sql.includes("INSERT INTO ai_jobs")) return { id: String(params[0]), queue: String(params[2]) };
+const funded = (calls: Array<string>, balance: bigint): Query => scripted((sql, params): Row | null => {
+  if (sql.includes("idempotency_key") && sql.includes("FROM ai_jobs")) {return null;}
+  if (sql.includes("billing_ledger")) {return { balance_after: balance.toString() };}
+  if (sql.includes("ai_usage")) {return { settled: "0" };}
+  if (sql.includes("SUM") && sql.includes("credit_reservations")) {return { reserved: "0" };}
+  if (sql.includes("INSERT INTO ai_jobs")) {return { id: String(params[0]), queue: String(params[2]) };}
   return null;
 }, calls);
 
 test("enqueue reserves credits, writes job and outbox in one transaction", async () => {
-  const calls: string[] = [];
+  const calls: Array<string> = [];
   const out = await enqueueJob(funded(calls, estimateMicro("chat", "FREE")), {
     type: "chat",
     userId: USER,
@@ -47,7 +49,7 @@ test("enqueue reserves credits, writes job and outbox in one transaction", async
 });
 
 test("enqueue routes employer PRO to q:chat:priority", async () => {
-  const calls: string[] = [];
+  const calls: Array<string> = [];
   const out = await enqueueJob(funded(calls, estimateMicro("employer_ai", "PRO")), {
     type: "employer_ai",
     userId: USER,
@@ -60,7 +62,7 @@ test("enqueue routes employer PRO to q:chat:priority", async () => {
 });
 
 test("enqueue rejects when reservation exceeds balance with 402 INSUFFICIENT_CREDITS", async () => {
-  const calls: string[] = [];
+  const calls: Array<string> = [];
   const need = estimateMicro("chat", "FREE");
   await assert.rejects(
     () => enqueueJob(funded(calls, need - 1n), {
@@ -81,7 +83,7 @@ test("enqueue rejects when reservation exceeds balance with 402 INSUFFICIENT_CRE
 
 test("every AI job reserves credits", async () => {
   for (const type of ["chat", "employer_ai", "document", "fit"] as const) {
-    const calls: string[] = [];
+    const calls: Array<string> = [];
     await enqueueJob(funded(calls, 10_000_000n), {
       type, userId: USER, companyId: type === "employer_ai" ? COMPANY : undefined, plan: "PRO", payload: {},
     });
@@ -90,8 +92,8 @@ test("every AI job reserves credits", async () => {
 });
 
 test("same idempotencyKey returns the existing jobId", async () => {
-  const calls: string[] = [];
-  const tx = scripted((sql) => {
+  const calls: Array<string> = [];
+  const tx = scripted((sql): Row | null => {
     if (sql.includes("idempotency_key") && sql.includes("FROM ai_jobs")) {
       return { id: "33333333-3333-4333-8333-333333333333", queue: "q:chat" };
     }
@@ -121,7 +123,7 @@ test("backpressure admits a job at exactly the plan depth and refuses the next o
 
 test("backpressure returns 429 QUEUE_BUSY with Retry-After over threshold for FREE but not ULTRA", async () => {
   const depth = queueDepthLimit("FREE") + 1;
-  const owned: unknown[][] = [];
+  const owned: Array<Array<unknown>> = [];
   const db: Query = async (sql, params) => {
     if (sql.includes("user_id")) {
       owned.push(params ?? []);
@@ -132,7 +134,7 @@ test("backpressure returns 429 QUEUE_BUSY with Retry-After over threshold for FR
   const free = await checkBackpressure(db, "q:chat", "FREE", { userId: USER });
   const ultra = await checkBackpressure(db, "q:chat", "ULTRA", { userId: USER });
   assert.equal(free.ok, false);
-  if (free.ok) return;
+  if (free.ok) {return;}
   assert.equal(ultra.ok, true);
   assert.equal(queueDepthLimit("ULTRA") > depth, true);
   assert.equal(free.ahead, 4);
@@ -143,17 +145,17 @@ test("backpressure returns 429 QUEUE_BUSY with Retry-After over threshold for FR
   const res = errorOf(err, "rid");
   assert.equal(res.status, 429);
   assert.equal(res.headers.get("retry-after"), String(free.retryAfterSec));
-  const body = await res.json() as { error: { code: string } };
+  const body = await jsonOf<{ error: { code: string } }>(res);
   assert.equal(body.error.code, "QUEUE_BUSY");
 });
 
 test("balance counts RESERVED without the 10-minute window", async () => {
-  const calls: string[] = [];
-  const tx = scripted((sql) => {
+  const calls: Array<string> = [];
+  const tx = scripted((sql): Row | null => {
     assert.equal(sql.includes("10 minutes"), false);
-    if (sql.includes("billing_ledger")) return { balance_after: "100" };
-    if (sql.includes("ai_usage")) return { settled: "30" };
-    if (sql.includes("credit_reservations")) return { reserved: "25" };
+    if (sql.includes("billing_ledger")) {return { balance_after: "100" };}
+    if (sql.includes("ai_usage")) {return { settled: "30" };}
+    if (sql.includes("credit_reservations")) {return { reserved: "25" };}
     return null;
   }, calls);
   assert.equal(await availableMicro(tx, USER), 45n);
@@ -162,20 +164,20 @@ test("balance counts RESERVED without the 10-minute window", async () => {
 });
 
 test("enqueue grants the plan's monthly credits before reserving, so a new FREE user can chat", async () => {
-  const calls: string[] = [];
-  const grants: unknown[][] = [];
+  const calls: Array<string> = [];
+  const grants: Array<Array<unknown>> = [];
   let ledger: string | null = null;
-  const q = scripted((sql, params) => {
-    if (sql.includes("idempotency_key") && sql.includes("FROM ai_jobs")) return null;
+  const q = scripted((sql, params): Row | null => {
+    if (sql.includes("idempotency_key") && sql.includes("FROM ai_jobs")) {return null;}
     if (sql.includes("INSERT INTO billing_ledger")) {
       grants.push(params);
       ledger = String(params[2]);
       return null;
     }
-    if (sql.includes("billing_ledger")) return ledger == null ? null : { balance_after: ledger };
-    if (sql.includes("ai_usage")) return { settled: "0" };
-    if (sql.includes("SUM") && sql.includes("credit_reservations")) return { reserved: "0" };
-    if (sql.includes("INSERT INTO ai_jobs")) return { id: String(params[0]), queue: String(params[2]) };
+    if (sql.includes("billing_ledger")) {return (ledger === null || ledger === undefined) ? null : { balance_after: ledger };}
+    if (sql.includes("ai_usage")) {return { settled: "0" };}
+    if (sql.includes("SUM") && sql.includes("credit_reservations")) {return { reserved: "0" };}
+    if (sql.includes("INSERT INTO ai_jobs")) {return { id: String(params[0]), queue: String(params[2]) };}
     return null;
   }, calls);
   const out = await enqueueJob(q, {
@@ -189,7 +191,7 @@ test("enqueue grants the plan's monthly credits before reserving, so a new FREE 
 });
 
 test("employer jobs grant the company plan", async () => {
-  const calls: string[] = [];
+  const calls: Array<string> = [];
   await enqueueJob(funded(calls, 10_000_000n), {
     type: "employer_ai", userId: USER, companyId: COMPANY, plan: "PRO", payload: {}, now: new Date("2026-10-22T00:00:00Z"),
   });

@@ -1,5 +1,4 @@
 /** Pre-272 list enrichment (correlated subqueries). Used only to parity-check Postgres results. */
-import { LAST_MSG_LATERAL } from "../src/middleware/ratelimit.ts";
 
 export const LEGACY_LAST_LINE = "COALESCE("
   + "(SELECT NULLIF(a.title, '') FROM approvals a WHERE a.conversation_id = c.id AND a.status = 'PENDING' "

@@ -1,28 +1,37 @@
 import { one } from "../db.ts";
+import type { DbValue } from "../db.ts";
 import { HttpError, data, requireUuid } from "../http.ts";
 import { checkBackpressure } from "../jobs/backpressure.ts";
-import { planTier, queueFor, type JobType } from "../jobs/config.ts";
+import { planTier, queueFor } from '../jobs/config.ts';
+import type { JobType } from '../jobs/config.ts';
 import { enqueueJob, kickDispatcher, withDispatcher } from "../jobs/enqueue.ts";
+import type { Json, JsonObject } from "../json.ts";
 import { ts } from "../page.ts";
 import type { Ctx } from "../types.ts";
 import { rejectArchived } from "./documents.ts";
+import { isJsonObject } from "./recruiting-shared.ts";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const readObject = async (request: Request): Promise<Record<string, unknown>> => {
+const readObject = async (request: Request): Promise<JsonObject> => {
   const raw = await request.text();
-  if (!raw) return {};
+  if (!raw) {return {};}
   let body: unknown;
   try { body = JSON.parse(raw); } catch { throw new HttpError(400, "VALIDATION_ERROR", "invalid request body"); }
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
+  if (!isJsonObject(body)) {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body");
   }
-  return body as Record<string, unknown>;
+  return body;
 };
+
+const progressOf = (payload: DbValue): Json =>
+  payload && typeof payload === "object" && !Array.isArray(payload) && !(payload instanceof Date) && !(payload instanceof Uint8Array)
+    ? payload.progress ?? null
+    : null;
 
 const notFound = (): HttpError => new HttpError(404, "NOT_FOUND", "resource not found");
 
-const acceptJob = async (ctx: Ctx, type: JobType, payload: Record<string, unknown>): Promise<Response> => {
+const acceptJob = async (ctx: Ctx, type: JobType, payload: JsonObject): Promise<Response> => {
   const plan = planTier(ctx.user.plan);
   const queue = queueFor(type, plan, "PERSONAL");
   const pressure = await checkBackpressure(ctx.deps.query, queue, plan, { userId: ctx.user.id });
@@ -48,13 +57,12 @@ export const getQueueJob = async (ctx: Ctx, idRaw: string): Promise<Response> =>
     "SELECT id, type, status, result, error, payload, created_at, updated_at FROM ai_jobs WHERE id = $1 AND (user_id = $2 OR (company_id IS NOT NULL AND company_id = (SELECT company_id FROM company_members WHERE user_id = $2)))",
     [id, ctx.user.id],
   );
-  if (!row) throw notFound();
-  const payload = row.payload && typeof row.payload === "object" ? row.payload as Record<string, unknown> : {};
+  if (!row) {throw notFound();}
   return data(200, {
     id: String(row.id),
     type: String(row.type),
     status: String(row.status),
-    progress: payload.progress ?? null,
+    progress: progressOf(row.payload),
     result: row.result ?? null,
     error: row.error ?? null,
     createdAt: ts(row.created_at),
@@ -71,7 +79,7 @@ export const enqueueFit = async (ctx: Ctx, postingIdRaw: string): Promise<Respon
     "SELECT d.id, d.status FROM documents d JOIN job_postings p ON p.id = $2 WHERE d.id = $1 AND d.user_id = $3",
     [documentId, postingId, ctx.user.id],
   );
-  if (!owned) throw notFound();
+  if (!owned) {throw notFound();}
   rejectArchived(owned);
   return acceptJob(ctx, "fit", { postingId, documentId });
 };
@@ -87,7 +95,7 @@ export const enqueueDocumentGenerate = async (ctx: Ctx, documentIdRaw: string): 
     throw new HttpError(400, "VALIDATION_ERROR", "must be a list of UUIDs", { field: "evidenceIds" });
   }
   const owned = await one(ctx.deps.query, "SELECT id, status FROM documents WHERE id = $1 AND user_id = $2", [documentId, ctx.user.id]);
-  if (!owned) throw notFound();
+  if (!owned) {throw notFound();}
   rejectArchived(owned);
   return acceptJob(ctx, "document", { documentId, kind: "generate", body });
 };

@@ -6,11 +6,11 @@ import { notFound, readObject, countWhere, person } from "./recruiting-shared.ts
 
 async function blockUser(ctx: Ctx): Promise<Response> {
   const body = await readObject(ctx.request);
-  if (typeof body.userId !== "string") throw fieldError("userId", "must be a UUID");
+  if (typeof body.userId !== "string") {throw fieldError("userId", "must be a UUID");}
   const id = requireUuid(body.userId, "userId");
-  if (id === ctx.user.id) throw new HttpError(400, "VALIDATION_ERROR", "cannot block yourself", { field: "userId" });
+  if (id === ctx.user.id) {throw new HttpError(400, "VALIDATION_ERROR", "cannot block yourself", { field: "userId" });}
   const user = await one(ctx.deps.query, "SELECT id FROM users WHERE id = $1", [id]);
-  if (!user) throw notFound();
+  if (!user) {throw notFound();}
   await query(ctx.deps.query,
     "INSERT INTO user_blocks (blocker_id, blocked_id, created_at) VALUES ($1,$2,$3) ON CONFLICT (blocker_id, blocked_id) DO NOTHING",
     [ctx.user.id, id, ctx.now.toISOString()]);
@@ -25,7 +25,7 @@ async function unblockUser(ctx: Ctx, idRaw: string): Promise<Response> {
 
 async function listBlocks(ctx: Ctx): Promise<Response> {
   const page = pageOf(ctx.url);
-  const params: unknown[] = [ctx.user.id];
+  const params: Array<unknown> = [ctx.user.id];
   let sql = "SELECT b.blocked_id, u.display_name, b.created_at FROM user_blocks b JOIN users u ON u.id = b.blocked_id WHERE b.blocker_id = $1";
   const total = await countWhere(ctx, sql, " FROM user_blocks b", params.slice());
   if (page.cursor) {
@@ -46,9 +46,9 @@ async function listBlocks(ctx: Ctx): Promise<Response> {
 
 export const dispatchBlocks = async (ctx: Ctx, path: string): Promise<Response | null> => {
   const method = ctx.request.method;
-  if (path === "/api/v1/me/blocks" && method === "POST") return blockUser(ctx);
-  if (path === "/api/v1/me/blocks" && method === "GET") return listBlocks(ctx);
+  if (path === "/api/v1/me/blocks" && method === "POST") {return blockUser(ctx);}
+  if (path === "/api/v1/me/blocks" && method === "GET") {return listBlocks(ctx);}
   const blocked = path.match(/^\/api\/v1\/me\/blocks\/([^/]+)$/);
-  if (blocked && method === "DELETE") return unblockUser(ctx, blocked[1]);
+  if (blocked && method === "DELETE") {return unblockUser(ctx, blocked[1]);}
   return null;
 };

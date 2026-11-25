@@ -109,7 +109,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
           cache-dependency-glob: services/ai/uv.lock
@@ -131,7 +131,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
           cache-dependency-glob: services/ai/uv.lock
@@ -150,6 +150,24 @@ jobs:
         working-directory: services/ai
         continue-on-error: true
         run: uv run --no-sync mypy
+
+  # oxlint covers every TS/JS workspace in one pass, so it skips the path filter.
+  lint-ts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: oxlint
+        run: |
+          npm ci
+          npm run lint
 
   test-gateway:
     needs: changes
@@ -194,7 +212,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
           cache-dependency-glob: services/ai/uv.lock
@@ -558,6 +576,8 @@ jobs:
               echo "::error::$url did not return 200"
               cat /tmp/healthz >&2 || true
               ssh_vps "${stage_arg[@]}" ps || true
+              # A crash-looping container only shows why in its logs.
+              ssh_vps "${stage_arg[@]}" logs || true
               exit 1
             fi
             echo "$url ok"
@@ -586,6 +606,8 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GH_OAUTH_CLIENT_SECRET: ${{ secrets.GH_OAUTH_CLIENT_SECRET }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          SENS_ACCESS_KEY: ${{ secrets.SENS_ACCESS_KEY }}
+          SENS_SECRET_KEY: ${{ secrets.SENS_SECRET_KEY }}
           DEV_AUTH_TOKEN: ${{ secrets.DEV_AUTH_TOKEN }}
           GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
           GH_OAUTH_CLIENT_ID: ${{ vars.GH_OAUTH_CLIENT_ID }}
@@ -595,6 +617,8 @@ jobs:
           STRIPE_PRICE_EMPLOYER_PRO: ${{ vars.STRIPE_PRICE_EMPLOYER_PRO }}
           STRIPE_PRICE_EMPLOYER_ULTRA: ${{ vars.STRIPE_PRICE_EMPLOYER_ULTRA }}
           STRIPE_PRICE_TOPUP: ${{ vars.STRIPE_PRICE_TOPUP }}
+          SENS_SERVICE_ID: ${{ vars.SENS_SERVICE_ID }}
+          SMS_FROM: ${{ vars.SMS_FROM }}
         run: |
           set -euo pipefail
           umask 077
@@ -605,7 +629,7 @@ jobs:
                     GITHUB_CLIENT_SECRET: .GH_OAUTH_CLIENT_SECRET, RESEND_API_KEY, GOOGLE_CLIENT_ID,
                     GITHUB_CLIENT_ID: .GH_OAUTH_CLIENT_ID, STRIPE_PRICE_PRO, STRIPE_PRICE_ULTRA,
                     STRIPE_PRICE_EMPLOYER_BASIC, STRIPE_PRICE_EMPLOYER_PRO, STRIPE_PRICE_EMPLOYER_ULTRA,
-                    STRIPE_PRICE_TOPUP, DEV_AUTH_TOKEN}
+                    STRIPE_PRICE_TOPUP, DEV_AUTH_TOKEN, SENS_ACCESS_KEY, SENS_SECRET_KEY, SENS_SERVICE_ID, SMS_FROM}
                  | with_entries(select((.value // "") != ""))' >"$file"
           npx wrangler secret bulk "$file" $WRANGLER_ENV
           rm -f "$file"

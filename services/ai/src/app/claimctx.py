@@ -7,9 +7,16 @@ lost the token stops without emitting, recording usage, or changing status.
 
 from contextvars import ContextVar
 
+from app.domain.errors import DomainError
+
 
 class LostClaim(Exception):
     """This run no longer owns the chat job."""
+
+
+def ends_the_run(err: BaseException) -> bool:
+    """Billing, plan and lost-claim errors end the whole run, not just the call that hit them."""
+    return isinstance(err, LostClaim) or (isinstance(err, DomainError) and err.status < 500)
 
 
 claim_token: ContextVar[str] = ContextVar("chat_claim", default="")

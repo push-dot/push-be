@@ -1,4 +1,5 @@
-import { query, type Query } from "./db.ts";
+import { query } from './db.ts';
+import type { Query } from './db.ts';
 
 // Runs on Cloudflare Workers (no Redis). Neon ``rate_limits`` is the source of
 // truth: one CONSUME upsert per request while the bucket is not known full;
@@ -58,7 +59,7 @@ function syncRemoteWindow(window: number): void {
 }
 
 function rememberHits(bucket: string, hits: number | null, limit: number): void {
-  remoteHits.set(bucket, hits == null ? limit : hits);
+  remoteHits.set(bucket, hits ?? limit);
 }
 
 function memoryAllow(bucket: string, limit: number, window: number): boolean {
@@ -67,7 +68,7 @@ function memoryAllow(bucket: string, limit: number, window: number): boolean {
     memoryWindow = window;
   }
   const hits = memory.get(bucket) ?? 0;
-  if (hits >= limit) return false;
+  if (hits >= limit) {return false;}
   memory.set(bucket, hits + 1);
   return true;
 }
@@ -80,7 +81,7 @@ async function lease(q: Query, bucket: string, limit: number, window: number, ch
       leases.set(bucket, left - 1);
       return true;
     }
-    if ((remoteHits.get(bucket) ?? 0) >= limit) return false;
+    if ((remoteHits.get(bucket) ?? 0) >= limit) {return false;}
     // Only resolved counts are stored: a promise shared between requests would break Workers' per-request I/O.
     try {
       const result = await query(q, LEASE_SQL, [bucket, window * 60 + 120, limit, size]);
@@ -89,8 +90,8 @@ async function lease(q: Query, bucket: string, limit: number, window: number, ch
         continue;
       }
       const granted = Math.min(size, limit - (Number(result.rows[0].hits) - size));
-      if (granted < size) rememberHits(bucket, null, limit);
-      if (granted > 0) leases.set(bucket, (leases.get(bucket) ?? 0) + granted);
+      if (granted < size) {rememberHits(bucket, null, limit);}
+      if (granted > 0) {leases.set(bucket, (leases.get(bucket) ?? 0) + granted);}
     } catch {
       return memoryAllow(bucket, limit, window);
     }
@@ -112,9 +113,9 @@ export async function allow(
   const window = Math.floor(minute / windowMinutes);
   const bucket = `${kind}:${key || "unknown"}:${window}`;
   syncRemoteWindow(minute);
-  if (chunk > 1) return lease(q, bucket, limit, minute, chunk);
+  if (chunk > 1) {return lease(q, bucket, limit, minute, chunk);}
   const known = remoteHits.get(bucket);
-  if (known !== undefined && known >= limit) return false;
+  if (known !== undefined && known >= limit) {return false;}
   try {
     const result = await query(q, CONSUME_SQL, [bucket, (window + 2) * windowMinutes * 60, limit]);
     if (result.rows.length === 0) {

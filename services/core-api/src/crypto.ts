@@ -14,7 +14,7 @@ export async function masterKey(master: string): Promise<CryptoKey> {
     raw = new Uint8Array();
   }
   if (raw.length !== 32) {
-    if (!master) throw new Error("empty master key");
+    if (!master) {throw new Error("empty master key");}
     raw = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(master)));
   }
   return crypto.subtle.importKey("raw", asBuffer(raw), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
@@ -47,14 +47,14 @@ export async function decryptAes(
 
 export function bytesToBase64(bytes: Uint8Array): string {
   let bin = "";
-  for (const b of bytes) bin += String.fromCharCode(b);
+  for (const b of bytes) {bin += String.fromCharCode(b);}
   return btoa(bin);
 }
 
 export function base64ToBytes(value: string): Uint8Array {
   const bin = atob(value);
   const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  for (let i = 0; i < bin.length; i++) {out[i] = bin.charCodeAt(i);}
   return out;
 }
 
@@ -64,11 +64,11 @@ export async function pkceChallenge(verifier: string): Promise<string> {
 }
 
 export async function verifyPkce(verifier: string, challenge: string): Promise<boolean> {
-  if (!verifier) return false;
+  if (!verifier) {return false;}
   const got = await pkceChallenge(verifier);
-  if (got.length !== challenge.length) return false;
+  if (got.length !== challenge.length) {return false;}
   let diff = 0;
-  for (let i = 0; i < got.length; i++) diff |= got.charCodeAt(i) ^ challenge.charCodeAt(i);
+  for (let i = 0; i < got.length; i++) {diff |= got.charCodeAt(i) ^ challenge.charCodeAt(i);}
   return diff === 0;
 }
 

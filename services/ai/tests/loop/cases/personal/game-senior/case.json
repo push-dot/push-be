@@ -1,0 +1,43 @@
+{
+ "surface": "personal",
+ "domain": "게임 클라이언트",
+ "seniority": "시니어",
+ "text": "두 글을 읽고 렌더링 최적화 방식이 어떻게 다른지 비교해 줘. https://blog.example.com/render-a https://notes.example.org/render-b",
+ "max_turns": 4,
+ "script": {
+  "": [
+   {
+    "tool_calls": [
+     {
+      "name": "read_sources",
+      "id": "call-sources-1",
+      "args": {
+       "question": "렌더링 최적화 방식 비교",
+       "urls": [
+        "https://blog.example.com/render-a",
+        "https://notes.example.org/render-b"
+       ]
+      }
+     }
+    ]
+   },
+   "만든 것\n• 두 글의 최적화 방식 비교\n\n확인이 필요한 점\n• 두 번째 글은 측정 환경을 밝히지 않았어요"
+  ],
+  "너는 자료 하나만 읽는 하위 에이전트다": {
+   "findings": [
+    {
+     "quote": "화면 밖 물체는 그리기 전에 걸러 내어 그리기 호출을 줄였다.",
+     "claim": "첫 글은 보이지 않는 물체를 미리 걸러 낸다."
+    },
+    {
+     "quote": "비슷한 물체를 한 번에 묶어 그려 상태 전환 횟수를 줄였다.",
+     "claim": "둘째 글은 물체를 묶어 그린다."
+    }
+   ]
+  }
+ },
+ "pages": {
+  "https://blog.example.com/render-a": "화면 밖 물체는 그리기 전에 걸러 내어 그리기 호출을 줄였다.",
+  "https://notes.example.org/render-b": "비슷한 물체를 한 번에 묶어 그려 상태 전환 횟수를 줄였다."
+ }
+}

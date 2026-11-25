@@ -6,9 +6,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { recorder } from "../test-support/recorder.ts";
 
-import { handle, type CoreEnv, type Deps } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
 import { encodeCursor } from "../src/time.ts";
+
+const jsonOf = <T>(res: Response): Promise<T> => res.json();
 
 const NOW = "2026-10-21T00:00:00.000Z";
 const CONV = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -22,7 +25,7 @@ const get = (path: string): Request => new Request("https://core.example" + path
   headers: { authorization: "Bearer t" },
 });
 
-const run = async (request: Request, answer?: (sql: string) => Record<string, unknown>[] | null) => {
+const run = async (request: Request, answer?: Parameters<typeof recorder>[0]) => {
   resetLimits();
   const { calls, query } = recorder(answer);
   const res = await handle(request, env(), deps(query));
@@ -92,7 +95,7 @@ test("an archived document list pages by updated_at and restore enqueues ingest"
   ));
   assert.equal(listed.res.status, 200);
   assert.ok(listed.calls.some((c) => c.sql.includes("status = 'ARCHIVED'") && c.sql.includes("interval '30 days'") && c.sql.includes("(updated_at, id) <")));
-  const body = await listed.res.json() as { data: { archivedAt: string; purgeAt: string; updatedAt: string; status: string }[] };
+  const body = await jsonOf<{ data: Array<{ archivedAt: string; purgeAt: string; updatedAt: string; status: string }> }>(listed.res);
   assert.equal(body.data[0].status, "ARCHIVED");
   assert.equal(body.data[0].archivedAt, body.data[0].updatedAt);
   assert.equal(typeof body.data[0].purgeAt, "string");
@@ -102,9 +105,9 @@ test("an archived document list pages by updated_at and restore enqueues ingest"
 
   resetLimits();
   const { calls, query } = recorder((sql) => {
-    if (sql.includes("FROM documents WHERE id")) return [doc];
-    if (sql.includes("UPDATE documents SET revision = revision + 1") && sql.includes("FINALIZED")) return [{ status: "FINALIZED" }];
-    if (sql.includes("INSERT INTO ai_jobs")) return [{ id: "ffffffff-ffff-4fff-8fff-ffffffffffff", queue: "q:ingest" }];
+    if (sql.includes("FROM documents WHERE id")) {return [doc];}
+    if (sql.includes("UPDATE documents SET revision = revision + 1") && sql.includes("FINALIZED")) {return [{ status: "FINALIZED" }];}
+    if (sql.includes("INSERT INTO ai_jobs")) {return [{ id: "ffffffff-ffff-4fff-8fff-ffffffffffff", queue: "q:ingest" }];}
     return null;
   });
   const res = await handle(new Request("https://core.example/api/v1/documents/" + id + "/restore", {
@@ -113,7 +116,7 @@ test("an archived document list pages by updated_at and restore enqueues ingest"
     body: JSON.stringify({ expectedRevision: 2 }),
   }), env(), { query, now: () => new Date(NOW) });
   assert.equal(res.status, 200);
-  const restored = await res.json() as { data: { status: string; revision: number; archivedAt?: string } };
+  const restored = await jsonOf<{ data: { status: string; revision: number; archivedAt?: string } }>(res);
   assert.equal(restored.data.status, "FINALIZED");
   assert.equal(restored.data.revision, 3);
   assert.equal(restored.data.archivedAt, undefined);
@@ -122,12 +125,13 @@ test("an archived document list pages by updated_at and restore enqueues ingest"
   assert.equal(JSON.parse(String(job.params[7])).documentId, id);
 });
 
+const clauseOf = (explore: string): string => {
+  if (explore === "recommended") {return "p.job_category = (SELECT job_category";}
+  if (explore === "received") {return "o.profile_user_id = $1 AND o.sender_id = p.user_id";}
+  return "o.sender_id = $1 AND o.profile_user_id = p.user_id";
+};
+
 test("profile explore filters add the recommended and offers clauses", async () => {
-  const clauseOf = (explore: string): string => {
-    if (explore === "recommended") return "p.job_category = (SELECT job_category";
-    if (explore === "received") return "o.profile_user_id = $1 AND o.sender_id = p.user_id";
-    return "o.sender_id = $1 AND o.profile_user_id = p.user_id";
-  };
   for (const explore of ["recommended", "offers", "received"]) {
     const { res, calls } = await run(get("/api/v1/profiles?explore=" + explore));
     assert.equal(res.status, 200, explore);

@@ -3,7 +3,8 @@ import { beforeEach, test } from "node:test";
 import { postJson, recorder } from "../test-support/recorder.ts";
 
 import type { Query } from "../src/db.ts";
-import { handle, type CoreEnv } from "../src/handler.ts";
+import { handle } from '../src/handler.ts';
+import type { CoreEnv } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
 
 const ME = "12345678-1234-4678-8234-567812345678";
@@ -14,32 +15,34 @@ const LINK = "aaaaaaaa-0000-4000-8000-000000000001";
 const NOW = new Date("2026-10-22T00:00:00Z");
 const env: CoreEnv = { APP_ENV: "production" };
 
-type Row = Record<string, unknown>;
-type Call = { sql: string; params: unknown[] };
-type Body = { data: Row & Row[]; page?: { nextCursor: string | null; hasMore: boolean; total?: number }; error?: { code: string; message: string; details: unknown } };
+type Row = Awaited<ReturnType<Query>>["rows"][number];
+type Call = { sql: string; params: Array<unknown> };
+type Body<D = Row & Array<Row>> = { data: D; page?: { nextCursor: string | null; hasMore: boolean; total?: number }; error?: { code: string; message: string; details: unknown } };
 
-function world(reply: (sql: string, params: unknown[]) => Row[] | Error | undefined = () => undefined) {
-  const seen: Call[] = [];
+const rows = (r: Array<Row>) => ({ rows: r, rowCount: r.length });
+
+function world(reply: (sql: string, params: Array<unknown>) => Array<Row> | Error | undefined = () => undefined) {
+  const seen: Array<Call> = [];
   const query: Query = async (sql, params = []) => {
     seen.push({ sql, params });
-    const rows = (r: Row[]) => ({ rows: r, rowCount: r.length });
-    if (sql.includes("rate_limits")) return rows([{ hits: 1 }]);
+    if (sql.includes("rate_limits")) {return rows([{ hits: 1 }]);}
     if (sql.includes("access_tokens")) {
       return rows([{ id: ME, display_name: "Ada", locale: "ko", plan: "FREE", created_at: "2026-01-01T00:00:00Z", token_expires_at: "2099-01-01T00:00:00Z" }]);
     }
-    if (sql.startsWith("INSERT INTO idempotency_keys")) return rows([{ id: "idem" }]);
+    if (sql.startsWith("INSERT INTO idempotency_keys")) {return rows([{ id: "idem" }]);}
     const r = reply(sql, params);
-    if (r instanceof Error) throw r;
+    if (r instanceof Error) {throw r;}
     return rows(r ?? []);
   };
-  const call = async (method: string, path: string, body?: unknown) => {
+  const call = async <D = Row & Array<Row>>(method: string, path: string, body?: unknown) => {
     const res = await handle(new Request(`https://core.example${path}`, {
       method,
       headers: { authorization: "Bearer t", "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
       body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
     }), env, { query, now: () => NOW });
     const text = await res.text();
-    return { status: res.status, body: (text ? JSON.parse(text) : null) as Body };
+    const parsed: Body<D> = text ? JSON.parse(text) : null;
+    return { status: res.status, body: parsed };
   };
   return { seen, call };
 }
@@ -59,7 +62,7 @@ test("links: list is scoped to the caller, filters by kind and paginates", async
   assert.match(w.seen.at(-1)!.sql, /WHERE user_id = \$1 AND deleted_at IS NULL AND kind = \$2 ORDER BY created_at DESC, id DESC LIMIT \$3$/);
   assert.deepEqual(w.seen.at(-1)!.params, [ME, "github", 2]);
 
-  await w.call("GET", `/api/v1/me/links?cursor=${res.body.page!.nextCursor}`);
+  await w.call("GET", `/api/v1/me/links?cursor=${res.body.page.nextCursor}`);
   assert.match(w.seen.at(-1)!.sql, /WHERE user_id = \$1 AND deleted_at IS NULL AND \(created_at, id\) < \(\$2, \$3\)/);
 
   const bad = await w.call("GET", "/api/v1/me/links?kind=video");
@@ -84,7 +87,7 @@ test("links: create infers the kind from the host", async () => {
 });
 
 test("links: create validates url, kind, managed fields and aiRead", async () => {
-  const cases: [unknown, number, unknown][] = [
+  const cases: Array<[unknown, number, unknown]> = [
     [{ url: "ftp://x.example" }, 400, { field: "url" }],
     [{ url: "https://u:p@x.example" }, 400, { field: "url" }],
     [{ url: "" }, 400, { field: "url" }],
@@ -137,18 +140,18 @@ test("links: restore undoes a delete, repeats safely and stays scoped to the cal
   const links = new Map<string, { owner: string; deletedAt: unknown }>([[LINK, { owner: ME, deletedAt: null }]]);
   const w = world((sql, params) => {
     const link = links.get(String(params[0]));
-    const mine = link != null && link.owner === params[1];
+    const mine = (link !== null && link !== undefined) && link.owner === params[1];
     if (sql.startsWith("UPDATE user_links SET deleted_at = $3")) {
-      if (!mine || link.deletedAt != null) return [];
+      if (!mine || (link.deletedAt !== null && link.deletedAt !== undefined)) {return [];}
       link.deletedAt = params[2];
       return [{ id: LINK }];
     }
     if (sql.startsWith("UPDATE user_links SET deleted_at = NULL")) {
-      if (!mine) return [];
+      if (!mine) {return [];}
       link.deletedAt = null;
       return [{ id: LINK, kind: "blog", url: "https://b.example", title: "t", status: "READ", fit_count: 1, ai_read: true, created_at: "2026-10-01T00:00:00Z" }];
     }
-    if (sql.startsWith("UPDATE user_links SET title")) return mine && link.deletedAt == null ? [{ id: LINK }] : [];
+    if (sql.startsWith("UPDATE user_links SET title")) {return mine && (link.deletedAt === null || link.deletedAt === undefined) ? [{ id: LINK }] : [];}
     return undefined;
   });
   assert.equal((await w.call("DELETE", `/api/v1/me/links/${LINK}`)).status, 204);
@@ -188,7 +191,7 @@ test("devices: register upserts the caller's push token and delete removes it", 
 
 test("notifications: unread count, list mapping and pagination", async () => {
   const w = world((sql, params) => {
-    if (sql.startsWith("SELECT count(*)::int AS count FROM notifications")) return [{ count: "4" }];
+    if (sql.startsWith("SELECT count(*)::int AS count FROM notifications")) {return [{ count: "4" }];}
     if (sql.includes("FROM notifications WHERE user_id = $1")) {
       return [
         { id: "f2000000-0000-4000-8000-000000000002", type: "OFFER", title: "새 제안", body: null, target: '{"kind":"offer","id":"o1"}', read_at: null, created_at: "2026-10-02T00:00:00Z" },
@@ -204,7 +207,7 @@ test("notifications: unread count, list mapping and pagination", async () => {
   const list = await w.call("GET", "/api/v1/me/notifications?limit=1");
   assert.deepEqual(list.body.data, [{ id: "f2000000-0000-4000-8000-000000000002", type: "OFFER", title: "새 제안", body: "", target: { kind: "offer", id: "o1" }, readAt: null, createdAt: "2026-10-02T00:00:00Z" }]);
   assert.equal(list.body.page?.hasMore, true);
-  await w.call("GET", `/api/v1/me/notifications?cursor=${list.body.page!.nextCursor}`);
+  await w.call("GET", `/api/v1/me/notifications?cursor=${list.body.page.nextCursor}`);
   assert.match(w.seen.at(-1)!.sql, /AND \(created_at, id\) < \(\$2, \$3\)/);
   const rest = await w.call("GET", "/api/v1/me/notifications");
   assert.deepEqual(rest.body.data[1].target, {});
@@ -233,7 +236,7 @@ test("notifications: mark all, mark ids, and reject non-array ids", async () => 
 
 // --- offers --------------------------------------------------------------
 
-const offerRow = (extra: Row = {}): Row => ({
+const offerRow = (extra: Row = {}) => ({
   id: OFFER, sender_id: ME, sender_name: "Ada", profile_user_id: OTHER, recipient_name: "Bob", message: "join us",
   posting_id: POSTING, posting_title: "Backend", posting_company: "Acme", posting_image: "logo.png",
   posting_location: "서울 강남구", posting_career_min: 5, posting_career_max: null, posting_deadline: "2026-11-20T00:00:00.000Z",
@@ -242,11 +245,11 @@ const offerRow = (extra: Row = {}): Row => ({
 });
 
 const offerWorld = (opts: { posting?: boolean; profile?: Row | null; insert?: Error; pref?: boolean } = {}) => world((sql) => {
-  if (sql.startsWith("SELECT p.id FROM job_postings p JOIN company_members")) return opts.posting === false ? [] : [{ id: POSTING }];
-  if (sql.includes("FROM profiles p LEFT JOIN user_settings")) return opts.profile === null ? [] : [opts.profile ?? { user_id: OTHER, open_to_offers: true, profile_public: true }];
-  if (sql.startsWith("INSERT INTO offers")) return opts.insert;
-  if (sql.includes("AS enabled FROM user_settings")) return opts.pref === undefined ? [] : [{ enabled: opts.pref }];
-  if (sql.startsWith("SELECT o.id")) return [offerRow()];
+  if (sql.startsWith("SELECT p.id FROM job_postings p JOIN company_members")) {return opts.posting === false ? [] : [{ id: POSTING }];}
+  if (sql.includes("FROM profiles p LEFT JOIN user_settings")) {return opts.profile === null ? [] : [opts.profile ?? { user_id: OTHER, open_to_offers: true, profile_public: true }];}
+  if (sql.startsWith("INSERT INTO offers")) {return opts.insert;}
+  if (sql.includes("AS enabled FROM user_settings")) {return opts.pref === undefined ? [] : [{ enabled: opts.pref }];}
+  if (sql.startsWith("SELECT o.id")) {return [offerRow()];}
   return undefined;
 });
 
@@ -271,9 +274,9 @@ test("offers: sending an offer stores it, notifies the recipient and returns the
 
 test("offers: a sender that belongs to a company is a COMPANY party", async () => {
   const w = world((sql) => (sql.startsWith("SELECT oa.archived_at, o.id") ? [offerRow({ sender_company: "그린티켓" })] : undefined));
-  const res = await w.call("GET", `/api/v1/me/offers/${OFFER}`);
+  const res = await w.call<{ sender: { kind: string; companyName: string }; recipient: { kind: string } }>("GET", `/api/v1/me/offers/${OFFER}`);
   assert.equal(res.status, 200);
-  const offer = res.body.data as unknown as { sender: { kind: string; companyName: string }; recipient: { kind: string } };
+  const offer = res.body.data;
   assert.deepEqual([offer.sender.kind, offer.sender.companyName, offer.recipient.kind], ["COMPANY", "그린티켓", "PERSON"]);
 });
 
@@ -287,7 +290,7 @@ test("offers: a recipient who muted offer notifications gets no notification row
 
 test("offers: sending is refused for self, closed postings, hidden or closed profiles and duplicates", async () => {
   const dup = Object.assign(new Error("duplicate key value violates unique constraint"), { code: "23505" });
-  const cases: [ReturnType<typeof offerWorld>, string, unknown, number, string][] = [
+  const cases: Array<[ReturnType<typeof offerWorld>, string, unknown, number, string]> = [
     [offerWorld(), ME, { message: "hi" }, 400, "VALIDATION_ERROR"],
     [offerWorld(), OTHER, { message: "" }, 400, "VALIDATION_ERROR"],
     [offerWorld(), OTHER, { message: "hi", status: "ACCEPTED" }, 400, "VALIDATION_ERROR"],
@@ -309,7 +312,7 @@ test("offers: sending is refused for self, closed postings, hidden or closed pro
 
 test("offers: messages are listed only for a participant and paginate", async () => {
   const w = world((sql, params) => {
-    if (sql.startsWith("SELECT oa.archived_at, o.id")) return params[0] === OFFER && params[1] === ME ? [offerRow({ status: "ACCEPTED" })] : [];
+    if (sql.startsWith("SELECT oa.archived_at, o.id")) {return params[0] === OFFER && params[1] === ME ? [offerRow({ status: "ACCEPTED" })] : [];}
     if (sql.includes("FROM offer_messages m")) {
       return [
         { id: "f3000000-0000-4000-8000-000000000002", offer_id: OFFER, sender_id: OTHER, sender_name: "Bob", body: "hey", created_at: "2026-10-22T00:00:02Z" },
@@ -324,7 +327,7 @@ test("offers: messages are listed only for a participant and paginate", async ()
   assert.equal(res.body.page?.hasMore, true);
   const lookup = w.seen.find((c) => c.sql.startsWith("SELECT oa.archived_at, o.id"))!;
   assert.match(lookup.sql, /WHERE o\.id = \$1 AND \(o\.sender_id = \$2 OR o\.profile_user_id = \$2\)$/);
-  await w.call("GET", `/api/v1/me/offers/${OFFER}/messages?cursor=${res.body.page!.nextCursor}`);
+  await w.call("GET", `/api/v1/me/offers/${OFFER}/messages?cursor=${res.body.page.nextCursor}`);
   assert.match(w.seen.at(-1)!.sql, /AND \(m\.created_at, m\.id\) < \(\$2, \$3\)/);
 
   const stranger = await w.call("GET", `/api/v1/me/offers/${LINK}/messages`);
@@ -361,7 +364,7 @@ test("registering a device token unbinds it from any other account in the same s
 test("an offer may only attach a posting of the sender's own company", async () => {
   const { handle } = await import("../src/handler.ts");
   const { calls, query } = recorder((sql) => {
-    if (sql.includes("FROM job_postings")) return sql.includes("company_members") ? [] : [{ id: POSTING }];
+    if (sql.includes("FROM job_postings")) {return sql.includes("company_members") ? [] : [{ id: POSTING }];}
     return null;
   });
   const res = await handle(postJson(`/api/v1/profiles/${APP}/offer`, { message: "join", postingId: POSTING }, "00000000-0000-4000-8000-00000000000b"),
@@ -374,8 +377,8 @@ test("a second accept that loses the race gets 409 instead of overwriting the de
   const { handle } = await import("../src/handler.ts");
   const OFFER = "60000000-0000-4000-8000-000000000001";
   const { query } = recorder((sql) => {
-    if (sql.startsWith("SELECT oa.archived_at, o.id")) return [{ id: OFFER, sender_id: APP, profile_user_id: USER, status: "SENT", created_at: "2026-10-01T00:00:00Z" }];
-    if (sql.startsWith("UPDATE offers")) return sql.includes("status IN ('SENT', 'READ')") ? [] : [{ id: OFFER }];
+    if (sql.startsWith("SELECT oa.archived_at, o.id")) {return [{ id: OFFER, sender_id: APP, profile_user_id: USER, status: "SENT", created_at: "2026-10-01T00:00:00Z" }];}
+    if (sql.startsWith("UPDATE offers")) {return sql.includes("status IN ('SENT', 'READ')") ? [] : [{ id: OFFER }];}
     return null;
   });
   const res = await handle(postJson(`/api/v1/me/offers/${OFFER}/decline`, {}, "00000000-0000-4000-8000-00000000000c"), ENV, { query, now: () => NOW });

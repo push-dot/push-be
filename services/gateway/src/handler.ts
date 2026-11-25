@@ -64,8 +64,8 @@ async function route(request: Request, env: FrontEnv, deps: Deps, url: URL, path
   const named = path.match(/^\/api\/v1\/conversations\/([^/]+)/);
   if (named && named[1] !== "shared") {
     const conversationId = parseUuid(named[1]);
-    if (!conversationId) return fieldError("id", "must be a UUID", rid);
-    if (await isBotThread(deps, conversationId)) return errorResponse(404, "NOT_FOUND", "resource not found", rid);
+    if (!conversationId) {return fieldError("id", "must be a UUID", rid);}
+    if (await isBotThread(deps, conversationId)) {return errorResponse(404, "NOT_FOUND", "resource not found", rid);}
   }
   if (request.method === "GET" && path === "/api/v1/conversations") {
     return listConversations(request, env, deps, url, rid, limits, now);
@@ -107,7 +107,7 @@ async function route(request: Request, env: FrontEnv, deps: Deps, url: URL, path
     return jobSites(request, env, deps, rid, limits, now);
   }
   const owner = ownerOf(request.method, path);
-  if (owner === "deny") return errorResponse(404, "NOT_FOUND", "resource not found", rid);
+  if (owner === "deny") {return errorResponse(404, "NOT_FOUND", "resource not found", rid);}
   const proxied = owner === "core"
     ? await proxy(request, env.CORE, rid, await isInternalCall(request, env))
     : await proxyPython(request, env, deps, rid);

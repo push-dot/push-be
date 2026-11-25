@@ -8,7 +8,7 @@ import socket
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 import httpx
 
@@ -447,23 +447,172 @@ def github_usernames(text: str) -> list[str]:
     return out
 
 
-async def fetch_github_context(username: str, transport=None) -> str:
+_GH_TARGET_RE = re.compile(
+    r"github\s*\.?\s*com/([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)"
+    r"(?:/([A-Za-z0-9._-]+))?",
+    re.I)
+_README_LIMIT = 1500
+
+
+def github_targets(text: str) -> list[tuple[str, str | None]]:
+    seen, out = set(), []
+    for owner, repo in _GH_TARGET_RE.findall(text or ""):
+        owner = owner.lower()
+        repo = repo.removesuffix(".git") or None
+        if owner in _GH_SKIP or (owner, repo) in seen:
+            continue
+        seen.add((owner, repo))
+        out.append((owner, repo))
+    return out
+
+
+async def _github_readme(client: httpx.AsyncClient, owner: str, repo: str) -> str:
+    # raw.githubusercontent.com is outside the 60/h unauthenticated API budget.
+    try:
+        r = await client.get(
+            f"https://raw.githubusercontent.com/{owner}/{repo}/HEAD/README.md",
+            headers={"User-Agent": _UA})
+    except Exception:
+        return ""
+    if r.status_code != 200:
+        return ""
+    text = r.text.strip()[:_README_LIMIT]
+    return f"\n\n## {repo} README\n{text}" if text else ""
+
+
+_TREE_LIMIT = 300
+_FILE_LIMIT = 8000
+_TREE_SKIP = ("node_modules/", "dist/", "build/", ".next/", "vendor/", "__pycache__/")
+_TREE_SKIP_EXT = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".lock", ".map",
+                  ".woff", ".woff2", ".ttf", ".pdf", ".zip")
+
+
+_COMMIT_FILES = 20
+_PATCH_LIMIT = 1500
+
+
+class GithubRateLimited(Exception):
+    """GitHub refused for its rate limit, which callers must not read as "nothing there"."""
+
+
+def _check_limit(r: httpx.Response) -> httpx.Response:
+    if r.status_code in (403, 429) and (
+            r.headers.get("x-ratelimit-remaining") == "0" or "retry-after" in r.headers):
+        raise GithubRateLimited
+    return r
+
+
+def _github_headers() -> dict:
+    """GITHUB_TOKEN, when set, lifts the shared 60/h unauthenticated REST budget to 5000/h."""
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": _UA}
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+async def _github_get(path: str, params: dict | None, transport) -> httpx.Response | None:
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True, transport=transport) as c:
+            r = await c.get(f"https://api.github.com{path}", params=params,
+                            headers=_github_headers())
+    except Exception:
+        return None
+    return _check_limit(r)
+
+
+def _commit_head(item: dict) -> dict:
+    commit = item.get("commit") or {}
+    author = item.get("author") or {}
+    return {
+        "sha": str(item.get("sha") or "")[:12],
+        "date": str((commit.get("author") or {}).get("date") or "")[:10],
+        "author": str(author.get("login") or (commit.get("author") or {}).get("name") or ""),
+        "message": str(commit.get("message") or "").strip(),
+    }
+
+
+async def fetch_github_commits(owner: str, repo: str, *, author: str = "", path: str = "",
+                               per_page: int = 50, transport=None) -> list[dict]:
+    params = {"per_page": per_page}
+    if author:
+        params["author"] = author
+    if path:
+        params["path"] = path
+    r = await _github_get(f"/repos/{owner}/{repo}/commits", params, transport)
+    if r is None or r.status_code != 200:
+        return []
+    rows = []
+    for item in r.json() or []:
+        head = _commit_head(item)
+        head["message"] = head["message"].splitlines()[0][:200] if head["message"] else ""
+        rows.append(head)
+    return rows
+
+
+async def fetch_github_commit(owner: str, repo: str, sha: str, transport=None) -> dict:
+    r = await _github_get(f"/repos/{owner}/{repo}/commits/{sha}", None, transport)
+    if r is None or r.status_code != 200:
+        return {}
+    data = r.json() or {}
+    head = _commit_head(data)
+    head["message"] = head["message"][:1000]
+    head["files"] = [
+        {"path": str(item.get("filename") or ""), "additions": int(item.get("additions") or 0),
+         "deletions": int(item.get("deletions") or 0), "patch": str(item.get("patch") or "")[:_PATCH_LIMIT]}
+        for item in (data.get("files") or [])[:_COMMIT_FILES]
+    ]
+    return head
+
+
+async def fetch_github_tree(owner: str, repo: str, transport=None) -> list[str]:
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True, transport=transport) as c:
+            r = await c.get(
+                f"https://api.github.com/repos/{owner}/{repo}/git/trees/HEAD",
+                params={"recursive": "1"},
+                headers=_github_headers())
+    except Exception:
+        return []
+    if _check_limit(r).status_code != 200:
+        return []
+    paths = [item.get("path", "") for item in r.json().get("tree") or []
+             if item.get("type") == "blob"]
+    kept = [path for path in paths if path and not any(part in path for part in _TREE_SKIP)
+            and not path.lower().endswith(_TREE_SKIP_EXT)]
+    return kept[:_TREE_LIMIT]
+
+
+async def fetch_github_file(owner: str, repo: str, path: str, transport=None, *, limit: int = _FILE_LIMIT) -> str:
+    # raw.githubusercontent.com is outside the 60/h unauthenticated API budget.
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True, transport=transport) as c:
+            r = await c.get(
+                f"https://raw.githubusercontent.com/{owner}/{repo}/HEAD/{quote(path, safe='/')}",
+                headers={"User-Agent": _UA})
+    except Exception:
+        return ""
+    return r.text[:limit] if _check_limit(r).status_code == 200 else ""
+
+
+async def fetch_github_context(username: str, transport=None, *, repos=()) -> str:
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True, transport=transport) as c:
             r = await c.get(
                 f"https://api.github.com/users/{username}/repos",
                 params={"per_page": 30, "sort": "pushed", "type": "owner"},
-                headers={"Accept": "application/vnd.github+json",
-                         "User-Agent": _UA})
-            if r.status_code != 200:
+                headers=_github_headers())
+            if _check_limit(r).status_code != 200:
                 return ""
-            repos = r.json()
+            listed = [repo for repo in r.json() if not repo.get("fork")]
+            names = list(repos) or [repo["name"] for repo in listed[:3]]
+            readmes = await asyncio.gather(*(_github_readme(c, username, n) for n in names))
+    except GithubRateLimited:
+        raise
     except Exception:
         return ""
     lines = []
-    for repo in repos:
-        if repo.get("fork"):
-            continue
+    for repo in listed:
         desc = (repo.get("description") or "").strip()
         lang = repo.get("language") or "-"
         stars = repo.get("stargazers_count") or 0
@@ -473,4 +622,4 @@ async def fetch_github_context(username: str, transport=None) -> str:
             line += f" | {desc}"
         lines.append(line)
     return f"github.com/{username} 공개 레포 ({len(lines)}개, 최근 push 순)\n" \
-        + "\n".join(lines)
+        + "\n".join(lines) + "".join(readmes)

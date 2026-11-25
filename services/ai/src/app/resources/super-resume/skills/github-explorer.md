@@ -25,8 +25,8 @@ GitHub URL을 자동으로 추출한다:
 ```json
 {
   "personal_info": {
-    "github": "https://github.com/cyjoon68",
-    "links": ["https://github.com/cyjoon68/project-a", "..."]
+    "github": "https://github.com/example-user",
+    "links": ["https://github.com/example-user/project-a", "..."]
   }
 }
 ```
@@ -71,7 +71,7 @@ GitHub 링크도 없고 `missing_inputs.github_url`도 없을 때만 이 스킬�
 
 ```json
 {
-  "name": "go-cli-tool",
+  "name": "project-b",
   "already_in_resume": false,
   "match_evidence": "이력서의 어떤 프로젝트와도 이름/설명/URL이 일치하지 않음"
 }
@@ -117,13 +117,13 @@ GitHub 링크도 없고 `missing_inputs.github_url`도 없을 때만 이 스킬�
 
 ```json
 {
-  "username": "cyjoon68",
+  "username": "example-user",
   "repos_scanned": 12,
   "repos_matched": 3,
   "matched_repos": [
     {
-      "name": "super-resume",
-      "full_name": "cyjoon68/super-resume",
+      "name": "project-a",
+      "full_name": "example-user/project-a",
       "description": "AI-powered resume tailoring",
       "language": "Python",
       "stars": 5,
@@ -136,14 +136,14 @@ GitHub 링크도 없고 `missing_inputs.github_url`도 없을 때만 이 스킬�
       "match_reason": "공고 요구사항 'AI Agent 경험'과 일치",
       "resume_relevance": "high",
       "already_in_resume": true,
-      "match_evidence": "이력서 projects[2].name == 'super-resume'"
+      "match_evidence": "이력서 projects[2].name == 'project-a'"
     }
   ],
   "unmatched_repos": ["...", "..."],
   "new_discoveries": [
     {
-      "repo_name": "go-cli-tool",
-      "full_name": "cyjoon68/go-cli-tool",
+      "repo_name": "project-b",
+      "full_name": "example-user/project-b",
       "description": "A CLI tool for automating deployments",
       "tech_stack": ["Go", "Cobra", "Docker"],
       "stars": 8,

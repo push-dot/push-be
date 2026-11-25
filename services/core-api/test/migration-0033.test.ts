@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 
 const sql = readFileSync(resolve(
-  dirname(fileURLToPath(import.meta.url)),
+  import.meta.dirname,
   "../../../db/migrations/0033_posting_fit_revision.sql",
 ), "utf8");
 
