@@ -21,7 +21,7 @@ const notify = async (userId: string, conversationId: string, outcome: string) =
     method: "POST",
     headers: { authorization: "Bearer job-secret", "content-type": "application/json" },
     body: JSON.stringify({ userId, conversationId, jobId: crypto.randomUUID(), outcome }),
-  }), { APP_ENV: "production", INTERNAL_JOB_TOKEN: "job-secret", QUEUE_BACKEND: "redis", DISPATCH_ORIGIN: "" }, {
+  }), { APP_ENV: "production", INTERNAL_JOB_TOKEN: "job-secret", QUEUE_BACKEND: "", DISPATCH_ORIGIN: "" }, {
     query: db!.pg.query, transaction: db!.pg.transaction, now: () => new Date(), fetch: async () => new Response("{}"),
   });
   const body: { data: { id: string | null } } = await res.json();
