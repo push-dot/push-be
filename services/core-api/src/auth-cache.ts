@@ -4,7 +4,7 @@
 
 import type { UserRow } from "./types.ts";
 
-export const AUTH_CACHE_TTL_MS = 5_000;
+export const AUTH_CACHE_TTL_MS = 5000;
 const AUTH_CACHE_MAX_ENTRIES = 1024;
 
 export class AuthCache {
