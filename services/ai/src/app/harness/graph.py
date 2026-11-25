@@ -33,7 +33,8 @@ from app.harness.memory import memory_update, merge_memory
 from app.harness.policy import FLOW_STARTS, TRUSTED_READS, Decision, Exposure, Tier, decide
 from app.harness.sources import note_tool
 from app.harness.state import ThreadMemory
-from app.harness.status import job_of, running_job, thinking, tool_status, waiting, working
+from app.harness.status import (
+    acting_user, job_of, running_job, thinking, tool_status, waiting, working)
 from app.harness.tools import (
     RETRY_WARNING,
     ToolContext,
@@ -480,7 +481,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
     def _context(state: dict, call_id: str, mode: AccessMode, exposure: Exposure,
                  supplied: bool | None = None) -> ToolContext:
         return ToolContext(
-            user_id=str(state.get("user_id") or ""),
+            user_id=acting_user(state),
             company_id=state.get("company_id"),
             conversation_id=str(state.get("conversation_id") or ""),
             job_id=str(state.get("job_id") or ""),
