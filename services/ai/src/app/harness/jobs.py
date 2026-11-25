@@ -107,7 +107,10 @@ async def run_queue_turn(svc, ctx, cancelled) -> dict:
         raise
     finally:
         # Waits out a batch the ticker is writing, so cancelling it never drops that batch.
-        async with writing:
+        try:
+            async with writing:
+                ticker.cancel()
+        finally:
             ticker.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await ticker
