@@ -96,8 +96,8 @@ const postingPatch = async (asked: Asked): Promise<Need> => {
   }
   if (posting.status === "DRAFT") {return null;}
   onlyKeys(body, ["title", "description", "expectedRevision"]);
-  const text = Object.fromEntries((["title", "description"] as const).flatMap((key) => (key in body ? [[key, body[key]]] : [])));
-  return { tool: "update_published_posting", target: { posting_id: posting.id, ...text } };
+  // The tool omits an empty field and its card stores "", so a title-only change matches only a title-only card.
+  return { tool: "update_published_posting", target: { posting_id: posting.id, title: body.title ?? "", description: body.description ?? "" } };
 };
 
 const close = async (asked: Asked): Promise<Need> => {

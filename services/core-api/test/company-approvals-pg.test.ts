@@ -52,6 +52,9 @@ test("any member of the company answers a company card, and the card keeps who d
 
   assert.equal(await answer(outsider, thread, card, "reject"), 404, "not a member of any company");
   assert.equal(await answer(rival, thread, card, "reject"), 404, "a member of another company");
+  await rows("DELETE FROM company_members WHERE company_id = $1::uuid AND user_id = $2::uuid", [company, opener.id]);
+  assert.equal(await answer(opener, thread, card, "reject"), 404, "the opener after leaving the company");
+  await rows("INSERT INTO company_members (company_id, user_id, role) VALUES ($1::uuid, $2::uuid, 'ADMIN')", [company, opener.id]);
   const [untouched] = await rows("SELECT status, decided_by FROM approvals WHERE id = $1::uuid", [card]);
   assert.equal(untouched.status, "PENDING");
   assert.equal(untouched.decided_by, null);

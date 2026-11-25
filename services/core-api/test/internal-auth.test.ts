@@ -233,7 +233,7 @@ test("company act-as writes that reach people outside the company need the appro
   const post = { category: "work", title: "채용 소식", body: "함께해요" };
   const cases = [
     ["PATCH", `/api/v1/postings/${posting}`, { status: "OPEN" }, "DRAFT", "publish_posting", { posting_id: posting }],
-    ["PATCH", `/api/v1/postings/${posting}`, { title: "새 제목", expectedRevision: 3 }, "OPEN", "update_published_posting", { posting_id: posting, title: "새 제목" }],
+    ["PATCH", `/api/v1/postings/${posting}`, { title: "새 제목", expectedRevision: 3 }, "OPEN", "update_published_posting", { posting_id: posting, title: "새 제목", description: "" }],
     ["POST", `/api/v1/postings/${posting}/close`, {}, "OPEN", "close_posting", { posting_id: posting }],
     ["POST", `/api/v1/profiles/${profile}/offer`, { message: "커피챗 해요" }, "OPEN", "send_offer", { profile_id: profile, message: "커피챗 해요" }],
     ["POST", "/api/v1/posts", post, "OPEN", "create_company_post", post],

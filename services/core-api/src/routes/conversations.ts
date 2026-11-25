@@ -332,7 +332,7 @@ export const enqueueChatMessage = async (
   attachments: Array<JsonObject> = [],
 ): Promise<Response> => {
   const owned = await one(ctx.deps.query,
-    "SELECT c.id, c.company_id, co.plan AS company_plan, u.plan AS user_plan FROM conversations c LEFT JOIN companies co ON co.id = c.company_id LEFT JOIN users u ON u.id = $2 WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
+    "SELECT c.id, c.company_id, co.plan AS company_plan, u.plan AS user_plan FROM conversations c LEFT JOIN companies co ON co.id = c.company_id LEFT JOIN users u ON u.id = $2 WHERE c.id = $1 AND ((c.company_id IS NULL AND c.user_id = $2) OR (" + memberOfCaller("c.company_id", "$2") + "))",
     [conversationId, ctx.user.id]);
   if (!owned) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   const companyId = (owned.company_id === null || owned.company_id === undefined) ? undefined : String(owned.company_id);
@@ -356,7 +356,7 @@ export const enqueueChatMessage = async (
   }, ctx.deps.transaction);
   const messageId = await uuid5Url("push:chat:" + jobId + ":user");
   const inserted = await one(ctx.deps.query,
-    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), "
+    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND ((company_id IS NULL AND user_id = $1) OR (" + memberOfCaller("company_id", "$1") + "))), "
     + "msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $4, $1, conv.id, 'USER', $5, $6::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), "
     + REJECT_WAITING + ", ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT j.id, 'status', " + QUEUED_STATUS + " FROM ai_jobs j WHERE j.id = $3 AND EXISTS (SELECT 1 FROM msg) RETURNING job_id) SELECT conv.id FROM conv",
     [ctx.user.id, conversationId, jobId, messageId, text, JSON.stringify(attachments)]);
@@ -422,7 +422,7 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   const [saved, owned, contextDocument] = await Promise.all([
     access ? null : one(ctx.deps.query, SAVED_ACCESS_MODE, [ctx.user.id]),
     one(ctx.deps.query,
-      "SELECT c.company_id, co.plan, co.verified_at FROM conversations c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1 AND (c.user_id = $2 OR (" + memberOfCaller("c.company_id", "$2") + "))",
+      "SELECT c.company_id, co.plan, co.verified_at FROM conversations c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1 AND ((c.company_id IS NULL AND c.user_id = $2) OR (" + memberOfCaller("c.company_id", "$2") + "))",
       [conversationId, ctx.user.id]),
     (contextDocumentId === null || contextDocumentId === undefined) ? null : one(ctx.deps.query, "SELECT status FROM documents WHERE id = $1 AND user_id = $2", [contextDocumentId, ctx.user.id]),
   ]);
@@ -451,7 +451,7 @@ export async function postMessage(ctx: Ctx, idRaw: string): Promise<Response> {
   const jobId = crypto.randomUUID();
   const messageId = await uuid5Url("push:chat:" + jobId + ":user");
   const inserted = await one(ctx.deps.query,
-    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND (user_id = $1 OR (" + memberOfCaller("company_id", "$1") + "))), "
+    "WITH conv AS (SELECT id FROM conversations WHERE id = $2 AND ((company_id IS NULL AND user_id = $1) OR (" + memberOfCaller("company_id", "$1") + "))), "
     + "job AS (INSERT INTO chat_jobs (id, user_id, conversation_id, payload) SELECT $3, $1, conv.id, $4::jsonb FROM conv RETURNING id), "
     + "msg AS (INSERT INTO messages (id, user_id, conversation_id, role, text, attachments, operation_id, created_at) SELECT $6, $1, conv.id, 'USER', $7, '[]'::jsonb, NULL, now() FROM conv ON CONFLICT (id) DO NOTHING RETURNING id), "
     + REJECT_WAITING + ", ev AS (INSERT INTO chat_events (job_id, type, payload) SELECT job.id, 'status', $5::jsonb FROM job RETURNING job_id) SELECT job.id FROM job JOIN ev ON ev.job_id = job.id LEFT JOIN msg ON true",
@@ -538,7 +538,7 @@ export const resolveApproval = async (ctx: Ctx, idRaw: string, approvalRaw: stri
   const body = await readObject(ctx.request);
   forbidExtra(body, ["optionId", "optionIds"]);
   const row = await one(ctx.deps.query,
-    `SELECT id, status, kind, options, job_id, expires_at FROM approvals WHERE id = $1 AND conversation_id = $2 AND (user_id = $3 OR EXISTS (
+    `SELECT id, status, kind, options, job_id, expires_at FROM approvals WHERE id = $1 AND conversation_id = $2 AND ((user_id = $3 AND NOT EXISTS (SELECT 1 FROM conversations owned WHERE owned.id = approvals.conversation_id AND owned.company_id IS NOT NULL)) OR EXISTS (
        SELECT 1 FROM company_members m JOIN conversations owned ON owned.company_id = m.company_id
        WHERE owned.id = approvals.conversation_id AND m.user_id = $3))`,
     [approvalId, conversationId, ctx.user.id]);
@@ -623,7 +623,7 @@ const artifactName = (raw: string): string => {
 };
 
 const ARTIFACT_SQL = "SELECT encode(COALESCE(content, convert_to(body, 'UTF8')), 'base64') AS content FROM workspace_files"
-  + " WHERE conversation_id = $1 AND name = $3 AND EXISTS (SELECT 1 FROM conversations c WHERE c.id = $1 AND (c.user_id = $2 OR ("
+  + " WHERE conversation_id = $1 AND name = $3 AND EXISTS (SELECT 1 FROM conversations c WHERE c.id = $1 AND ((c.company_id IS NULL AND c.user_id = $2) OR ("
   + memberOfCaller("c.company_id", "$2") + ")))";
 
 /** GET /conversations/:id/artifacts/:name — bytes of one harness artifact from workspace_files. */

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { handle, resetLimits } from '../src/handler.ts';
+import { MESSAGES_SQL, STREAM_SQL } from '../src/middleware/ratelimit.ts';
 import { CANCEL_SQL } from '../src/routes/conversations.ts';
 import type { Deps, FrontEnv, Query } from '../src/handler.ts';
 
@@ -79,4 +80,13 @@ test("CANCEL_SQL keeps personal and bot jobs to their creator", () => {
   assert.match(CANCEL_SQL, /SELECT id FROM active WHERE mine/);
   assert.match(CANCEL_SQL, /\(company_id IS NULL AND user_id = \$2::uuid\) OR \(\$3::uuid IS NOT NULL AND company_id = \$3::uuid\)/,
     "a company conversation is reached only through current membership, not authorship");
+});
+
+test("the first-request reads reach a company conversation only through current membership", () => {
+  const rule = /\(company_id IS NULL AND user_id = \(SELECT id FROM live\)\) OR \(company_id IS NOT NULL AND company_id = \(SELECT company_id FROM auth\)\)/;
+  assert.match(MESSAGES_SQL, rule);
+  assert.match(STREAM_SQL, rule);
+  for (const sql of [MESSAGES_SQL, STREAM_SQL]) {
+    assert.doesNotMatch(sql, /AND \(user_id = \(SELECT id FROM live\) OR \(company_id IS NOT NULL/, "authorship alone never opens a company conversation");
+  }
 });
