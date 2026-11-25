@@ -16,13 +16,13 @@ async def main() -> None:
     from app.queue.streams import StreamQueue
     from app.queue.worker import Worker
     from app.workers.shutdown import stop_on_signals
-    from app.workers.handlers.notify import expo_push, make_notify
+    from app.workers.handlers.notify import expo_push, make_notify, prune_devices
 
     pool = await create_pool(os.environ["DATABASE_URL"])
     db = DB(pool)
     redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
     client = httpx.AsyncClient(timeout=10)
-    push = expo_push(os.environ.get("EXPO_ACCESS_TOKEN", "").strip(), client)
+    push = expo_push(os.environ.get("EXPO_ACCESS_TOKEN", "").strip(), client, prune_devices(db.q))
     worker = Worker(
         StreamQueue(redis),
         QueueJobs(ChatJobStore(db)),
