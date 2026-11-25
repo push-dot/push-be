@@ -262,10 +262,9 @@ class HarnessRuntime:
 
     async def _conversation(self, payload: dict) -> dict:
         context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
-        found = {
-            "company_id": payload.get("company_id") or context.get("company_id"),
-            "resume_state": context.get("resume_state"),
-        }
+        # company_id comes only from the conversation row: a payload or context value would let
+        # whoever writes the job pick the company. A failed read runs no company harness.
+        found = {"company_id": None, "resume_state": context.get("resume_state")}
         try:
             row = await self.svc.db.q().fetchrow(
                 "SELECT c.company_id, c.resume_state, c.posting_id, c.application_id, "
