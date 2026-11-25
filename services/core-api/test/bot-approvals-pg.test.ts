@@ -146,6 +146,12 @@ test("a bot's allowed sites are listed by host and taken back without a confirm"
     { host: "moapay.notion.site", kind: "company", grantedAt: "2026-11-05T01:00:00Z" },
   ], "BotProfileAllowed: 11월 3일 허용 · 채용 공고, 11월 5일 허용 · 회사 소개");
 
+  const detail = await db.call(user, "GET", `/bots/${bot}`);
+  assert.deepEqual(detail.data.allowedSites, [
+    { id: "careers.moapay.co.kr", host: "careers.moapay.co.kr", kind: "posting", allowedAt: "2026-11-03T01:00:00Z" },
+    { id: "moapay.notion.site", host: "moapay.notion.site", kind: "company", allowedAt: "2026-11-05T01:00:00Z" },
+  ], "the bot profile reads its allowed sites from the detail");
+
   for (let i = 0; i < 2; i++) {
     assert.equal((await db.call(user, "DELETE", `/bots/${bot}/site-grants/careers.moapay.co.kr`)).status, 204);
   }
