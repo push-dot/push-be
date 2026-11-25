@@ -120,8 +120,8 @@ test("an author who left the company can no longer rename, archive or read jobs 
   await rows("DELETE FROM company_members WHERE company_id = $1::uuid AND user_id = $2::uuid", [company, author.id]);
 
   assert.equal((await db.call(author, "PATCH", `/conversations/${thread}`, { title: "몰래", expectedRevision: 1 })).status, 404, "rename");
-  assert.equal((await db.call(author, "POST", `/conversations/${thread}/archive`)).status, 404, "archive");
-  assert.equal((await db.call(author, "POST", `/conversations/${thread}/unarchive`)).status, 404, "unarchive");
+  assert.equal((await db.call(author, "POST", `/conversations/${thread}/archive`, { expectedRevision: 1 })).status, 404, "archive");
+  assert.equal((await db.call(author, "POST", `/conversations/${thread}/unarchive`, { expectedRevision: 1 })).status, 404, "unarchive");
   assert.equal((await db.call(author, "GET", `/ai/jobs/${job}`)).status, 404, "job status");
   assert.equal((await db.call(teammate, "GET", `/ai/jobs/${job}`)).status, 200, "a current member still reads it");
   const [{ title }] = await rows("SELECT title FROM conversations WHERE id = $1::uuid", [thread]);
