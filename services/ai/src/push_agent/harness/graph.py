@@ -11,6 +11,7 @@ from langgraph.graph import END, START, StateGraph
 from app.harness.approval import approval_id_for
 from app.harness.binding import bound_services
 from app.harness.graph import turn_model
+from app.harness.memory import memory_update, merge_memory
 from app.harness.status import acting_user, job_of
 from app.harness.tools import ToolContext, call_structured, emit
 
@@ -90,10 +91,14 @@ def build_employer_graph(agent, tools, after_agent, checkpointer, *, db, core=No
         return "agent"
 
     async def route(state) -> dict:
+        # A shared company thread grows with every member's turns; fold the old part like a
+        # personal thread does, so each turn does not send the whole history.
+        memory = await memory_update(
+            list(state.get("messages") or []), state.get("summary") or "", turn_model.get())
         start = state.get("start_flow")
         if isinstance(start, dict) and start.get("name") in FLOWS and _target(state) == "agent":
-            return {"flow": {"step": "start", **start}, "start_flow": None}
-        return {"start_flow": None}
+            return merge_memory(memory, {"flow": {"step": "start", **start}, "start_flow": None})
+        return merge_memory(memory, {"start_flow": None})
 
     async def leave(state) -> dict:
         flow = flow_of(state)

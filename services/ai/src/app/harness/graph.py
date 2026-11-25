@@ -465,11 +465,10 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 content = content.rstrip() + "\n\n" + quick["instruction"] + "\n시트 입력: " + sheet
         if not messages or not isinstance(messages[0], SystemMessage):
             messages = [SystemMessage(content=content), *messages]
-        if spec.id == "personal":
-            remembered = (state.get("summary") or "").strip()
-            if remembered:
-                folded = SystemMessage(content=as_data(remembered, "summary", None))
-                messages = [messages[0], folded, *messages[1:]]
+        remembered = (state.get("summary") or "").strip()
+        if remembered:
+            folded = SystemMessage(content=as_data(remembered, "summary", None))
+            messages = [messages[0], folded, *messages[1:]]
         chat = turn_model.get() or model
         over = int(state.get("tool_calls_used") or 0) >= _CAP
         target = chat if over else chat.bind_tools(list(structured.values()))

@@ -269,6 +269,7 @@ def build_flows(
     if read_pdf is None:
         from app.ingest.pdf_text import read_pdf_text as read_pdf
     from app.harness.graph import HarnessState
+    from app.harness.state import ThreadMemory
 
     def _chat(state):
         return model_for(state) if model_for is not None else None
@@ -279,7 +280,7 @@ def build_flows(
         # BYO keys and tests, revisit if a non-gate model ever runs in production.
         return None if chat is None else (light_model(chat) or chat)
 
-    class EmployerState(HarnessState, total=False):
+    class EmployerState(HarnessState, ThreadMemory, total=False):
         flow: dict | None
         start_flow: dict | None
 
