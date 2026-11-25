@@ -233,7 +233,7 @@ class ConversationService:
         finally:
             self._sem.release()
 
-    async def _notify_ai_done(self, job, result) -> None:
+    async def _notify_ai_done(self, job, result, outcome: str | None = None) -> None:
         try:
             from app.queue.worker import core_from_env, notify_turn_done
 
@@ -242,7 +242,7 @@ class ConversationService:
                 core = core_from_env()
             if isinstance(job, dict) and "type" not in job:
                 job = {**job, "type": "chat"}
-            await notify_turn_done(core, job, result)
+            await notify_turn_done(core, job, result, outcome)
         except Exception:
             logging.getLogger(__name__).exception("AI_DONE insert failed")
 
@@ -252,6 +252,7 @@ class ConversationService:
         p = job["payload"]
         terminal = False
         operation_seen = False
+        awaiting = None
         try:
             async for mode, chunk in self.graph.astream(
                 {
@@ -274,6 +275,8 @@ class ConversationService:
                     if await self.jobs.status(job_id) == "CANCELLED":
                         terminal = True
                         break
+                    if chunk.get("type") == "done" and chunk.get("awaiting"):
+                        awaiting = chunk["awaiting"]
                     if "token" in chunk:
                         await self.jobs.emit(job_id, "token", {"text": chunk["token"]})
                     else:
@@ -295,7 +298,10 @@ class ConversationService:
                     terminal = True
                 else:
                     await self.jobs.finish(job_id, "DONE")
-                    await self._notify_ai_done(job, {"operationId": ""} if operation_seen else {})
+                    done = {"operationId": ""} if operation_seen else {}
+                    if awaiting:
+                        done = {"awaiting": awaiting}
+                    await self._notify_ai_done(job, done)
                     terminal = True
         except DomainError as e:
             await self._drop_enqueued_user_message(job_id)
@@ -305,6 +311,7 @@ class ConversationService:
                 {"error": {"code": e.code, "message": e.message, "details": e.details}},
             )
             await self.jobs.finish(job_id, "FAILED", e.code)
+            await self._notify_ai_done(job, None, "failed")
             terminal = True
         except Exception as e:
             log.exception("chat job %s failed", job_id)
@@ -320,6 +327,7 @@ class ConversationService:
                     },
                 )
                 await self.jobs.finish(job_id, "FAILED", "NOT_CONFIGURED")
+                await self._notify_ai_done(job, None, "failed")
                 terminal = True
             elif job["attempt"] < 3:
                 await self.jobs.requeue(job_id, 2.0 * job["attempt"])
@@ -329,6 +337,7 @@ class ConversationService:
                     job_id, "error", {"error": {"code": "INTERNAL", "message": "internal error"}}
                 )
                 await self.jobs.finish(job_id, "FAILED", str(e)[:500])
+                await self._notify_ai_done(job, None, "failed")
                 terminal = True
 
     async def _drop_enqueued_user_message(self, job_id: UUID) -> None:

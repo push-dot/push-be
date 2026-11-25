@@ -199,3 +199,24 @@ async def test_run_job_notifies_only_after_an_operation():
     await failed._run_job(_chat_job(user_id, conversation_id))
     assert failed.jobs.finished == ["REQUEUE"]
     assert failed.core.calls == []
+
+
+async def test_run_job_posts_waiting_for_a_card_and_failed_for_the_last_attempt():
+    user_id = uuid4()
+    conversation_id = uuid4()
+    card = {"type": "done", "awaiting": "approval"}
+    waiting = _job_svc(chunks=[("custom", card), ("values", {})])
+    job = _chat_job(user_id, conversation_id)
+    await waiting._run_job(job)
+    assert waiting.core.calls[0][3]["outcome"] == "waiting"
+
+    failed = _job_svc(RuntimeError("model down"))
+    last = {**_chat_job(user_id, conversation_id), "attempt": 3}
+    await failed._run_job(last)
+    assert failed.jobs.finished == ["FAILED"]
+    assert failed.core.calls[0][3] == {
+        "userId": str(user_id),
+        "conversationId": str(conversation_id),
+        "jobId": str(last["id"]),
+        "outcome": "failed",
+    }

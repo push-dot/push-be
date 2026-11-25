@@ -33,10 +33,20 @@ def core_from_env():
     return CoreClient(origin, os.environ.get("INTERNAL_API_SECRET", "").strip(), job_token=token)
 
 
-async def notify_turn_done(core, job, result) -> None:
-    if core is None or job.get("type") not in _TURN:
+def _outcome(result) -> str | None:
+    if not isinstance(result, dict):
+        return None
+    if result.get("awaiting"):
+        return "waiting"
+    return "done" if "operationId" in result else None
+
+
+async def notify_turn_done(core, job, result, outcome: str | None = None) -> None:
+    outcome = outcome or _outcome(result)
+    if core is None or outcome is None or job.get("type") not in _TURN:
         return
-    if not isinstance(result, dict) or "operationId" not in result:
+    # Only bot threads push a wait or a failure; employer turns run on the web.
+    if outcome != "done" and job.get("type") != "chat":
         return
     conversation_id = job.get("conversation_id")
     if not conversation_id:
@@ -50,6 +60,7 @@ async def notify_turn_done(core, job, result) -> None:
                 "userId": str(job["user_id"]),
                 "conversationId": str(conversation_id),
                 "jobId": str(job["id"]),
+                **({} if outcome == "done" else {"outcome": outcome}),
             },
         )
     except Exception:
@@ -270,6 +281,7 @@ class Worker:
             except JobFailed as err:
                 await self.db.fail_final(job["id"], err.error, self.now())
                 await self.release(self.db, job["id"])
+                await notify_turn_done(self._core(), job, None, "failed")
                 await self.queue.ack(msg.queue, self.group, msg.id)
                 return "failed"
             finally:
@@ -295,6 +307,7 @@ class Worker:
                     await self.db.emit(job["id"], "error", {"error": error})
                 await self.db.fail_final(job["id"], error, self.now())
                 await self.release(self.db, job["id"])
+                await notify_turn_done(self._core(), job, None, "failed")
                 await self.queue.ack(msg.queue, self.group, msg.id)
                 return "failed"
             info = await self.db.fail(job["id"], {"message": str(err)}, self.now())
@@ -305,6 +318,7 @@ class Worker:
             if info["status"] == "DEAD":
                 await self.queue.dead(job["id"], str(err))
                 await self.release(self.db, job["id"])
+                await notify_turn_done(self._core(), job, None, "failed")
             else:
                 when = self.now() + timedelta(seconds=backoff_seconds(info["attempts"]))
                 await self.queue.delay(job["queue"], job["id"], when)

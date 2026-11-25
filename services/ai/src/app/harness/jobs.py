@@ -47,6 +47,8 @@ async def run_queue_turn(svc, ctx, cancelled) -> dict:
                     if await cancelled(job["id"]):
                         raise JobCancelled()
                 if mode == "custom" and isinstance(chunk, dict):
+                    if chunk.get("type") == "done" and chunk.get("awaiting"):
+                        result["awaiting"] = chunk["awaiting"]
                     if "token" in chunk:
                         await ctx.emit("token", {"text": chunk["token"]})
                     elif (live := _live_event(chunk, job["id"])) is not None:
