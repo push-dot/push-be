@@ -81,21 +81,28 @@ const DUE_REMINDERS = claimed(`SELECT e.user_id, e.id, e.title, 'remind:' || e.i
     WHERE e.remind_at IS NOT NULL AND e.remind_at <= $1::timestamptz AND e.remind_at > $3::timestamptz AND COALESCE(s.notify_deadline, true)`);
 
 // A company bot watches its posting and its company: a close after the bot was made, and an open posting of the
-// same company made after the bot (a draft counts once it is published). The dedupe key per user and posting is
-// the only state: rows already claimed or for opted-out users are dropped before the batch limit, so a later run
-// picks up where this one stopped, and one user with several bots on a company hears once.
-const DUE_WATCH = `WITH changes AS (
+// same company made after the bot (a draft counts once it is published) that the user has no bot for yet.
+// `watch:baseline`, claimed on the first run, is when watching began, so the first run announces nothing older.
+// The dedupe key per user and posting is the only other state: rows already claimed or for opted-out users are
+// dropped before the batch limit, so a later run picks up where this one stopped, and a user hears once.
+const DUE_WATCH = `WITH mark AS (
+    INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ('watch:baseline', $1::timestamptz) ON CONFLICT (dedupe_key) DO NOTHING
+  ), base AS (
+    SELECT COALESCE((SELECT created_at FROM notification_dedupes WHERE dedupe_key = 'watch:baseline'), $1::timestamptz) AS at
+  ), changes AS (
     SELECT b.user_id, b.display_name, p.id, p.title, 'closed' AS change, p.closed_at AS at,
       'watch:closed:' || b.user_id || ':' || p.id AS dedupe_key
-    FROM bots b JOIN job_postings p ON p.id = b.posting_id
+    FROM bots b JOIN job_postings p ON p.id = b.posting_id CROSS JOIN base
     WHERE b.kind = 'company' AND b.deleted_at IS NULL AND NOT b.notifications_muted
-      AND p.closed_at > GREATEST(b.created_at, $2::timestamptz)
+      AND p.closed_at > GREATEST(b.created_at, base.at, $2::timestamptz)
     UNION ALL
     SELECT b.user_id, b.display_name, p.id, p.title, 'new', p.created_at, 'watch:new:' || b.user_id || ':' || p.id
-    FROM bots b JOIN job_postings src ON src.id = b.posting_id
-    JOIN job_postings p ON p.company_id = COALESCE(b.company_id, src.company_id) AND p.id <> src.id
+    FROM bots b LEFT JOIN job_postings src ON src.id = b.posting_id CROSS JOIN base
+    JOIN job_postings p ON p.company_id = COALESCE(b.company_id, src.company_id)
     WHERE b.kind = 'company' AND b.deleted_at IS NULL AND NOT b.notifications_muted
-      AND COALESCE(p.status, 'OPEN') = 'OPEN' AND p.closed_at IS NULL AND p.created_at > GREATEST(b.created_at, $3::timestamptz)
+      AND COALESCE(p.status, 'OPEN') = 'OPEN' AND p.closed_at IS NULL
+      AND p.created_at > GREATEST(b.created_at, base.at, $3::timestamptz)
+      AND NOT EXISTS (SELECT 1 FROM bots own WHERE own.user_id = b.user_id AND own.posting_id = p.id AND own.deleted_at IS NULL)
   ), due AS (
     SELECT DISTINCT ON (c.dedupe_key) c.* FROM changes c
     JOIN users u ON u.id = c.user_id AND u.deletion_requested_at IS NULL
