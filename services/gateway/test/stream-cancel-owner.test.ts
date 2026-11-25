@@ -2,12 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { handle, resetLimits } from '../src/handler.ts';
+import { CANCEL_SQL } from '../src/routes/conversations.ts';
 import type { Deps, FrontEnv, Query } from '../src/handler.ts';
-
-const jsonOf = async <T>(res: Response): Promise<T> => {
-  const value: T = await res.json();
-  return value;
-};
 
 const USER_A = "aaaaaaaa-0000-4000-8000-00000000000a";
 const USER_B = "bbbbbbbb-0000-4000-8000-00000000000b";
@@ -38,7 +34,8 @@ const userRow = (id: string) => ({
 });
 
 // Applies the cancel statement the way Postgres does: a company member can see
-// the conversation, and the update hits only when the SQL keeps the job's creator.
+// the conversation, and may stop a job only when the SQL lets any member of a
+// company conversation do so.
 function queryFor(caller: string, job: Job): Query {
   return async (sql, params = []) => {
     if (sql.startsWith("WITH auth") || (sql.includes("FROM access_tokens") && !sql.startsWith("WITH found"))) {
@@ -53,7 +50,7 @@ function queryFor(caller: string, job: Job): Query {
       return [{ conversation_id: CONV, job_id: active ? job.id : null }];
     }
     if (!active) {return [{ conversation_id: CONV, job_id: null, mine: null }];}
-    const restricts = sql.includes("j.user_id = $2::uuid") && sql.includes("AND user_id = $2::uuid");
+    const restricts = !sql.includes("OR found.company_id IS NOT NULL");
     const mine = job.userId === userId;
     if (restricts && !mine) {return [{ conversation_id: CONV, job_id: null, mine: false }];}
     job.status = "CANCELLED";
@@ -68,17 +65,16 @@ const cancel = (user: string, query: Query): Promise<Response> => handle(new Req
   { method: "POST", headers: { authorization: `Bearer tok-${user}` } },
 ), env(), deps(query));
 
-test("member B cannot cancel member A's running job; A can cancel their own", async () => {
+test("any member stops a company conversation's running job", async () => {
   resetLimits();
   const job: Job = { id: JOB, userId: USER_A, status: "RUNNING" };
-  const denied = await cancel(USER_B, queryFor(USER_B, job));
-  assert.equal(denied.status, 403);
-  assert.equal((await jsonOf<{ error: { code: string } }>(denied)).error.code, "FORBIDDEN");
-  assert.equal(job.status, "RUNNING");
-
-  resetLimits();
-  const ok = await cancel(USER_A, queryFor(USER_A, job));
-  assert.equal(ok.status, 200);
-  assert.deepEqual(await ok.json(), { data: { jobId: JOB, status: "CANCELLED" } });
+  const stopped = await cancel(USER_B, queryFor(USER_B, job));
+  assert.equal(stopped.status, 200);
+  assert.deepEqual(await stopped.json(), { data: { jobId: JOB, status: "CANCELLED" } });
   assert.equal(job.status, "CANCELLED");
+});
+
+test("CANCEL_SQL keeps personal and bot jobs to their creator", () => {
+  assert.match(CANCEL_SQL, /\(j\.user_id = \$2::uuid OR found\.company_id IS NOT NULL\) AS mine/);
+  assert.match(CANCEL_SQL, /SELECT id FROM active WHERE mine/);
 });

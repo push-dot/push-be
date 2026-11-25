@@ -189,10 +189,10 @@ const ACTIVE_JOB = "SELECT j.id FROM chat_jobs j JOIN found ON found.id = j.conv
 const ACTIVE_JOB_SQL = SCOPED_FOUND
   + " SELECT (SELECT id FROM found) AS conversation_id, (" + ACTIVE_JOB + ") AS job_id";
 
-// A company conversation is visible to every member, but only the member who
-// created the job may cancel it. `mine` is false when the running job belongs
-// to someone else, and null when there is no running job.
-const CANCEL_JOB = "SELECT j.id, (j.user_id = $2::uuid) AS mine FROM chat_jobs j "
+// A company conversation is shared, so any member may stop its running job. In a
+// personal or bot conversation only the job's creator may. `mine` is false when
+// the caller may not stop the running job, and null when there is no running job.
+const CANCEL_JOB = "SELECT j.id, (j.user_id = $2::uuid OR found.company_id IS NOT NULL) AS mine FROM chat_jobs j "
   + "JOIN found ON found.id = j.conversation_id "
   + "WHERE j.status IN ('PENDING', 'RUNNING') "
   + "ORDER BY j.created_at DESC LIMIT 1";
@@ -203,7 +203,7 @@ const CANCEL_JOB = "SELECT j.id, (j.user_id = $2::uuid) AS mine FROM chat_jobs j
 const cancelSql = (found: string, seen: string): string => found + ", active AS (" + CANCEL_JOB + "), job AS ("
   + "SELECT id FROM active WHERE mine), cancelled AS ("
   + "UPDATE chat_jobs SET status = 'CANCELLED', updated_at = now() "
-  + "WHERE id = (SELECT id FROM job) AND user_id = $2::uuid AND status IN ('PENDING', 'RUNNING') RETURNING id"
+  + "WHERE id = (SELECT id FROM job) AND status IN ('PENDING', 'RUNNING') RETURNING id"
   + ") SELECT " + seen + ", (SELECT id FROM cancelled) AS job_id, "
   + "(SELECT mine FROM active) AS mine, chat_run_resumable((SELECT id FROM found)) AS resumable";
 
