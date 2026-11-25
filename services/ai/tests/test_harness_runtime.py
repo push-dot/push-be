@@ -500,6 +500,27 @@ async def test_queue_turn_writes_a_quiet_batch_before_a_cancel(monkeypatch):
     assert ctx.events == [("token", {"text": "지금까지"})], "the timer wrote the batch during the pause"
 
 
+async def test_queue_turn_keeps_a_batch_the_timer_is_writing_when_the_stream_ends():
+    import asyncio
+
+    class SlowCtx(_JobCtx):
+        async def emit(self, kind, payload):
+            await asyncio.sleep(0.3)
+            await super().emit(kind, payload)
+
+    class Graph:
+        async def astream(self, *args, **kwargs):
+            yield "custom", {"token": "마지막"}
+            await asyncio.sleep(0.15)
+
+    async def cancelled(_job_id):
+        return False
+
+    ctx = SlowCtx()
+    await jobs.run_queue_turn(SimpleNamespace(graph=Graph()), ctx, cancelled)
+    assert ctx.events == [("token", {"text": "마지막"})]
+
+
 async def test_queue_turn_writes_the_pending_batch_when_the_graph_fails():
     class Graph:
         async def astream(self, *args, **kwargs):
