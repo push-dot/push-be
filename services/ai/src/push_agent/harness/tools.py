@@ -92,6 +92,14 @@ class FitArgs(BaseModel):
     content: str = ""
 
 
+def _approval(name, tier, ctx: ToolContext) -> str | None:
+    """The card core checks: every company write that reaches people outside it is asked
+    (runtime.py company access mode), and core refuses it without the approved card."""
+    if name in ALWAYS_ASK_TOOLS or tier is Tier.RISKY_WRITE:
+        return approval_id_for(ctx.job_id, ctx.tool_call_id)
+    return None
+
+
 def _http(
     name, tier, model, summary, method, path_of,
     *, write=False, body_of=None, wrap=None, display=None,
@@ -104,7 +112,7 @@ def _http(
             company_id=ctx.company_id,
             json=body_of(args) if body_of else None,
             idempotency_key=idempotency_key(ctx.job_id, ctx.tool_call_id) if write else None,
-            approval_id=approval_id_for(ctx.job_id, ctx.tool_call_id) if name in ALWAYS_ASK_TOOLS else None,
+            approval_id=_approval(name, tier, ctx),
         )
         if wrap == "draft":
             return {"draft": data}
@@ -126,6 +134,7 @@ def _patch_posting(name, tier, model, summary, body_of, *, draft_only=False):
             company_id=ctx.company_id,
             json={**body_of(args), "expectedRevision": current.get("revision")},
             idempotency_key=idempotency_key(ctx.job_id, ctx.tool_call_id),
+            approval_id=_approval(name, tier, ctx),
         )
 
     return ToolSpec(name, tier, model, run, lambda _args: summary)

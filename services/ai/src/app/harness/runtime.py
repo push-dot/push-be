@@ -13,7 +13,7 @@ from langgraph.types import Command
 
 from app.domain import entities as ent
 from app.domain.quick_starts import quick_start_seed
-from app.domain.access_mode import resolve_access_mode
+from app.domain.access_mode import AccessMode, resolve_access_mode
 from app.domain.errors import INTERNAL, DomainError
 from app.framework.models import _content
 from app.framework.untrusted import strip_exfil
@@ -145,6 +145,10 @@ def _state(payload: dict, conversation: dict) -> dict:
     text = payload.get("text") or ""
     mode = resolve_access_mode(payload.get("access_mode"), None)
     company_id = conversation.get("company_id")
+    if company_id and mode is AccessMode.BYPASS:
+        # A company's postings, offers and posts reach people outside it: one member's
+        # "바로 실행" never skips their card (api-spec:821).
+        mode = AccessMode.AUTO
     message_id = _user_message_id(payload.get("job_id"))
     return {
         "messages": [HumanMessage(content=text, id=message_id)] if text else [],
