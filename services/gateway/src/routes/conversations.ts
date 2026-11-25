@@ -570,6 +570,11 @@ const EVENT_PAGE = 200;
 const EVENTS_SQL = "SELECT id, type, payload, " + tsText("created_at") + " AS created_at FROM chat_events "
   + `WHERE job_id = $1::uuid AND id > $2 ORDER BY id LIMIT ${EVENT_PAGE}`;
 
+// A connection that would close before sending anything keeps polling while its job is still
+// live: the app reads an empty connection as the end of the run. Capped near the job deadline.
+const LIVE_JOB_SQL = "SELECT 1 FROM chat_jobs WHERE id = $1::uuid AND status IN ('PENDING', 'RUNNING')";
+const LIVE_ROUNDS = 45;
+
 const jobEvents = async (request: Request, jobId: string, start: number, env: FrontEnv, deps: Deps, rid: string, bot = false): Promise<Response> => {
   const release = openStream(await sha256Hex(request.headers.get("authorization") || ""));
   if (!release) {return errorResponse(429, "RATE_LIMITED", "too many open streams", rid);}
@@ -589,7 +594,9 @@ const jobEvents = async (request: Request, jobId: string, start: number, env: Fr
       send("retry: 400\n\n");
       try {
         let idle = 0;
-        for (let i = 0; i < polls; i++) {
+        let budget = polls;
+        let sent = false;
+        for (let i = 0; i < budget; i++) {
           if (!open) {break;}
           const rows = await deps.query(EVENTS_SQL, [jobId, after]);
           let terminal = false;
@@ -598,6 +605,7 @@ const jobEvents = async (request: Request, jobId: string, start: number, env: Fr
             const payload = payloadOf(row);
             if (hidden(row.type, payload, bot, version)) {continue;}
             send(sseFrame(row, payload, jobId, version));
+            sent = true;
             if (row.type === "done" || row.type === "error" || row.type === "cancelled") {
               terminal = true;
               break;
@@ -606,7 +614,9 @@ const jobEvents = async (request: Request, jobId: string, start: number, env: Fr
           if (terminal || !open) {break;}
           if (rows.length >= EVENT_PAGE) {continue;}
           idle = rows.length ? 0 : idle + 1;
-          if (i + 1 < polls) {
+          if (i + 1 === budget && !sent && budget < polls * LIVE_ROUNDS
+            && (await deps.query(LIVE_JOB_SQL, [jobId])).length > 0) {budget += polls;}
+          if (i + 1 < budget) {
             if (rows.length === 0) {send(": ping\n\n");}
             await sleep(Math.min(MAX_POLL_MS, POLL_MS * 2 ** Math.max(0, idle - 1)));
           }
