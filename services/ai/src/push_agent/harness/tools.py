@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
 from app.framework.fit_judge import judge_fit
+from app.framework.untrusted import as_data
 from app.harness.approval import approval_conversation_id, approval_id_for
 from app.harness.core_client import idempotency_key
 from app.harness.policy import ALWAYS_ASK_TOOLS, Tier
@@ -280,6 +281,17 @@ async def _review_attachment(_ctx: ToolContext, args: AttachmentReviewArgs):
     return _enter("review", attachment_id=str(args.attachment_id), posting_id=str(args.posting_id))
 
 
+async def _list_attachments(ctx: ToolContext, _args: EmptyArgs):
+    from push_agent.infrastructure.store_employer import EmployerStore
+
+    rows = await EmployerStore(ctx.db).attachments(ctx.conversation_id, ctx.company_id)
+    # File names come from the uploader's machine: data, never instructions.
+    return {"attachments": [
+        {"attachment_id": str(r["id"]), "file_name": as_data(r["file_name"], "file_name", 200),
+         "uploaded_at": r["created_at"].isoformat()}
+        for r in rows]}
+
+
 class FindTalentArgs(BaseModel):
     posting_id: UUID | None = None
     query: str = ""
@@ -299,6 +311,8 @@ EMPLOYER_TOOLS += [
              lambda _args: "회사를 조사하고 공고 초안을 함께 만들어요"),
     ToolSpec("review_applicant", Tier.READ, ApplicationArgs, _review_applicant,
              lambda _args: "지원자 서류에서 면접 때 확인할 부분을 찾아요"),
+    ToolSpec("list_attachments", Tier.READ, EmptyArgs, _list_attachments,
+             lambda _args: "이 대화에 올린 PDF를 봐요"),
     ToolSpec("review_attachment", Tier.READ, AttachmentReviewArgs, _review_attachment,
              lambda _args: "이 대화에 올린 PDF 서류를 공고 기준으로 검토해요"),
     ToolSpec("find_talent", Tier.READ, FindTalentArgs, _find_talent,
