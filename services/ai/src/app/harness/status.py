@@ -188,6 +188,9 @@ class Run:
     since: str
     announce: bool
     last: tuple[str, str] | None = None
+    # Who this job runs for. In a company conversation a teammate's answer resumes another
+    # member's turn, and the writes it unblocks go out in the answerer's name.
+    user_id: str = ""
 
     def status(self, phase: str, text: str) -> dict[str, str] | None:
         """The phase's event, or None when it repeats the last one: a tool loop thinks once."""
@@ -206,6 +209,12 @@ def running_job() -> str:
     """The job running now. A resumed flow's state keeps the job that started it, for card ids."""
     run = current_run.get()
     return run.job_id if run is not None else ""
+
+
+def acting_user(state) -> str:
+    """The user a tool call acts as: the running job's, else the state's."""
+    run = current_run.get()
+    return (run.user_id if run is not None else "") or str(state.get("user_id") or "")
 
 
 def job_of(state) -> str:

@@ -11,7 +11,7 @@ from langgraph.graph import END, START, StateGraph
 from app.harness.approval import approval_id_for
 from app.harness.binding import bound_services
 from app.harness.graph import turn_model
-from app.harness.status import job_of
+from app.harness.status import acting_user, job_of
 from app.harness.tools import ToolContext, call_structured, emit
 
 
@@ -61,7 +61,7 @@ def build_employer_graph(agent, tools, after_agent, checkpointer, *, db, core=No
         if tool is None:
             return {"error": "UNKNOWN_TOOL"}
         ctx = ToolContext(
-            user_id=str(state.get("user_id") or ""),
+            user_id=acting_user(state),
             company_id=state.get("company_id"),
             conversation_id=str(state.get("conversation_id") or ""),
             job_id=str(state.get("job_id") or ""),

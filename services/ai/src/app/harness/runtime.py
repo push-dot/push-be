@@ -380,7 +380,8 @@ class HarnessRuntime:
         turn: dict = {}
         started = conversation.get("job_created_at") or datetime.now(UTC)
         run = Run(str(payload.get("job_id") or ""), wire_time(started),
-                  announce=conversation.get("bot") is not None)
+                  announce=conversation.get("bot") is not None,
+                  user_id=str(payload.get("user_id") or ""))
         tokens = [
             (bound_services, bound_services.set(self.svc)),
             (turn_model, turn_model.set(self._model(payload, ai, turn))),
