@@ -36,6 +36,10 @@ test("any member of the company answers a company card, and the card keeps who d
   for (const [user, role] of [[opener, "ADMIN"], [teammate, "MEMBER"]] as const) {
     await rows("INSERT INTO company_members (company_id, user_id, role) VALUES ($1::uuid, $2::uuid, $3)", [company, user.id, role]);
   }
+  const rival = await db.person("PRO");
+  const otherPosting = await db.posting("다른회사");
+  const [{ company_id: otherCompany }] = await rows("SELECT company_id FROM job_postings WHERE id = $1::uuid", [otherPosting]);
+  await rows("INSERT INTO company_members (company_id, user_id, role) VALUES ($1::uuid, $2::uuid, 'ADMIN')", [otherCompany, rival.id]);
   const thread = crypto.randomUUID();
   await rows("INSERT INTO conversations (id, user_id, title, company_id) VALUES ($1::uuid, $2::uuid, '공고 마감', $3::uuid)",
     [thread, opener.id, company]);
@@ -46,7 +50,11 @@ test("any member of the company answers a company card, and the card keeps who d
              now() - interval '1 minute')`,
     [card, opener.id, thread, JSON.stringify([{ id: "approve" }, { id: "reject" }])]);
 
-  assert.equal(await answer(outsider, thread, card, "reject"), 404, "not a member of this company");
+  assert.equal(await answer(outsider, thread, card, "reject"), 404, "not a member of any company");
+  assert.equal(await answer(rival, thread, card, "reject"), 404, "a member of another company");
+  const [untouched] = await rows("SELECT status, decided_by FROM approvals WHERE id = $1::uuid", [card]);
+  assert.equal(untouched.status, "PENDING");
+  assert.equal(untouched.decided_by, null);
   // An expired card's 닫기 closes it without queueing a resume, so this checks who may answer only.
   assert.equal(await answer(teammate, thread, card, "reject"), 200, "a teammate answers");
   const [row] = await rows("SELECT status, decided_by FROM approvals WHERE id = $1::uuid", [card]);
