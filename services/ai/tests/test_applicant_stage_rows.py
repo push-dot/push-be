@@ -87,6 +87,26 @@ async def test_stage_change_without_a_company_row_adds_no_rows():
     assert "rows" not in event
 
 
+async def test_a_failed_rows_read_still_asks_without_rows():
+    class Broken(_Db):
+        async def fetchrow(self, sql, *args):
+            if "FROM approvals" in sql:
+                return None
+            raise ConnectionError("db went away")
+
+    tool = _tool()
+    args = tool.args_model.model_validate({
+        "posting_id": P, "application_id": A, "stage": "SCREENING",
+    })
+    event, created = await create_tool_approval(
+        Broken(None), user_id=uuid4(), conversation_id=CONV, job_id=uuid4(),
+        tool=tool, args=args, tool_call_id="call-3",
+    )
+    assert created is True
+    assert "rows" not in event
+    assert event["kind"] == "TOOL_ACTION"
+
+
 @pytest.mark.skipif(not os.environ.get("BILLING_PG_URL"), reason="BILLING_PG_URL is not set")
 async def test_stage_rows_are_limited_to_the_conversation_company():
     asyncpg = pytest.importorskip("asyncpg")
