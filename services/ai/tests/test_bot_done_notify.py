@@ -91,7 +91,7 @@ async def test_a_run_waiting_on_a_card_posts_waiting():
 
 
 @pytest.mark.asyncio
-async def test_a_failed_bot_run_posts_failed_and_an_employer_run_does_not():
+async def test_a_failed_run_posts_failed_for_bots_and_company_conversations():
     async def fail(_ctx):
         raise JobFailed({"message": "no"})
 
@@ -102,7 +102,7 @@ async def test_a_failed_bot_run_posts_failed_and_an_employer_run_does_not():
 
     outcome, _, core = await run(fail, job_type="employer_ai", core=Core())
     assert outcome == "failed"
-    assert core.calls == []
+    assert core.calls == ai_done("failed"), "core decides who hears it (push-dot/push-be#425)"
 
 
 @pytest.mark.asyncio
