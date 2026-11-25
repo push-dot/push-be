@@ -38,6 +38,8 @@ Generate = Callable[[type[M], str, str], Awaitable[M]]
 
 PROFILE_TTL = timedelta(days=30)
 MAX_FLAGS = 5
+# Characters of the applicant's documents a model reads; the flows say when they cut more.
+DOC_LIMIT = 20_000
 MAX_QUESTIONS = 8
 COPY_THRESHOLD = 0.8
 _SENTENCE = re.compile(r"[\n]+|(?<=[.!?。])\s+")
@@ -222,7 +224,7 @@ async def verify_claims(
             None,
             [
                 f"[공고]\n{posting_text[:6000]}",
-                f"[제출 서류]\n{documents_text[:20000]}",
+                f"[제출 서류]\n{documents_text[:DOC_LIMIT]}",
                 f"[요건 매칭]\n{matches_json}",
                 f"[서류에서 확인된 주장]\n{ledger}" if ledger else "",
                 "\n".join(lines),

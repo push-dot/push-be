@@ -50,7 +50,8 @@ def build_employer_graph(agent, tools, after_agent, checkpointer, *, db, core=No
         if gate is None:
             return ""
         return await gate.company_research(
-            name, user_id=state.get("user_id"), job_id=job_of(state))
+            name, user_id=state.get("user_id"), job_id=job_of(state),
+            purpose="이 회사의 채용 공고를 쓰기 위해")
 
     def generate_for(_state):
         return gate_generate(turn_model.get())

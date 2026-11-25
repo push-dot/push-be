@@ -44,3 +44,12 @@ def test_the_kit_is_numbered_text_the_web_reads_as_questions():
         "좋은 신호 · 재현 절차\n주의 신호 · 팀 성과만 말함\n\n"
         "2. 결제 API 지연을 줄인 방법은?\n확인할 점 · 본인 기여"
     )
+
+
+def test_a_long_document_says_it_was_cut_and_a_short_one_says_nothing():
+    from push_agent.harness.flows import _cut_note
+    from push_agent.harness.nodes import DOC_LIMIT
+
+    assert _cut_note("가" * DOC_LIMIT) == []
+    [note] = _cut_note("가" * (DOC_LIMIT + 1))
+    assert "20,000자" in note

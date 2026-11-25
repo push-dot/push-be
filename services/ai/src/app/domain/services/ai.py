@@ -110,11 +110,11 @@ class AIGate:
     async def company_research(self, company: str, model: str = "",
                                context: str = "",
                                user_id: Optional[UUID] = None,
-                               job_id=None) -> str:
+                               job_id=None, purpose: str = "채용 지원을 돕기 위해") -> str:
         if not self.managed_key or self.chat is None:
             return ""
         system = (
-            "채용 지원을 돕기 위해 이 특정 회사를 조사해줘: " + company + ". "
+            purpose + " 이 특정 회사를 조사해줘: " + company + ". "
             "반드시 이 회사의 공식 사이트와 채용 공고를 먼저 찾아 확인하고, "
             "회사의 서비스/제품, 기술 스택, 진행 중인 다른 채용 공고, "
             "최근 소식(투자/수상/출시), 조직 문화를 한국어로 간결히 정리해줘. "
