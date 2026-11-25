@@ -181,3 +181,37 @@ test("a card row with no surface of the asked version is not sent", async () => 
   ]), { "A2UI-Version": "1.0" });
   assert.deepEqual(framesOf(text).map((frame) => frame.type), ["done"]);
 });
+
+test("a quiet connection stays open while its job runs, then closes once the job ends", async () => {
+  resetLimits();
+  let reads = 0;
+  let liveChecks = 0;
+  const text = await stream(async (sql, params) => {
+    if (sql.includes("chat_events")) {
+      reads += 1;
+      return reads === 8 ? [{ id: 5, type: "token", payload: { text: "late" } }] : [];
+    }
+    if (sql.includes("status IN ('PENDING', 'RUNNING')") && !sql.includes("WITH")) {
+      liveChecks += 1;
+      return [{ "?column?": 1 }];
+    }
+    return authQuery(() => [])(sql, params);
+  });
+  assert.ok(reads > 3, "polled past SSE_MAX_POLLS while the job was live");
+  assert.equal(liveChecks, 2, "checked the job only when the budget ran out with nothing sent");
+  assert.deepEqual(framesOf(text).map((frame) => frame.text), ["late"]);
+});
+
+test("a quiet connection closes after its budget when the job is no longer live", async () => {
+  resetLimits();
+  let reads = 0;
+  await stream(async (sql, params) => {
+    if (sql.includes("chat_events")) {
+      reads += 1;
+      return [];
+    }
+    if (sql.includes("status IN ('PENDING', 'RUNNING')") && !sql.includes("WITH")) {return [];}
+    return authQuery(() => [])(sql, params);
+  });
+  assert.equal(reads, 3);
+});
