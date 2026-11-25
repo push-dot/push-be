@@ -72,7 +72,7 @@ class ToolSpec:
     run: Callable[[ToolContext, BaseModel], Awaitable[dict]]
     summarize: Callable[[BaseModel], str]
     approval_kind: str = "TOOL_ACTION"
-    # display(args, db) -> rows for the approval card. None for every tool but one.
+    # display(args, db) -> rows for the approval card. Most tools have none.
     display: Callable[[Any, Any], Awaitable[list]] | None = None
 
 
