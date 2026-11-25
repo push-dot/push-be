@@ -469,7 +469,7 @@ def build_flows(
             f"pf_confirm_{flow.get('version')}",
             title,
             [
-                {"id": "save", "label": "초안으로 저장"},
+                {"id": "save", "label": "이 초안 쓰기"},
                 {"id": "rewrite", "label": "다시 쓰기"},
             ],
             recommended="save",
@@ -518,7 +518,7 @@ def build_flows(
             made=[f"공고 초안: {draft.title}"],
             decided=decided,
             left=left,
-            next="공고 편집에서 고친 뒤 게시해 주세요",
+            next="아직 저장하지 않았어요. 공고 편집에서 열기를 눌러 저장하고 게시해 주세요",
         )
         reply = render(final) + "\n\n" + fence
         emit({"token": reply})
