@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from contextlib import aclosing
 from time import monotonic
 from typing import Final
@@ -37,17 +39,33 @@ async def run_queue_turn(svc, ctx, cancelled) -> dict:
     pending_chars = 0
     pending_at = 0.0
 
+    writing = asyncio.Lock()
+
     async def flush() -> None:
         nonlocal pending, pending_chars
         if pending:
             text = "".join(pending)
             pending, pending_chars = [], 0
-            await ctx.emit("token", {"text": text})
+            async with writing:
+                await ctx.emit("token", {"text": text})
+
+    async def emit(kind: str, body: dict) -> None:
+        await flush()
+        async with writing:
+            await ctx.emit(kind, body)
+
+    # Flushes a batch whose model went quiet, so a pause, a cancel or a crash keeps what streamed.
+    async def tick() -> None:
+        while True:
+            await asyncio.sleep(_TOKEN_FLUSH_SECONDS)
+            if pending and monotonic() - pending_at >= _TOKEN_FLUSH_SECONDS:
+                await flush()
 
     checked_at = -_CANCEL_CHECK_SECONDS
     stream = source.astream(
         state, config={"configurable": {"thread_id": str(job["conversation_id"])}},
         stream_mode=["custom", "values"])
+    ticker = asyncio.create_task(tick())
     try:
         # aclosing: close the graph stream here, in this Context, so its contextvar resets succeed.
         async with aclosing(stream):
@@ -72,17 +90,23 @@ async def run_queue_turn(svc, ctx, cancelled) -> dict:
                                 or monotonic() - pending_at >= _TOKEN_FLUSH_SECONDS):
                             await flush()
                     elif (live := _live_event(chunk, job["id"])) is not None:
-                        await flush()
-                        await ctx.emit(*live)
+                        await emit(*live)
                 elif final:
-                    await flush()
                     operation = to_jsonable(chunk["operation"])
                     result = {"operationId": str(operation.get("id") or "")}
-                    await ctx.emit("done", {"operation": operation})
+                    await emit("done", {"operation": operation})
         await flush()
     except DomainError as err:
-        await flush()
         error = {"code": err.code, "message": err.message, "details": err.details}
-        await ctx.emit("error", {"error": error})
-        raise JobFailed(error)
+        await emit("error", {"error": error})
+        raise JobFailed(error) from None
+    except JobCancelled:
+        raise
+    except Exception:
+        await flush()
+        raise
+    finally:
+        ticker.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await ticker
     return result

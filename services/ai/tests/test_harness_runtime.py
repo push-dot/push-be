@@ -476,6 +476,45 @@ async def test_queue_turn_checks_cancellation_once_per_second_and_before_done(mo
     assert ctx.events[-1][0] == "done"
 
 
+async def test_queue_turn_writes_a_quiet_batch_before_a_cancel(monkeypatch):
+    import asyncio
+
+    from app.queue.worker import JobCancelled
+
+    class Graph:
+        async def astream(self, *args, **kwargs):
+            yield "custom", {"token": "지금까지"}
+            await asyncio.sleep(0.25)
+            yield "custom", {"token": " 쓴 글"}
+
+    monkeypatch.setattr(jobs, "_CANCEL_CHECK_SECONDS", 0.0)
+    calls = []
+
+    async def cancelled(_job_id):
+        calls.append(_job_id)
+        return len(calls) > 1
+
+    ctx = _JobCtx()
+    with pytest.raises(JobCancelled):
+        await jobs.run_queue_turn(SimpleNamespace(graph=Graph()), ctx, cancelled)
+    assert ctx.events == [("token", {"text": "지금까지"})], "the timer wrote the batch during the pause"
+
+
+async def test_queue_turn_writes_the_pending_batch_when_the_graph_fails():
+    class Graph:
+        async def astream(self, *args, **kwargs):
+            yield "custom", {"token": "반쯤"}
+            raise RuntimeError("provider dropped")
+
+    async def cancelled(_job_id):
+        return False
+
+    ctx = _JobCtx()
+    with pytest.raises(RuntimeError):
+        await jobs.run_queue_turn(SimpleNamespace(graph=Graph()), ctx, cancelled)
+    assert ctx.events == [("token", {"text": "반쯤"})]
+
+
 async def test_queue_turn_flushes_tokens_before_a_card_and_at_the_size_cap(monkeypatch):
     monkeypatch.setattr(jobs, "monotonic", lambda: 100.0)
 
