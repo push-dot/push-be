@@ -1,6 +1,6 @@
 import type { Route, Schema } from "./shared.ts";
 import {
-  get, post, patch, del, ok, okPage, okList, obj, arr, str, int, num, bool, uuid, dateTime, date, any, nullable, ref, enumOf,
+  get, post, patch, del, ok, okPage, okList, obj, arr, str, int, bool, uuid, dateTime, date, any, nullable, ref, enumOf,
   body, pathParam, query, pageParams, noContent, binary,
 } from "./shared.ts";
 

@@ -495,7 +495,7 @@ test("applicant detail returns the snapshot documents and never the applicant's 
     })),
   );
   assert.equal(res.status, 200);
-  const body = await readJson<{ data: { application: Record<string, unknown>; documents: Array<{ id: string; title: string; content: string }> } }>(res);
+  const body = await readJson<{ data: { application: { id: string; fitScore?: number; nextActionAt?: string }; documents: Array<{ id: string; title: string; content: string }> } }>(res);
   assert.equal("fitScore" in body.data.application, false, "the applicant's own fit score stays theirs");
   assert.equal("nextActionAt" in body.data.application, false, "the applicant's own next step stays theirs");
   assert.deepEqual(body.data.documents, [{ id: DOC, title: "Resume", content: "{\"summary\":\"hi\"}" }]);
