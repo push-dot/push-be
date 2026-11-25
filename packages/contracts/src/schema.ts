@@ -4680,6 +4680,15 @@ export interface components {
         /** @enum {string} */
         BotColor: "teal" | "sky" | "blue" | "violet" | "pink" | "red" | "coral" | "amber" | "green" | "brown" | "gray";
         BotDetail: components["schemas"]["Bot"] & {
+            /** @description Sites the bot reads without asking (항상 허용), by host. id is the host. DELETE /bots/{id}/site-grants/{host} revokes one. */
+            allowedSites: {
+                /** Format: date-time */
+                allowedAt: string;
+                host: string;
+                id: string;
+                /** @enum {string} */
+                kind: "posting" | "company" | "other";
+            }[];
             /** @description The newest fit score computed for this posting, 0 to 10. null until one exists. */
             fit: {
                 score: number;

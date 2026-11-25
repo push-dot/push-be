@@ -1596,6 +1596,39 @@
           },
           {
             "properties": {
+              "allowedSites": {
+                "description": "Sites the bot reads without asking (항상 허용), by host. id is the host. DELETE /bots/{id}/site-grants/{host} revokes one.",
+                "items": {
+                  "properties": {
+                    "allowedAt": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "host": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "enum": [
+                        "posting",
+                        "company",
+                        "other"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "host",
+                    "kind",
+                    "allowedAt"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
               "fit": {
                 "anyOf": [
                   {
@@ -1663,7 +1696,8 @@
             "required": [
               "posting",
               "fit",
-              "materialCount"
+              "materialCount",
+              "allowedSites"
             ],
             "type": "object"
           }

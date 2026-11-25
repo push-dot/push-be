@@ -314,7 +314,14 @@ const getBot = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const bot = await resolveBot(ctx, idRaw);
   const row = await one(ctx.deps.query, BOT_POSTING_SELECT + " AND s.bot_id = $2", [ctx.user.id, String(bot.id)]);
   if (!row) {throw notFound();}
-  return data(200, { ...botDetailDto(row), materialCount: await materialCountOf(ctx, String(bot.id)) }, ctx.rid);
+  const [materialCount, grants] = await Promise.all([
+    materialCountOf(ctx, String(bot.id)),
+    query(ctx.deps.query, "SELECT host, kind, created_at FROM bot_site_grants WHERE bot_id = $1 ORDER BY host", [String(bot.id)]),
+  ]);
+  const allowedSites = grants.rows.map((grant) => ({
+    id: String(grant.host), host: String(grant.host), kind: String(grant.kind), allowedAt: ts(grant.created_at),
+  }));
+  return data(200, { ...botDetailDto(row), materialCount, allowedSites }, ctx.rid);
 };
 
 // shortcut: a scan of every message of the caller's bot chats, add a pg_trgm index on messages.text when one user holds about 50,000 messages.
