@@ -24,7 +24,7 @@ def _payload(text: str, intent: str) -> dict:
         "user_id": "88888888-8888-4888-8888-888888888888",
         "conversation_id": str(CONV),
         "job_id": "99999999-9999-4999-8999-999999999999",
-        "access_mode": "AUTO",
+        "access_mode": "ALWAYS_ASK",
         "ai": None,
         "context": {},
         "intent": intent,

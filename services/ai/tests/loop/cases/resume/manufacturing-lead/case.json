@@ -1,0 +1,47 @@
+{
+  "surface": "resume",
+  "domain": "제조 공정",
+  "seniority": "팀장",
+  "text": "공정 개선 경력으로 이 공고에 지원서 써 줘 https://jobs.example.com/line-lead",
+  "conversation": {
+    "company_id": null,
+    "resume_state": {
+      "status": "active",
+      "phase": "mode_select"
+    }
+  },
+  "max_turns": 6,
+  "script": {
+    "지원 서류를 거르는 사람": {
+      "objections": []
+    },
+    "서류의 주장을 하나하나": {
+      "objections": []
+    },
+    "3분의 1 줄여야": {
+      "objections": []
+    },
+    "": [
+      {
+        "message": "어떤 방식으로 쓸지 골라 주세요"
+      },
+      {
+        "message": "자료를 받았어요. 라인 불량률을 줄인 경험을 중심으로 볼게요.",
+        "sections": [
+          {
+            "title": "공정 개선",
+            "action": "keep"
+          },
+          {
+            "title": "설비 데이터 분석",
+            "action": "keep"
+          }
+        ]
+      }
+    ]
+  },
+  "pages": {
+    "https://jobs.example.com/line-lead": "회사 E 생산기술팀장 채용\n자격요건\n• 조립 라인 공정 개선을 이끈 경험 7년 이상\n우대사항\n• 설비 데이터로 불량 원인을 찾은 경험"
+  },
+  "plan": "PRO"
+}

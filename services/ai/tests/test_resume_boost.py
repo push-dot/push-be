@@ -178,14 +178,14 @@ async def test_cancel_at_the_cycle_gate_returns_to_the_agent(monkeypatch):
             "user_id": str(_USER),
             "conversation_id": "conv-boost",
             "job_id": "job-1",
-            "access_mode": "AUTO",
+            "access_mode": "ALWAYS_ASK",
             "resume": {
                 "status": "active",
                 "phase": "craft",
                 "conversation_id": "conv-boost",
                 "user_id": str(_USER),
                 "job_id": "job-1",
-                "access_mode": "AUTO",
+                "access_mode": "ALWAYS_ASK",
                 "drafts": {"text": "이력서"},
                 "inputs": {"requirements": "Python"},
             },
@@ -282,8 +282,8 @@ async def test_judge_fit_receives_a_posting_built_from_analysis(monkeypatch):
             inputs={"pages": {"https://jobs.example/1": page}},
         ), config)
         requirements, keywords, description, content, _plan = seen[0]["args"]
-        assert requirements == ["Kafka", "Python", "FastAPI"]
-        assert keywords == requirements
+        assert requirements == ["Kafka", "Python"]
+        assert keywords == ["FastAPI"]
         assert description.startswith("{")
         assert "Kafka" in description
         assert "본문" in description

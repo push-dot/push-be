@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Final
 
 from langchain_core.messages import AIMessage
@@ -11,7 +12,10 @@ from app.domain.errors import DomainError, provider_error
 from app.domain.plan_levers import PlanLevers
 from app.framework.llm import AiUsageCallback, astructured_reply, chat_model_for
 from app.framework.models import _apply_usage
+from app.harness.kstyle import stats
 from app.harness.tools import to_structured_tool
+
+log = logging.getLogger(__name__)
 
 
 def stub_reply(text: str) -> str:
@@ -41,6 +45,8 @@ class StubModel:
 class GateModel:
     """Tool-calling chat model behind AIGate. One credit reservation per turn."""
 
+    tier: str = "main"
+
     def __init__(self, gate, user_id, ai: ent.AiOptions, job_id, turn: dict,
                  tools=(), cls=None):
         self.gate = gate
@@ -55,17 +61,23 @@ class GateModel:
         return GateModel(self.gate, self.user_id, self.ai, self.job_id, self.turn,
                          tools, self.cls)
 
-    async def _open(self, messages, *, tools: bool = True):
-        if not self.turn.get("checked"):
-            await self.gate.check(self.user_id, self.ai)
-            self.turn["checked"] = True
-            self.turn["model"] = self.ai.model
-        if "usage_id" not in self.turn:
-            text = "".join(str(getattr(message, "content", "")) for message in messages)
-            hold = await self.gate._reserve(
-                self.user_id, self.ai, "", text, self.job_id)
-            self.turn["usage_id"] = getattr(hold, "id", hold)
-            self.turn["usage_generation"] = getattr(hold, "generation", None)
+    async def _hold(self, messages, ai: ent.AiOptions) -> None:
+        """The turn's one plan check and one reservation, both under the turn's main model `ai`,
+        whichever tier calls first. Parallel first calls (subagents in one gather) share them."""
+        async with self.turn.setdefault("lock", asyncio.Lock()):
+            if not self.turn.get("checked"):
+                await self.gate.check(self.user_id, ai)
+                self.turn["checked"] = True
+                self.turn["model"] = ai.model
+            if "usage_id" not in self.turn:
+                text = "".join(str(getattr(message, "content", "")) for message in messages)
+                hold = await self.gate._reserve(self.user_id, ai, "", text, self.job_id)
+                self.turn["usage_id"] = getattr(hold, "id", hold)
+                self.turn["usage_generation"] = getattr(hold, "generation", None)
+
+    async def _open(self, messages, *, tools: bool = True, hold: bool = True):
+        if hold:
+            await self._hold(messages, self.ai)
         if hasattr(self.gate, "_factory_config"):
             config = self.gate._factory_config(getattr(self.gate, "chat", None))
         elif hasattr(self.gate, "_levers_config"):
@@ -82,7 +94,7 @@ class GateModel:
         if store is not None and self.turn.get("usage_id") is not None:
             callback = AiUsageCallback(
                 store, self.user_id, self.job_id,
-                self.turn["usage_id"], self.turn.get("usage_generation"))
+                self.turn["usage_id"], self.turn.get("usage_generation"), release_on_error=False)
         bind = tools and self.tools
         runnable = lc.bind_tools([_for_model(tool) for tool in self.tools]) if bind else lc
         invoke = {"config": {"callbacks": [callback]}} if callback is not None else {}
@@ -94,6 +106,7 @@ class GateModel:
         self.turn["input_tokens"] = self.turn.get("input_tokens", 0) + usage.get("input_tokens", 0)
         added = usage.get("output_tokens", 0)
         self.turn["output_tokens"] = self.turn.get("output_tokens", 0) + added
+        stats.record(self.turn, self.tier, usage.get("input_tokens", 0), added)
 
     async def _call(self, runnable, messages, invoke):
         try:
@@ -102,6 +115,7 @@ class GateModel:
         except DomainError:
             raise
         except Exception:
+            log.warning("provider call failed", exc_info=True)
             raise provider_error("AI provider request failed")
 
     async def ainvoke(self, messages, **kwargs):
@@ -119,6 +133,7 @@ class GateModel:
         except DomainError:
             raise
         except Exception:
+            log.warning("provider call failed", exc_info=True)
             raise provider_error("AI provider request failed") from None
         self._add_usage(raw)
         if parsed is None:
@@ -143,6 +158,7 @@ class GateModel:
         except DomainError:
             raise
         except Exception:
+            log.warning("provider call failed", exc_info=True)
             raise provider_error("AI provider request failed")
         if last is not None:
             self._add_usage(last)

@@ -1,8 +1,12 @@
 """Employer harness flows (super-recruit) as LangGraph subgraphs.
 
-posting_flow   research → role gate → draft → review → confirm gate → save
-review_flow    read → match → baseline → verify → report gate
-interview_flow plan check → inherit review → design → kit
+posting_flow   research ∥ reference → role gate → draft → reviewers → review → confirm gate → save
+review_flow    read + baseline → match ∥ claims → verify + fact check → report gate
+interview_flow plan check → inherit review → design → kit tied to flags
+sourcing_flow  search → shortlist (reasons checked) → pick gate → offers ∥ → send gate
+
+The k-style way: code works first, independent model work runs together under a time limit, what a
+model says is checked by code, and each flow ends with the fixed four-part message (``kstyle.final``).
 
 Each flow shares ``EmployerState`` with the parent graph, so interrupts and
 checkpoints live on the conversation thread. Gates are ``EMPLOYER_GATE``
@@ -11,8 +15,11 @@ approval cards whose answers resume the same thread.
 
 from __future__ import annotations
 
+import asyncio
 import json
-from uuid import NAMESPACE_URL, uuid5
+import re
+from functools import partial
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from langchain_core.messages import SystemMessage
 from langgraph.graph import END, START, StateGraph
@@ -25,20 +32,40 @@ from app.domain.fair_hiring import DECISION_DISCLAIMER, banned_in_posting
 from app.domain.plan_levers import levers_for
 from app.harness.approvals import insert_chat_approval
 from app.harness.employer import nodes
-from app.harness.employer.recruit_prompts import node_prompt
+from app.harness.employer.recruit_prompts import CLAIM_READER, POSTING_REVIEWERS, node_prompt
 from app.harness.employer.schemas import (
     CompanyProfile,
+    Flag,
+    InterviewKit,
     Match,
     OfferDraft,
     PostingDraft,
     RoleSpec,
 )
+from app.harness.kstyle.ask import needs_ask
+from app.harness.kstyle.budget import budget_for
+from app.harness.kstyle.final import Final, late_lines, render
+from app.harness.kstyle.ledger import add_evidence, empty_notes, ledger_text
+from app.harness.kstyle.review import Reviewer, run_reviewers
+from app.harness.kstyle.stage import Task, run_stage
+from app.harness.kstyle.subagent import Corpus, light_model, line, mid_model, single_call, squash
+from app.harness.kstyle.verify import fact_check, unsupported_numbers
+from app.harness.status import job_of
 from app.harness.tools import emit
 from app.infrastructure.store_employer import EmployerStore, posting_text
 
 FLOWS = ("posting", "review", "interview", "sourcing")
 _PLAN_RANK = {"": 0, "BASIC": 1, "PRO": 2, "ULTRA": 3}
 _MAX_REWRITES = 3
+RESEARCH_SECONDS = 90  # web research is not waited past this; the flow goes on with what it has
+_REVIEWERS = tuple(Reviewer(*row) for row in POSTING_REVIEWERS)
+_LABELS = {
+    "research": "회사 조사",
+    "reference": "참고 공고 읽기",
+    "match": "요건 매칭",
+    "claims": "서류 주장 읽기",
+    **{reviewer.name: "초안 검토" for reviewer in _REVIEWERS},
+}
 _SOURCING_STEPS = {"pick": "sc_pick", "draft_offers": "sc_draft_offers", "send": "sc_send"}
 _POSTING_STEPS = {
     "role_options": "pf_role_options",
@@ -81,6 +108,87 @@ def _profiles(found) -> list[dict]:
     return [p for p in items or [] if isinstance(p, dict)]
 
 
+def _notes(flow: dict):
+    notes = empty_notes()
+    notes.update({k: v for k, v in (flow.get("notes") or {}).items() if k in notes})
+    return notes
+
+
+def _values(value) -> list[str]:
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in _values(item)]
+    if isinstance(value, list):
+        return [text for item in value for text in _values(item)]
+    return [] if value is None else [squash(str(value))]
+
+
+def _grounded(reason: str, profile: dict, size: int = 4) -> bool:
+    """The reason comes from the profile's values (never its keys): it is in them whole, or
+    each of its numbers is and so is one run of ``size`` letters. A shorter reason must be a
+    whole value."""
+    reason, values = squash(reason), _values(profile)
+    if len(reason) < size:
+        return bool(reason) and reason in values
+    text = " ".join(values)
+    if reason in text:
+        return True
+    if not set(re.findall(r"\d+", reason)) <= set(re.findall(r"\d+", text)):
+        return False
+    flat, plain = reason.replace(" ", ""), text.replace(" ", "")
+    return any(flat[i : i + size] in plain for i in range(len(flat) - size + 1))
+
+
+def _cut_asks(before: PostingDraft, after: PostingDraft, role: RoleSpec, need: str) -> list:
+    """Skills the 담당자 named in the role answer that review took out of the requirements."""
+    was = " ".join(before.requirements).lower()
+    kept = " ".join(after.requirements).lower()
+    preferred = " ".join(after.preferred).lower()
+    items = []
+    for skill in role.must_skills:
+        key = skill.strip().lower()
+        if not key or key not in need.lower() or key not in was or key in kept:
+            continue
+        moved = key in preferred
+        items.append({"source": "user", "verdict": "lighten" if moved else "cut", "what": skill.strip(),
+                      "why": "우대 사항으로 내렸어요" if moved else "검수에서 뺐어요"})
+    return needs_ask(items)
+
+
+def _unfinished(flow: dict) -> list[str]:
+    """Stages dropped from the flow: a late one ran out of time, a failed one raised."""
+    return [*late_lines(flow.get("late") or [], _LABELS),
+            *(f"{_LABELS.get(name, name)}: 끝내지 못해 빼고 진행했어요"
+              for name in flow.get("failed") or [])]
+
+
+def _title_key(title: str | None) -> str:
+    return squash(title or "").strip("'\"「」 ")
+
+
+def _career_line(draft: PostingDraft) -> str:
+    if draft.career_max:
+        return f"경력은 {draft.career_min}~{draft.career_max}년으로 잡았어요"
+    if draft.career_min:
+        return f"경력은 {draft.career_min}년 이상으로 잡았어요"
+    return "경력 조건은 두지 않았어요"
+
+
+def _baseline_line(stats: dict) -> str:
+    if stats.get("used"):
+        return f"같은 직군·연차 참고 서류 {stats.get('sample_count')}건의 통계와 비교했어요"
+    return "비교할 참고 서류가 충분하지 않아 다른 서류와 비교하지 않았어요"
+
+
+async def _read_claims(model, documents: str) -> dict:
+    summary = "서류에서 확인할 주장을 골라요"
+    emit(line("claim_reader", "run", summary, ""))
+    out = await single_call(model, CLAIM_READER, {"documents": documents[:20000]})
+    claims = [{"quote": str(c.get("quote") or ""), "claim": str(c.get("claim") or "")}
+              for c in out.get("claims") or [] if isinstance(c, dict)]
+    emit(line("claim_reader", "ok", summary, "", f"주장 {len(claims)}개"))
+    return {"claims": claims}
+
+
 def flow_of(state: dict) -> dict:
     raw = state.get("flow") or {}
     return raw if isinstance(raw, dict) else {}
@@ -102,6 +210,7 @@ async def gate(
     options: list[dict],
     *,
     recommended: str | None = None,
+    multiple: bool = False,
 ) -> dict:
     """Ask one EMPLOYER_GATE question and wait. Returns {"option_id"} or {"text"}."""
     seed = f"push:employer-gate:{state.get('conversation_id')}:{state.get('job_id')}:{gate_id}"
@@ -115,11 +224,17 @@ async def gate(
     }
     if recommended:
         event["recommended"] = recommended
-    if db is not None:
-        await insert_chat_approval(
-            db, state.get("user_id"), state.get("conversation_id"), event, None
-        )
-    emit(event)
+    if multiple:
+        event["multiple"] = True
+    # A resumed gate node replays from its top: the card goes out only when its row is new.
+    new = db is None or await db.q().fetchrow(
+        "SELECT id FROM approvals WHERE id = $1", UUID(event["id"])) is None
+    if new:
+        if db is not None:
+            await insert_chat_approval(
+                db, state.get("user_id"), state.get("conversation_id"), event, None
+            )
+        emit(event)
     answer = (
         interrupt(
             {
@@ -144,15 +259,25 @@ def _done(state: dict, status: str, **data) -> dict:
 
 
 def build_flows(
-    *, db, generate_for, research_text, plan_of, store=None, read_pdf=None, call_tool=None
+    *, db, generate_for, research_text, plan_of, store=None, read_pdf=None, call_tool=None, model_for=None
 ):
     """``call_tool(state, name, args)`` runs an employer tool through core (sourcing flow).
+    ``model_for(state)`` returns the turn's chat model for subagents and reviewers, or None.
     ``generate_for(state)`` returns a node ``generate``; ``research_text(state, name)`` runs
         the web search; ``plan_of(state)`` returns the company plan (BASIC/PRO/ULTRA or '')."""
     store = store or (EmployerStore(db) if db is not None else None)
     if read_pdf is None:
         from app.ingest.pdf_text import read_pdf_text as read_pdf
     from app.harness.graph import HarnessState
+
+    def _chat(state):
+        return model_for(state) if model_for is not None else None
+
+    def _light(state):
+        chat = _chat(state)
+        # shortcut: without the managed gate there is no light tier, so the turn model reads; fine for
+        # BYO keys and tests, revisit if a non-gate model ever runs in production.
+        return None if chat is None else (light_model(chat) or chat)
 
     class EmployerState(HarnessState, total=False):
         flow: dict | None
@@ -165,16 +290,34 @@ def build_flows(
         cached = (company or {}).get("profile")
         cached = json.loads(cached) if isinstance(cached, str) else cached
         now = utcnow()
-        if cached and nodes.profile_is_fresh((company or {}).get("profile_refreshed_at"), now):
-            profile = CompanyProfile.model_validate(cached)
-        else:
+        tasks = []
+        if not (cached and nodes.profile_is_fresh((company or {}).get("profile_refreshed_at"), now)):
             emit({"type": "status", "text": "회사 정보를 찾는 중"})
-            text = await research_text(state, name)
-            profile = await nodes.research_company(generate_for(state), name, text)
+
+            async def research() -> dict:
+                text = await research_text(state, name)
+                found = await nodes.research_company(generate_for(state), name, text)
+                return {"profile": found.model_dump(by_alias=True)}
+
+            tasks.append(Task("research", research, seconds=RESEARCH_SECONDS))
+        ref_id = flow_of(state).get("reference_posting_id")
+        if ref_id and store:
+
+            async def read_reference() -> dict:
+                return {"text": posting_text(await store.posting(ref_id))}
+
+            tasks.append(Task("reference", read_reference))
+        staged = await run_stage(tasks)
+        out = staged["out"]
+        if "profile" in out.get("research", {}):
+            profile = CompanyProfile.model_validate(out["research"]["profile"])
             if store:
                 await store.save_profile(
                     state.get("company_id"), profile.model_dump(by_alias=True), now
                 )
+        else:
+            # Fresh cache, or research ran late: go on with the stored (even stale) or an empty profile.
+            profile = CompanyProfile.model_validate(cached) if cached else CompanyProfile(name=name)
         emit(
             {
                 "type": "employer_research",
@@ -188,15 +331,13 @@ def build_flows(
                 "facts": [f.model_dump(by_alias=True) for f in profile.facts[:3]],
             }
         )
-        reference = ""
-        ref_id = flow_of(state).get("reference_posting_id")
-        if ref_id and store:
-            reference = posting_text(await store.posting(ref_id))
         return flow_update(
             state,
             step="role_options",
             profile=profile.model_dump(by_alias=True),
-            reference=reference,
+            reference=(out.get("reference") or {}).get("text") or "",
+            late=staged["late"],
+            failed=staged["failed"],
         )
 
     async def pf_role_options(state):
@@ -251,12 +392,47 @@ def build_flows(
         )
         return flow_update(state, step="review", draft=draft.model_dump(), request=None)
 
+    async def _objections(state, draft: PostingDraft, flow: dict) -> tuple[list[dict], dict]:
+        count = budget_for(f"EMPLOYER:{plan_of(state) or ''}").reviewers
+        chat = _chat(state)
+        if not count or chat is None:
+            return [], {}
+        items = [
+            {"id": f"{key}{i}", "section": label, "text": text}
+            for key, label, lines in (
+                ("req", "필수", draft.requirements),
+                ("pref", "우대", draft.preferred),
+                ("desc", "하는 일", draft.description),
+            )
+            for i, text in enumerate(lines)
+        ]
+        subject = {"items": items, "need": flow.get("need") or "", "role": flow.get("role") or {},
+                   "requests": flow.get("requests") or []}
+        out = await run_reviewers(mid_model(chat), list(_REVIEWERS[:count]), subject, emit)
+        text = {item["id"]: item["text"] for item in items}
+        dropped = {"late": out.get("late") or [], "failed": out.get("failed") or []}
+        found = [{"line": text[o["target"]], "objection": o["objection"]}
+                 for o in out["objections"]]
+        return found, dropped
+
     async def pf_review(state):
         flow = flow_of(state)
+        draft = PostingDraft.model_validate(flow["draft"])
+        role = RoleSpec.model_validate(flow["role"])
+        objections, dropped = await _objections(state, draft, flow)
+        sources = (
+            json.dumps(flow.get("profile") or {}, ensure_ascii=False),
+            role.model_dump_json(),
+            flow.get("need") or "",
+            *(flow.get("requests") or []),
+        )
         review = await nodes.review_posting(
             generate_for(state),
-            PostingDraft.model_validate(flow["draft"]),
+            draft,
             reference_text=flow.get("reference") or None,
+            objections=objections,
+            number_sources=sources,
+            requests=flow.get("requests") or [],
         )
         version = int(flow.get("version") or 0) + 1
         emit(
@@ -267,12 +443,29 @@ def build_flows(
                 "notes": review.notes,
             }
         )
+        notes = _notes(flow)
+        asks = _cut_asks(draft, review.draft, role, flow.get("need") or "")
+        ask_lines, recut = "", []
+        if asks and notes["ask"] is None:  # once per flow
+            notes["ask"] = {"gate": f"pf_confirm_{version}", "items": asks}
+            ask_lines = "\n".join(f"{i}. {a['what']} — {a['why']}" for i, a in enumerate(asks, 1))
+        elif asks:
+            # Asked once already: what this review cut again goes in the save reply, not away.
+            recut = [f"말씀하신 요건 {a['what']}: {a['why']}" for a in asks]
         return flow_update(
             state,
             step="confirm",
             draft=review.draft.model_dump(),
             version=version,
             ask_salary=review.ask_salary,
+            ask_lines=ask_lines,
+            recut=recut,
+            title_numbers=unsupported_numbers(review.draft.title, *sources),
+            notes=notes,
+            removed=[*(flow.get("removed") or []), *review.removed],
+            late=[*(flow.get("late") or []), *(dropped.get("late") or [])],
+            failed=[*(flow.get("failed") or []), *(dropped.get("failed") or [])],
+            reviewed=int(flow.get("reviewed") or 0) + len(objections),
         )
 
     async def pf_confirm(state):
@@ -280,6 +473,9 @@ def build_flows(
         title = "이 초안으로 진행할까요?"
         if flow.get("ask_salary"):
             title = "이 초안으로 진행할까요? 연봉 범위를 넣으려면 직접 말해 주세요."
+        if flow.get("ask_lines"):
+            title += "\n\n말씀하신 요건 중 검수에서 바뀐 게 있어요. 다시 넣으려면 직접 말해 주세요.\n"
+            title += flow["ask_lines"]
         answer = await gate(
             state,
             db,
@@ -298,19 +494,48 @@ def build_flows(
         rewrites = int(flow.get("rewrites") or 0) + 1
         if rewrites > _MAX_REWRITES:
             return flow_update(state, step="save")
+        request = answer.get("text") or "다르게 다시 써 주세요."
         return flow_update(
             state,
             step="draft",
             rewrites=rewrites,
-            request=answer.get("text") or "다르게 다시 써 주세요.",
+            request=request,
+            requests=[*(flow.get("requests") or []), request],
+            ask_lines="",
         )
 
     async def pf_save(state):
-        draft = PostingDraft.model_validate(flow_of(state)["draft"])
+        flow = flow_of(state)
+        draft = PostingDraft.model_validate(flow["draft"])
         fence = (
             "```posting-draft\n" + json.dumps(_fence(draft), ensure_ascii=False, indent=2) + "\n```"
         )
-        reply = "공고 초안을 정리했어요. 공고 편집에서 고친 뒤 올릴 수 있어요.\n\n" + fence
+        decided = [_career_line(draft)]
+        if flow.get("reference"):
+            decided.append("참고 공고는 구조만 따르고 문장은 새로 썼어요")
+        if flow.get("reviewed"):
+            decided.append(f"검토 의견 {flow['reviewed']}개를 보고 요건을 다시 다듬었어요")
+        left = ["연봉 범위가 비어 있어요"] if not draft.salary_range else []
+        role = RoleSpec.model_validate(flow["role"]) if isinstance(flow.get("role"), dict) else None
+        # 0 and None both mean "no bound"; (0, None) is the schema default, not an answer, and a
+        # rewrite request after the role answer may change the career on purpose.
+        asked = (role.career_min or 0, role.career_max or None) if role is not None else (0, None)
+        made = (draft.career_min or 0, draft.career_max or None)
+        if asked != (0, None) and not flow.get("requests") and asked != made:
+            said = f"{asked[0]}~{asked[1]}년" if asked[1] else f"{asked[0]}년 이상"
+            left.append(f"답한 경력 조건({said})과 초안의 경력 조건이 달라요")
+        left += flow.get("recut") or []
+        if flow.get("title_numbers"):
+            left.append(f"제목에 근거 없는 숫자가 남아 있어요: {', '.join(flow['title_numbers'])}")
+        left += [f"검수에서 뺀 줄: {item}" for item in flow.get("removed") or []]
+        left += _unfinished(flow)
+        final = Final(
+            made=[f"공고 초안: {draft.title}"],
+            decided=decided,
+            left=left,
+            next="공고 편집에서 고친 뒤 게시해 주세요",
+        )
+        reply = render(final) + "\n\n" + fence
         emit({"token": reply})
         return _done(state, "done", step="saved", reply=reply)
 
@@ -352,14 +577,27 @@ def build_flows(
         documents = "\n\n".join(f"# {d['title']}\n{d['content']}" for d in docs)
         emit({"type": "status", "text": "제출 서류를 읽는 중"})
         ctx = await store.applicant_context(row["user_id"])
+        category = (ctx or {}).get("job_category") or row["job_category"]
+        tenure = (ctx or {}).get("tenure_years")
         return flow_update(
             state,
             step="match",
             documents=documents,
             posting=posting_text(row),
-            category=(ctx or {}).get("job_category") or row["job_category"],
-            tenure=(ctx or {}).get("tenure_years"),
+            category=category,
+            tenure=tenure,
+            baseline=await _baseline(state, category, tenure),
         )
+
+    async def _baseline(state, category, tenure) -> dict:
+        # Pure DB and code: loaded while reading, not behind a model call.
+        levers = levers_for("EMPLOYER", plan_of(state) or "", None)
+        samples = []
+        if db is not None and category:
+            from app.infrastructure.store_jobs import ReferenceSampleStore
+
+            samples = await ReferenceSampleStore(db).list_for_prompt(category)
+        return baseline_stats(samples, category, tenure, None, levers.tenure, levers.score_band)
 
     async def _read_attachment(state, flow):
         # Ultra only. The PDF stays in this conversation: it is never indexed into RAG or
@@ -392,41 +630,92 @@ def build_flows(
             category=posting_row["job_category"],
             tenure=None,
             attachment_name=found["file_name"],
+            baseline=await _baseline(state, posting_row["job_category"], None),
         )
 
     async def rv_match(state):
+        """Stage one: the requirement match (main model) and a light claim reader run together."""
         flow = flow_of(state)
-        matches = await generate_for(state)(
-            Matches,
-            node_prompt("rv_match"),
-            f"[공고]\n{flow['posting']}\n\n[제출 서류]\n{flow['documents'][:20000]}",
+        documents = flow["documents"]
+        generate = generate_for(state)
+
+        async def match() -> dict:
+            found = await generate(
+                Matches,
+                node_prompt("rv_match"),
+                f"[공고]\n{flow['posting']}\n\n[제출 서류]\n{documents[:20000]}",
+            )
+            return {"matches": [m.model_dump() for m in found.matches]}
+
+        # The match is what the review is: it runs outside the stage, so its failure stops the turn
+        # instead of saving an empty review. Only the optional claim reader may be dropped.
+        light = _light(state)
+        claims = None
+        if light is not None:
+            claims = asyncio.ensure_future(
+                run_stage([Task("claims", lambda: _read_claims(light, documents))]))
+        try:
+            matched = await match()
+        except BaseException:
+            if claims is not None:
+                claims.cancel()
+            raise
+        staged = await claims if claims is not None else {"out": {}, "late": [], "failed": []}
+        found = [Match.model_validate(m) for m in matched.get("matches") or []]
+        matches, lowered = nodes.check_matches(found, documents)
+        notes = _notes(flow)
+        corpus = Corpus({"documents": documents})
+        for claim in (staged["out"].get("claims") or {}).get("claims") or []:
+            if corpus.anywhere(claim["quote"]):  # code keeps only quotes really in the documents
+                add_evidence(notes, "claim", "제출 서류", claim["quote"], claim["claim"], text=documents)
+        return flow_update(
+            state,
+            step="verify",
+            matches=[m.model_dump() for m in matches],
+            notes=notes,
+            left=[f"근거 문장을 서류에서 찾지 못해 '일부'로 낮춘 요건: {r}" for r in lowered],
+            late=staged["late"],
+            failed=staged["failed"],
         )
-        return flow_update(state, step="verify", matches=[m.model_dump() for m in matches.matches])
+
+    async def _fact_checked(state, flags: list[Flag], documents: str) -> tuple[list[Flag], list[str]]:
+        """SUPPORTED flags say the documents back something up: a light checker compares them with the
+        documents, and a mismatched flag is dropped, never rewritten. CHECK flags are questions, not claims."""
+        light = _light(state)
+        supported = {f.title: f"{f.title}: {f.reason}" for f in flags if f.level == "SUPPORTED"}
+        reasons = {f.title: squash(f.reason) for f in flags if f.level == "SUPPORTED"}
+        if light is None or not supported:
+            return flags, []
+        try:
+            wrong = await fact_check(light, "\n".join(supported.values()), documents[:20000], emit,
+                                     noun="검토 결과")
+        except Exception:
+            return flags, ["서류 대조를 끝내지 못했어요. '근거 있음' 항목은 직접 확인해 주세요"]
+        def covers(title: str, sentence: str) -> bool:
+            # A mismatch must cover a flag's whole text or reason: a shared fragment drops none.
+            reason = reasons[title]
+            return squash(supported[title]) in sentence or bool(reason and reason in sentence)
+
+        sentences = [(item["sentence"], squash(item["sentence"])) for item in wrong]
+        bad = [title for title in supported if any(covers(title, s) for _, s in sentences)]
+        # A mismatch that drops no flag is still said, never lost.
+        loose = [said for said, s in sentences if not any(covers(title, s) for title in supported)]
+        return [f for f in flags if f.title not in bad], [
+            *(f"서류와 맞지 않아 뺀 항목: {t}" for t in bad),
+            *(f"서류와 맞지 않을 수 있는 문장: {said}" for said in loose)]
 
     async def rv_verify(state):
         flow = flow_of(state)
-        plan = plan_of(state)
-        levers = levers_for("EMPLOYER", plan or "", None)
-        samples = []
-        if db is not None and flow.get("category"):
-            from app.infrastructure.store_jobs import ReferenceSampleStore
-
-            samples = await ReferenceSampleStore(db).list_for_prompt(flow["category"])
-        stats = baseline_stats(
-            samples,
-            flow.get("category"),
-            flow.get("tenure"),
-            None,
-            levers.tenure,
-            levers.score_band,
-        )
+        stats = flow.get("baseline") or await _baseline(state, flow.get("category"), flow.get("tenure"))
         flags = await nodes.verify_claims(
             generate_for(state),
             flow["documents"],
             flow["posting"],
             json.dumps(flow.get("matches") or [], ensure_ascii=False),
             stats,
+            ledger=ledger_text(_notes(flow)),
         )
+        flags, dropped = await _fact_checked(state, flags, flow["documents"])
         report = {
             "summary": "서류 전체는 공고와 잘 맞아요. " + nodes.report_summary(flags)
             if any(m.get("status") == "MET" for m in flow.get("matches") or [])
@@ -455,7 +744,22 @@ def build_flows(
                 "disclaimer": DECISION_DISCLAIMER,
             }
         )
-        return flow_update(state, step="next", review_id=review_id, report=report)
+        checks = sum(1 for f in flags if f.level == "CHECK")
+        matches = report["matches"]
+        final = Final(
+            made=[
+                *([f"요건 {len(matches)}개를 서류와 맞춰 봤어요"] if matches else []),
+                f"면접에서 확인할 곳 {checks}곳을 짚었어요" if checks else "따로 확인할 곳은 찾지 못했어요",
+            ],
+            decided=[_baseline_line(stats)],
+            left=[*(flow.get("left") or []), *dropped, *_unfinished(flow)],
+            next="" if flow.get("attachment_name") else "면접 질문 만들기",
+        )
+        reply = render(final)
+        emit({"token": reply})
+        # Said before the rv_report gate: stored with this job, so the answer turn does not.
+        return flow_update(state, step="next", review_id=review_id, report=report, reply=reply,
+                           reply_job=job_of(state))
 
     async def rv_next(state):
         pro = plan_allows(plan_of(state), "PRO")
@@ -479,7 +783,10 @@ def build_flows(
                     "application_id": flow_of(state).get("application_id"),
                 }
             }
-        return _done(state, "done" if not cancelled(answer) else "cancelled")
+        if cancelled(answer):
+            return _done(state, "cancelled", reply=None)
+        # The report was stored on the turn that opened this gate; leave closes with its own line.
+        return _done(state, "done", reply=None)
 
     def after_review(state) -> str:
         flow = flow_of(state)
@@ -525,14 +832,33 @@ def build_flows(
         row = await store.application(app_id, state.get("company_id"))
         docs = await store.snapshots(app_id, state.get("company_id"))
         emit({"type": "status", "text": "검토 결과를 이어받는 중"})
-        from app.harness.employer.schemas import Flag
-
+        flags = [Flag.model_validate(f) for f in report.get("flags") or []]
+        # Questions are made only for what the review marked CHECK, and each must name one of them.
+        checks = {_title_key(f.title): f.title for f in flags if f.level == "CHECK"}
+        if not checks:
+            reply = render(Final(
+                left=["서류 검토에서 확인이 필요한 곳이 없어 질문을 만들지 않았어요"]))
+            emit({"token": reply})
+            return _done(state, "done", reply=reply)
         kit = await nodes.design_interview(
             generate_for(state),
-            [Flag.model_validate(f) for f in report.get("flags") or []],
+            flags,
             posting_text(row),
             "\n\n".join(d["content"] for d in docs),
         )
+        tied = [q.model_copy(update={"from_flag": checks[_title_key(q.from_flag)]})
+                for q in kit.questions if _title_key(q.from_flag) in checks]
+        untied = len(kit.questions) - len(tied)
+        asked = {q.from_flag for q in tied}
+        left = [f"검토 항목에 묶이지 않은 질문 {untied}개는 뺐어요"] if untied else []
+        left += [f"질문이 묶이지 않은 확인 항목: {title}"
+                 for title in checks.values() if title not in asked]
+        if not tied:
+            left.insert(0, "질문을 검토 항목에 묶지 못해 만들지 못했어요")
+            reply = render(Final(left=left))
+            emit({"token": reply})
+            return _done(state, "done", reply=reply)
+        kit = InterviewKit(questions=tied)
         await store.save_kit(
             state.get("company_id"),
             state.get("conversation_id"),
@@ -556,7 +882,15 @@ def build_flows(
                 ],
             }
         )
-        return _done(state, "done")
+        final = Final(
+            made=[f"면접 질문 {len(tied)}개를 만들었어요"],
+            decided=["서류 검토에서 확인이 필요하다고 짚은 곳에 질문을 묶었어요"],
+            left=left,
+            next="면접에서 질문마다 좋은 신호와 주의 신호를 함께 봐 주세요",
+        )
+        reply = render(final)
+        emit({"token": reply})
+        return _done(state, "done", reply=reply)
 
     interview = StateGraph(EmployerState)
     interview.add_node("iv_start", iv_start)
@@ -584,19 +918,33 @@ def build_flows(
             f"[공고]\n{posting or query}\n\n[공개 프로필]\n"
             + json.dumps(profiles, ensure_ascii=False)[:20000],
         )
-        known = {str(p.get("userId") or p.get("id")) for p in profiles}
-        picks = [p for p in shortlist.people if p.profile_id in known][:10]
+        found = {str(p.get("userId") or p.get("id")): p for p in profiles}
+        texts = {key: json.dumps(p, ensure_ascii=False) for key, p in found.items()}
+        # A reason must come from the profile itself; one that does not is dropped, the person stays.
+        picks = [
+            p.model_copy(update={"reasons": [r for r in p.reasons if _grounded(r, found[p.profile_id])]})
+            for p in shortlist.people
+            if p.profile_id in texts
+        ][:10]
         return flow_update(
-            state, step="pick", posting=posting, people=[p.model_dump() for p in picks]
+            state,
+            step="pick",
+            posting=posting,
+            people=[p.model_dump() for p in picks],
+            profiles={p.profile_id: texts[p.profile_id] for p in picks},
         )
 
     async def sc_pick(state):
         people = flow_of(state).get("people") or []
         options = [
-            {"id": p["profile_id"], "label": f"{p['name']} · {' / '.join(p['reasons'][:2])}"}
+            {
+                "id": p["profile_id"],
+                "label": " · ".join([p["name"], *([" / ".join(p["reasons"][:2])] if p["reasons"] else [])]),
+            }
             for p in people
         ]
-        answer = await gate(state, db, "sc_shortlist", "누구에게 제안을 보낼까요?", options)
+        answer = await gate(state, db, "sc_shortlist", "누구에게 제안을 보낼까요?", options,
+                            multiple=True)
         if cancelled(answer):
             return _done(state, "cancelled")
         chosen = answer.get("option_ids") or (
@@ -608,33 +956,56 @@ def build_flows(
         return flow_update(state, step="draft_offers", chosen=chosen)
 
     async def sc_draft_offers(state):
+        """Offers are drafted together. Each is checked for banned wording and for numbers found in
+        neither the person's profile nor the posting; a failing draft is redone once, then dropped."""
         flow = flow_of(state)
         people = {p["profile_id"]: p for p in flow.get("people") or []}
-        drafts = []
-        for profile_id in flow.get("chosen") or []:
+        profiles = flow.get("profiles") or {}
+        posting = flow.get("posting") or ""
+        generate = generate_for(state)
+
+        async def offer(profile_id: str) -> dict:
             person = people[profile_id]
-            draft = await generate_for(state)(
-                OfferDraft,
-                node_prompt("sc_offer"),
-                f"[공고]\n{flow.get('posting') or ''}\n\n[사람]\n"
-                + json.dumps(person, ensure_ascii=False),
-            )
-            bad = banned_in_posting(draft.message)
-            if bad:
-                continue
-            drafts.append(
-                {"profile_id": profile_id, "name": person["name"], "message": draft.message}
-            )
+            profile = profiles.get(profile_id, "")
+            user = f"[공고]\n{posting}\n\n[사람]\n" + json.dumps(person, ensure_ascii=False)
+            if profile:
+                user += f"\n\n[공개 프로필]\n{profile}"
+            for _ in range(2):
+                draft = await generate(OfferDraft, node_prompt("sc_offer"), user)
+                problems = [*banned_in_posting(draft.message), *unsupported_numbers(
+                    draft.message, profile, json.dumps(person, ensure_ascii=False), posting,
+                    flow.get("query") or "")]
+                if not problems:
+                    return {"profile_id": profile_id, "name": person["name"], "message": draft.message}
+                user += f"\n\n[다시 쓸 때 뺄 말 · 차별 표현이거나 근거 없는 숫자]\n{problems}"
+            return {"profile_id": profile_id, "name": person["name"], "dropped": True}
+
+        # One stage: a failing or late draft is dropped alone, and none outlives the turn.
+        chosen = [pid for pid in flow.get("chosen") or [] if pid in people]
+        staged = await run_stage([Task(pid, partial(offer, pid)) for pid in chosen], name="offers")
+        unmade = set(staged["late"] + staged["failed"])
+        results = [staged["out"][pid] for pid in chosen if pid not in unmade]
+        drafts = [r for r in results if not r.get("dropped")]
+        skipped = [
+            *(f"{r['name']}: 제안 문구가 검사를 통과하지 못해 보내지 않았어요"
+              for r in results if r.get("dropped")),
+            *(f"{people[pid]['name']}: 제안 문구를 만들지 못했어요"
+              for pid in chosen if pid in unmade),
+        ]
         if not drafts:
             reply = "제안 메시지를 만들지 못했어요. 다시 시도해 주세요."
             emit({"token": reply})
             return _done(state, "cancelled", reply=reply)
         preview = "\n\n".join(f"**{d['name']}**\n{d['message']}" for d in drafts)
-        emit({"token": "보낼 제안 메시지예요.\n\n" + preview})
-        return flow_update(state, step="send", drafts=drafts)
+        reply = "보낼 제안 메시지예요.\n\n" + preview
+        emit({"token": reply})
+        # Said before the send gate: stored with this job, so the employer keeps what they approve.
+        return flow_update(state, step="send", drafts=drafts, skipped=skipped, reply=reply,
+                           reply_job=job_of(state))
 
     async def sc_send(state):
-        drafts = flow_of(state).get("drafts") or []
+        flow = flow_of(state)
+        drafts = flow.get("drafts") or []
         answer = await gate(
             state,
             db,
@@ -643,8 +1014,8 @@ def build_flows(
             [{"id": "send", "label": "보내기"}],
         )
         if answer.get("option_id") != "send":
-            return _done(state, "cancelled")
-        sent = 0
+            return _done(state, "cancelled", reply=None)
+        sent, failed = 0, []
         for draft in drafts:
             result = await call_tool(
                 state,
@@ -657,11 +1028,17 @@ def build_flows(
             )
             if isinstance(result, dict) and not result.get("error"):
                 sent += 1
-        reply = (
-            f"{sent}명에게 제안을 보냈어요."
-            if sent
-            else "제안을 보내지 못했어요. 이미 보낸 사람일 수 있어요."
+            else:
+                failed.append(draft["name"])
+        final = Final(
+            made=[f"{sent}명에게 제안을 보냈어요"] if sent else [],
+            left=[
+                *(f"{name}: 보내지 못했어요. 이미 보낸 사람일 수 있어요" for name in failed),
+                *(flow.get("skipped") or []),
+            ],
+            next="답을 기다리는 동안 다른 조건으로 인재를 더 찾아볼 수 있어요" if sent else "",
         )
+        reply = render(final)
         emit({"token": reply})
         return _done(state, "done", reply=reply)
 

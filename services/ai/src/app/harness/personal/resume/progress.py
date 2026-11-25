@@ -3,9 +3,11 @@ from __future__ import annotations
 import re
 
 from app.domain.posting_fit import FIT_DIMENSIONS, fit_view
+from app.harness.personal.resume.subject import github_links
 
 _RESUME = ("resume", "이력서 읽기")
 _GITHUB = ("github", "GitHub 살펴보기")
+_COMPANY = ("company", "회사 조사")
 _POSTING = ("posting", "공고 분석")
 _FIT = ("fit", "적합도 계산")
 _EXTRA_CAP = 10
@@ -36,7 +38,10 @@ def _github_page(url: str) -> bool:
     return "github.com" in url.lower()
 
 
-def analyze_steps(inputs: dict, analysis: dict | None = None) -> tuple[list, set]:
+def analyze_steps(
+    inputs: dict, analysis: dict | None = None, *, company: bool = False
+) -> tuple[list, set]:
+    """`company` adds the 회사 조사 step before the posting; off until the graph reports it."""
     pages = inputs.get("pages") if isinstance(inputs.get("pages"), dict) else {}
     github_in = bool(inputs.get("github")) or any(_github_page(str(url)) for url in pages)
     posting_in = any(inputs.get(key) for key in ("posting", "postingId", "requirements")) or any(
@@ -48,6 +53,9 @@ def analyze_steps(inputs: dict, analysis: dict | None = None) -> tuple[list, set
     steps = [_RESUME]
     if github:
         steps.append(_GITHUB)
+    researched = company and posting
+    if researched:
+        steps.append(_COMPANY)
     if posting:
         steps.extend((_POSTING, _FIT))
     added = set()
@@ -55,6 +63,8 @@ def analyze_steps(inputs: dict, analysis: dict | None = None) -> tuple[list, set
         added.add(_GITHUB[0])
     if posting and not posting_in:
         added.update((_POSTING[0], _FIT[0]))
+        if researched:
+            added.add(_COMPANY[0])
     return steps, added
 
 
@@ -62,6 +72,12 @@ def _line(name: str, summary: str, state: str = "ok", **fields) -> dict:
     event = {"type": "tool", "name": name, "state": state, "summary": summary, "tier": "READ"}
     event.update({key: value for key, value in fields.items() if value})
     return event
+
+
+def company_line(sources: list) -> dict:
+    urls = list(dict.fromkeys(str(item).strip() for item in sources if str(item).strip()))
+    result = f"출처 {len(urls)}개" if urls else "출처를 찾지 못했어요"
+    return _line("research_company", _COMPANY[1], resultLine=result, extra=urls[:_EXTRA_CAP])
 
 
 def _dict(value) -> dict:
@@ -349,6 +365,29 @@ def marked_text(head: str, items: list[str]) -> str:
     return "\n".join([head, *(f"• {item}" for item in items)])
 
 
+def _verify_item(finding: dict) -> str:
+    rule, detail = finding.get("rule"), str(finding.get("detail") or "")
+    if rule == "unknown_evidence":
+        return f"근거 목록에 없는 {_josa(detail, '을', '를')} 인용했어요."
+    if rule == "fact_mismatch":
+        return f"서류·근거와 맞지 않는 문장이 있어요: {detail}"
+    if rule == "unsupported_number":
+        return f"출처를 찾지 못한 숫자가 있어요: {detail}"
+    return detail
+
+
+def verify_items(findings: list[dict]) -> list[str]:
+    """What the retry left, worded for the user, P0 first."""
+    ordered = sorted(findings, key=lambda item: item.get("level") != "P0")
+    return [text for text in map(_verify_item, ordered) if text]
+
+
+def verify_text(findings: list[dict]) -> str:
+    """The "확인이 필요한 점" block for what the retry left; "" when nothing is left."""
+    items = verify_items(findings)
+    return marked_text("확인이 필요한 점이 있어요.", items) if items else ""
+
+
 def quality_text(labels: list[str]) -> str:
     return marked_text("품질 검사를 마치고 추천 수정까지 반영했어요.", labels) + "\n"
 
@@ -598,7 +637,8 @@ def _material_rows(inputs: dict, analysis: dict) -> list[dict]:
         if company:
             row["badge"] = company[:1]
         rows.append(row)
-    provided = str(inputs.get("github") or "").strip()
+    links = github_links(inputs.get("github"))
+    provided = ", ".join(links)
     page = ""
     pages = inputs.get("pages") if isinstance(inputs.get("pages"), dict) else {}
     for url in pages:

@@ -96,15 +96,15 @@ async def test_prepare_interview_passes_ids_and_revision():
     seen = []
 
     class Interviews:
-        async def prepare(self, user_id, iid, revision, ai):
-            seen.append((user_id, iid, revision, ai))
+        async def prepare(self, user_id, iid, revision, ai, model=None):
+            seen.append((user_id, iid, revision, ai, model))
             return op
 
     out = await _run("prepare_interview",
                      {"interview_id": str(interview_id), "expected_revision": 3},
                      svc=SimpleNamespace(interviews=Interviews()))
     assert out["id"] == str(op.id) and out["status"] == ent.OP_RUNNING
-    assert seen == [(UUID(USER), interview_id, 3, None)]
+    assert seen == [(UUID(USER), interview_id, 3, None, None)]
 
 
 async def test_search_career_runs_rag_for_the_caller(monkeypatch):
@@ -236,6 +236,23 @@ async def test_start_document_starts_fresh_when_state_is_unreadable(row, emitted
     assert emitted == []
 
 
+async def test_start_document_does_not_restart_a_flow_this_turn_finished(emitted):
+    state = {"status": "done", "phase": "present", "job_id": "job-1"}
+    db = _ResumeDB({"resume_state": json.dumps(state)})
+    out = await _run("start_document", {}, ctx=_ctx(db=db))
+    assert out["done"] is True
+    assert db.executed == []
+    assert emitted == []
+
+
+async def test_start_document_restarts_a_flow_an_earlier_turn_finished(emitted):
+    state = {"status": "done", "phase": "present", "job_id": "job-0"}
+    db = _ResumeDB({"resume_state": json.dumps(state)})
+    out = await _run("start_document", {}, ctx=_ctx(db=db))
+    assert isinstance(out, Command)
+    assert out.update["resume"] == {"status": "active", "phase": "mode_select"}
+
+
 async def test_start_document_db_error_propagates_and_writes_nothing(emitted):
     # A failed read must not overwrite an active resume flow with a fresh one.
     db = _ResumeDB(RuntimeError("db down"))
@@ -243,6 +260,21 @@ async def test_start_document_db_error_propagates_and_writes_nothing(emitted):
         await _run("start_document", {}, ctx=_ctx(db=db))
     assert db.executed == []
     assert emitted == []
+
+
+async def test_a_fresh_document_does_not_read_the_last_flows_notes(emitted):
+    class _FilesDB(_ResumeDB):
+        async def execute(self, sql, *args):
+            if sql.lstrip().startswith("DELETE FROM workspace_files"):
+                self.files = {f for f in self.files
+                              if f != args[1] and not f.startswith("01_agent_")}
+            await super().execute(sql, *args)
+
+    db = _FilesDB({"resume_state": json.dumps({"status": "done", "job_id": "job-0"})})
+    db.files = {"00_notes.json", "01_agent_company.json", "resume.md"}
+    out = await _run("start_document", {}, ctx=_ctx(db=db))
+    assert out.goto == "resume_flow"
+    assert db.files == {"resume.md"}
 
 
 class _Record:
@@ -272,16 +304,21 @@ async def test_start_document_choice_survives_without_a_stream_writer():
     assert out["choice"]["gate"] == "start_document"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: harness/personal/tools.py:289 reads svc.interviews, but the bound service is "
-    "ConversationService (domain/services/conversation.py:172), which has no interviews "
-    "attribute, so prepare_interview always returns UNAVAILABLE in production"))
 async def test_prepare_interview_works_with_the_production_chat_service():
     from app.domain.services.conversation import ConversationService
     from tests.stubs import FakeDB
     svc = ConversationService(FakeDB(), None)
-    assert await _run("prepare_interview", {"interview_id": str(uuid4())}, svc=svc) != {
-        "error": "UNAVAILABLE"}
+    called = []
+
+    async def prepare(user_id, interview_id, revision, idem, *, model=None):
+        called.append(interview_id)
+        return {"status": "QUEUED"}
+
+    svc.interviews.prepare = prepare
+    interview_id = uuid4()
+    out = await _run("prepare_interview", {"interview_id": str(interview_id)}, svc=svc)
+    assert out == {"status": "QUEUED"}
+    assert called == [interview_id]
 
 
 async def test_each_edit_in_a_job_gets_its_own_approval(monkeypatch):
@@ -401,3 +438,30 @@ async def test_edit_document_without_a_change_tells_the_model_and_opens_no_card(
     db = SimpleNamespace(q=lambda: pytest.fail("no approval row for an edit that changes nothing"))
     out = await _run("edit_document", {"document_id": str(uuid4()), **change}, _ctx(db, "ALWAYS_ASK"))
     assert out == {"error": "NOTHING_TO_CHANGE"}
+
+
+async def test_an_edit_with_a_number_from_nowhere_is_sent_back_before_any_card(monkeypatch):
+    monkeypatch.setattr(tools, "interrupt", lambda payload: pytest.fail("no card for an invented number"))
+    db = SimpleNamespace(q=lambda: pytest.fail("no approval row for an invented number"))
+    svc = _page_ctx("# 이력서", "배송 API 개발, 응답 시간 30% 단축")
+    out = await _run("edit_document", {"document_id": str(uuid4()), "before": "배송 API 개발",
+                                       "after": "배송 API 개발로 매출 25% 증가"},
+                     ctx=_ctx(db, "ALWAYS_ASK"), svc=svc)
+    assert out == {"error": "UNSUPPORTED_NUMBER", "detail": ["25%"]}
+
+
+@pytest.mark.parametrize(("after", "user_text"), [
+    ("배송 API 개발, 응답 시간 30% 단축 주도", ""),   # from the document
+    ("배송 API 개발, 팀원 4명 리드", "팀원은 4명이었어요"),  # from what the user said
+])
+async def test_an_edit_reusing_a_known_number_goes_to_the_card(monkeypatch, after, user_text):
+    asked = []
+    monkeypatch.setattr(tools, "interrupt", lambda payload: asked.append(payload) or {"option_id": "skip"})
+    monkeypatch.setattr("app.harness.tools.get_stream_writer", lambda: lambda _event: None)
+    ctx = _ctx(_Approvals(existing=True), "ALWAYS_ASK")
+    ctx.user_text = user_text
+    out = await _run("edit_document", {"document_id": str(uuid4()), "before": "배송 API 개발",
+                                       "after": after},
+                     ctx=ctx, svc=_page_ctx("# 이력서", "배송 API 개발, 응답 시간 30% 단축"))
+    assert out == {"skipped": True}
+    assert asked[0]["kind"] == "DOCUMENT_EDIT"

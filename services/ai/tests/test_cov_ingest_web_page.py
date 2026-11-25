@@ -521,6 +521,8 @@ async def test_fetch_github_context_formats_owned_repos():
 
     def handler(request):
         seen.append(request)
+        if request.url.host == "raw.githubusercontent.com":
+            return httpx.Response(404)
         return httpx.Response(200, json=[
             {"name": "widget", "language": "Python", "stargazers_count": 5,
              "pushed_at": "2026-01-02T03:04:05Z", "description": "  A widget  "},
@@ -535,6 +537,72 @@ async def test_fetch_github_context_formats_owned_repos():
                    "- bare | - | ★0 | pushed ")
     assert seen[0].url.path == "/users/alice/repos"
     assert seen[0].url.params["type"] == "owner"
+
+
+def test_github_targets_keep_repo_segment_and_skip_reserved_paths():
+    text = ("코드는 github.com/Acme-Labs (공개) https://github.com/ada/cli.git "
+            "github.com/orgs/acme github.com/settings/profile github.com/acme-labs")
+    assert web_page.github_targets(text) == [("acme-labs", None), ("ada", "cli")]
+    assert web_page.github_targets(None) == []
+
+
+def _github(readmes):
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        if request.url.host == "raw.githubusercontent.com":
+            repo = request.url.path.split("/")[2]
+            body = readmes.get(repo)
+            return httpx.Response(200, text=body) if body else httpx.Response(404)
+        return httpx.Response(200, json=[
+            {"name": "shop-api", "language": "Python"},
+            {"name": "shop-web", "language": "TS"},
+            {"name": "tools", "language": "Go"},
+            {"name": "extra", "language": "Go"},
+        ])
+
+    return seen, httpx.MockTransport(handler)
+
+
+async def test_fetch_github_context_reads_org_and_appends_readmes():
+    seen, transport = _github({"shop-api": "# shop-api\n" + "x" * 3000, "shop-web": "# web"})
+    out = await web_page.fetch_github_context("acme-labs", transport=transport)
+    assert seen[0].startswith("https://api.github.com/users/acme-labs/repos")
+    assert "(4개, 최근 push 순)" in out
+    assert "## shop-api README\n# shop-api\n" in out
+    assert "x" * 1489 in out and "x" * 1490 not in out  # 1500-char cap
+    assert "## shop-web README\n# web" in out
+    assert "tools README" not in out  # top-3 README 404 is skipped
+    assert seen[1:] == [f"https://raw.githubusercontent.com/acme-labs/{name}/HEAD/README.md"
+                        for name in ("shop-api", "shop-web", "tools")]
+
+
+async def test_fetch_github_context_reads_named_repos_only():
+    seen, transport = _github({"extra": "extra docs"})
+    out = await web_page.fetch_github_context("acme-labs", transport=transport, repos=["extra"])
+    assert out.endswith("## extra README\nextra docs")
+    assert seen[1:] == ["https://raw.githubusercontent.com/acme-labs/extra/HEAD/README.md"]
+
+
+async def test_fetch_github_context_returns_empty_when_forbidden_without_a_limit():
+    forbidden = httpx.MockTransport(lambda r: httpx.Response(403))
+    assert await web_page.fetch_github_context("acme-labs", transport=forbidden) == ""
+
+
+@pytest.mark.parametrize("headers", [{"x-ratelimit-remaining": "0"}, {"retry-after": "60"}])
+async def test_github_fetchers_raise_on_a_rate_limit(headers):
+    for status in (403, 429):
+        limited = httpx.MockTransport(
+            lambda r, status=status: httpx.Response(status, headers=headers))
+        owner, repo = "acme-labs", "shop-api"
+        for fetch in (web_page.fetch_github_context(owner, transport=limited),
+                      web_page.fetch_github_tree(owner, repo, transport=limited),
+                      web_page.fetch_github_file(owner, repo, "a.py", transport=limited),
+                      web_page.fetch_github_commits(owner, repo, transport=limited),
+                      web_page.fetch_github_commit(owner, repo, "abc1234", transport=limited)):
+            with pytest.raises(web_page.GithubRateLimited):
+                await fetch
 
 
 async def test_fetch_github_context_returns_empty_on_failure():

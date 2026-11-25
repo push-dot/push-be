@@ -11,6 +11,7 @@ from app.domain.managed_ai import with_managed_default
 from app.domain.employer_chat import turn_from_payload
 from app.domain.errors import DomainError, missing_provider_key
 from app.domain.services.ai import AIGate
+from app.domain.services.interview import InterviewService
 from app.domain.a2ui import CARD_KINDS, mint_sid, surfaces
 from app.jobs import get_job_scheduler, set_job_scheduler
 from app.infrastructure.store_ai import AiUsageStore
@@ -117,6 +118,7 @@ class ConversationService:
         self.document_svc = document_svc
         self.job_svc = job_svc
         self.application_svc = application_svc
+        self.interviews = InterviewService(db, ai)
         self._sem = asyncio.Semaphore(MAX_INFLIGHT_JOBS)
         self._worker_task: Optional[asyncio.Task] = None
         self._inflight: set[asyncio.Task] = set()

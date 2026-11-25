@@ -39,10 +39,6 @@ async def test_blueprints():
     assert_scoped(conn.calls[-2], USER)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: _blueprint maps an empty/NULL estimated_effort to {} but EffortEstimate "
-    "requires minHours/maxHours, so a row with the column default '{}' raises "
-    "ValidationError instead of loading"))
 @pytest.mark.parametrize("effort", [None, {}])
 async def test_blueprint_with_default_effort_loads(effort):
     r = row(_BP_COLS, ProjectBlueprint, user_id=USER, estimated_effort=effort)

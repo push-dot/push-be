@@ -37,6 +37,8 @@ class ToolContext:
     # Whether the user gave this call's URL, when the graph already decided it for the approval.
     supplied: bool | None = None
     exposure: Exposure = Exposure.NONE
+    # Every user message of the thread, so a tool can check its output against what the user said.
+    user_text: str = ""
 
     @property
     def usage_job_id(self) -> str:

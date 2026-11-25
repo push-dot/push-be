@@ -25,7 +25,8 @@ def _blueprint(row) -> ProjectBlueprint:
     b = dict(row)
     for k in ("skills", "tasks", "completion_criteria", "metrics"):
         b[k] = b.get(k) or []
-    b["estimated_effort"] = b.get("estimated_effort") or {}
+    if not b.get("estimated_effort"):
+        b.pop("estimated_effort", None)
     return ProjectBlueprint(**b)
 
 
