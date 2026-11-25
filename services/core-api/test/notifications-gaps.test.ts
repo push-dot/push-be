@@ -345,6 +345,8 @@ test("a company bot pushes once when its posting closes or its company opens a n
     if (sql.includes("FROM bots b JOIN job_postings")) {
       assert.match(sql, /NOT b\.notifications_muted/);
       assert.match(sql, /ON CONFLICT \(dedupe_key\) DO NOTHING/);
+      assert.match(sql, /NOT EXISTS \(SELECT 1 FROM notification_dedupes d WHERE d\.dedupe_key = c\.dedupe_key\)[\s\S]*LIMIT 500/, "claimed rows leave before the limit");
+      assert.match(sql, /'watch:new:' \|\| b\.user_id/, "one push per user, not per bot");
       return { rows: watched, rowCount: 2 };
     }
     if (sql.startsWith("INSERT INTO notifications ")) {pushed.push(JSON.stringify(params));}

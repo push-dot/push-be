@@ -80,26 +80,34 @@ const DUE_REMINDERS = claimed(`SELECT e.user_id, e.id, e.title, 'remind:' || e.i
     FROM calendar_events e LEFT JOIN user_settings s ON s.user_id = e.user_id
     WHERE e.remind_at IS NOT NULL AND e.remind_at <= $1::timestamptz AND e.remind_at > $3::timestamptz AND COALESCE(s.notify_deadline, true)`);
 
-// A company bot watches its posting and its company: a close after the bot was made, and a new open posting
-// of the same company. The dedupe key makes each change one push, so no snapshot of the postings is kept.
-const DUE_WATCH = `WITH due AS (
-    SELECT b.user_id, b.display_name, p.id, p.title, 'closed' AS change, 'watch:closed:' || b.id || ':' || p.id AS dedupe_key
+// A company bot watches its posting and its company: a close after the bot was made, and an open posting of the
+// same company made after the bot (a draft counts once it is published). The dedupe key per user and posting is
+// the only state: rows already claimed or for opted-out users are dropped before the batch limit, so a later run
+// picks up where this one stopped, and one user with several bots on a company hears once.
+const DUE_WATCH = `WITH changes AS (
+    SELECT b.user_id, b.display_name, p.id, p.title, 'closed' AS change, p.closed_at AS at,
+      'watch:closed:' || b.user_id || ':' || p.id AS dedupe_key
     FROM bots b JOIN job_postings p ON p.id = b.posting_id
     WHERE b.kind = 'company' AND b.deleted_at IS NULL AND NOT b.notifications_muted
       AND p.closed_at > GREATEST(b.created_at, $2::timestamptz)
     UNION ALL
-    SELECT b.user_id, b.display_name, p.id, p.title, 'new', 'watch:new:' || b.id || ':' || p.id
+    SELECT b.user_id, b.display_name, p.id, p.title, 'new', p.created_at, 'watch:new:' || b.user_id || ':' || p.id
     FROM bots b JOIN job_postings src ON src.id = b.posting_id
     JOIN job_postings p ON p.company_id = COALESCE(b.company_id, src.company_id) AND p.id <> src.id
     WHERE b.kind = 'company' AND b.deleted_at IS NULL AND NOT b.notifications_muted
-      AND COALESCE(p.status, 'OPEN') = 'OPEN' AND p.closed_at IS NULL AND p.created_at > GREATEST(b.created_at, $2::timestamptz)
-    LIMIT 500
-  ), allowed AS (
-    SELECT due.* FROM due JOIN users u ON u.id = due.user_id AND u.deletion_requested_at IS NULL
-    LEFT JOIN user_settings s ON s.user_id = due.user_id WHERE COALESCE(s.notify_ai_done, true)
+      AND COALESCE(p.status, 'OPEN') = 'OPEN' AND p.closed_at IS NULL AND p.created_at > GREATEST(b.created_at, $3::timestamptz)
+  ), due AS (
+    SELECT DISTINCT ON (c.dedupe_key) c.* FROM changes c
+    JOIN users u ON u.id = c.user_id AND u.deletion_requested_at IS NULL
+    LEFT JOIN user_settings s ON s.user_id = c.user_id
+    WHERE COALESCE(s.notify_ai_done, true)
+      AND NOT EXISTS (SELECT 1 FROM notification_dedupes d WHERE d.dedupe_key = c.dedupe_key)
+    ORDER BY c.dedupe_key, c.at
+  ), batch AS (
+    SELECT * FROM due ORDER BY at, dedupe_key LIMIT 500
   ), claimed AS (
-    INSERT INTO notification_dedupes (dedupe_key, created_at) SELECT dedupe_key, $1::timestamptz FROM allowed ON CONFLICT (dedupe_key) DO NOTHING RETURNING dedupe_key
-  ) SELECT allowed.user_id, allowed.display_name, allowed.id, allowed.title, allowed.change FROM allowed JOIN claimed USING (dedupe_key)`;
+    INSERT INTO notification_dedupes (dedupe_key, created_at) SELECT dedupe_key, $1::timestamptz FROM batch ON CONFLICT (dedupe_key) DO NOTHING RETURNING dedupe_key
+  ) SELECT batch.user_id, batch.display_name, batch.id, batch.title, batch.change FROM batch JOIN claimed USING (dedupe_key)`;
 
 export const watchNotice = (row: Row): Notice => {
   const title = String(row.title ?? "");
@@ -164,7 +172,7 @@ export const runNotificationJobs = async (ctx: Ctx): Promise<Response> => {
   const [due, reminders, watched] = await Promise.all([
     query(ctx.deps.query, DUE_DEADLINES, [deadlineDay, nowIso]),
     query(ctx.deps.query, DUE_REMINDERS, [nowIso, nowIso, lookback]),
-    query(ctx.deps.query, DUE_WATCH, [nowIso, lookback]),
+    query(ctx.deps.query, DUE_WATCH, [nowIso, lookback, new Date(ctx.now.getTime() - 30 * DAY_MS).toISOString()]),
   ]);
   for (const row of due.rows) {
     const title = String(row.title ?? "");
