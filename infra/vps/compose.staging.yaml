@@ -71,6 +71,8 @@ x-ai-env: &ai-env
   MODEL_PRO: anthropic/claude-sonnet-5-5
   MODEL_ULTRA: anthropic/claude-sonnet-5-5
   MODEL_EMPLOYER_ULTRA: anthropic/claude-sonnet-5-5
+  LIGHT_MODEL: ${LIGHT_MODEL:-}
+  AGENT_LIGHT_MODEL: ${AGENT_LIGHT_MODEL:-}
   TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-}
   EMBEDDING_PROVIDER: tei
   TEI_EMBED_URL: http://embed:80
