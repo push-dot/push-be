@@ -224,3 +224,78 @@ test("an approval card is consumed once, and only the same idempotency key may r
   assert.equal(await code(await apply("62626262-6262-4262-8262-626262626262")), "APPROVAL_REQUIRED", "replay with a new key");
   assert.match(sqls[0], /consumed_at IS NULL OR consumed_key = \$5::uuid/);
 });
+
+test("company act-as writes that reach people outside the company need the approved card", async () => {
+  const posting = "21212121-2121-4121-8121-212121212121";
+  const profile = "81818181-8181-4181-8181-818181818181";
+  const approval = "51515151-5151-4151-8151-515151515151";
+  const key = "61616161-6161-4161-8161-616161616161";
+  const post = { category: "work", title: "채용 소식", body: "함께해요" };
+  const cases = [
+    ["PATCH", `/api/v1/postings/${posting}`, { status: "OPEN" }, "DRAFT", "publish_posting", { posting_id: posting }],
+    ["PATCH", `/api/v1/postings/${posting}`, { title: "새 제목" }, "OPEN", "update_published_posting", { posting_id: posting }],
+    ["POST", `/api/v1/postings/${posting}/close`, {}, "OPEN", "close_posting", { posting_id: posting }],
+    ["POST", `/api/v1/profiles/${profile}/offer`, { message: "커피챗 해요" }, "OPEN", "send_offer", { profile_id: profile, message: "커피챗 해요" }],
+    ["POST", "/api/v1/posts", post, "OPEN", "create_company_post", post],
+  ] as const;
+  for (const [method, path, body, status, tool, target] of cases) {
+    const asked: Array<Array<unknown>> = [];
+    const query = (approved: boolean) => async (sql: string, params: Array<unknown> = []) => {
+      if (sql.includes("UPDATE approvals")) {
+        asked.push(params);
+        return approved ? { rows: [{ ok: 1 }], rowCount: 1 } : empty;
+      }
+      if (sql.includes("SELECT status FROM job_postings")) {return { rows: [{ status }], rowCount: 1 };}
+      return queryFor(COMPANY)(sql, params);
+    };
+    const call = (headers: Record<string, string>, approved: boolean) => {
+      resetLimits();
+      return handle(new Request(`https://core.example${path}`, {
+        method,
+        headers: {
+          "content-type": "application/json", "idempotency-key": key,
+          "x-push-internal-secret": SECRET, "x-push-act-as": USER, "x-push-company": COMPANY, ...headers,
+        },
+        body: JSON.stringify(body),
+      }), env(), deps(query(approved)));
+    };
+
+    const bare = await call({}, true);
+    assert.equal(await code(bare), "APPROVAL_REQUIRED", `${tool} without a card`);
+    assert.equal(asked.length, 0);
+
+    await call({ "x-push-approval": approval }, false);
+    assert.deepEqual(asked[0], [approval, USER, tool, JSON.stringify(target), key]);
+
+    const approved = await call({ "x-push-approval": approval }, true);
+    assert.notEqual(await code(approved), "APPROVAL_REQUIRED", `${tool} with the approved card`);
+  }
+});
+
+test("a company draft edit and personal offers and posts need no card", async () => {
+  const posting = "21212121-2121-4121-8121-212121212121";
+  const profile = "81818181-8181-4181-8181-818181818181";
+  const cases = [
+    [`/api/v1/postings/${posting}`, "PATCH", { title: "초안" }, { "x-push-company": COMPANY }],
+    [`/api/v1/profiles/${profile}/offer`, "POST", { message: "커피챗 해요" }, {}],
+    ["/api/v1/posts", "POST", { category: "daily", title: "안녕", body: "반가워요" }, {}],
+  ] as const;
+  for (const [path, method, body, headers] of cases) {
+    resetLimits();
+    const asked: Array<string> = [];
+    const res = await handle(new Request(`https://core.example${path}`, {
+      method,
+      headers: {
+        "content-type": "application/json", "idempotency-key": "71717171-7171-4171-8171-717171717171",
+        "x-push-internal-secret": SECRET, "x-push-act-as": USER, ...headers,
+      },
+      body: JSON.stringify(body),
+    }), env(), deps(async (sql, params) => {
+      if (sql.includes("approvals")) {asked.push(sql);}
+      if (sql.includes("SELECT status FROM job_postings")) {return { rows: [{ status: "DRAFT" }], rowCount: 1 };}
+      return queryFor(COMPANY)(sql, params);
+    }));
+    assert.notEqual(await code(res), "APPROVAL_REQUIRED", `${method} ${path}`);
+    assert.deepEqual(asked, [], `${method} ${path}`);
+  }
+});

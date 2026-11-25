@@ -1025,6 +1025,7 @@ def build_flows(
                     "message": draft["message"],
                     "postingId": flow_of(state).get("posting_id"),
                 },
+                approved=True,
             )
             if isinstance(result, dict) and not result.get("error"):
                 sent += 1

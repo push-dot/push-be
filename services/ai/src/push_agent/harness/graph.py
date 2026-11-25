@@ -2,14 +2,37 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+from uuid import UUID
 
 from langgraph.graph import END, START, StateGraph
 
+from app.harness.approval import approval_id_for
 from app.harness.binding import bound_services
 from app.harness.graph import turn_model
 from app.harness.status import job_of
 from app.harness.tools import ToolContext, call_structured, emit
+
+
+async def record_gate_approval(db, ctx, tool, args) -> None:
+    approval_id = UUID(approval_id_for(ctx.job_id, ctx.tool_call_id))
+    await db.q().execute(
+        "INSERT INTO approvals (id, user_id, kind, target_id, payload_hash, status, "
+        "option_id, decided_at, conversation_id, title, tool_name, tool_args, tool_call_id, "
+        "job_id, created_at) VALUES ($1,$2,'TOOL_ACTION',$1,$3,'APPROVED','approve',now(),"
+        "$4,$5,$6,$7::jsonb,$8,$9,now()) "
+        "ON CONFLICT (id) DO NOTHING",
+        approval_id,
+        UUID(ctx.user_id),
+        hashlib.sha256(ctx.tool_call_id.encode()).hexdigest(),
+        UUID(ctx.conversation_id),
+        tool.summarize(args),
+        tool.name,
+        json.dumps(args.model_dump(mode="json"), ensure_ascii=False),
+        ctx.tool_call_id,
+        UUID(ctx.job_id),
+    )
 
 
 def build_employer_graph(agent, tools, after_agent, checkpointer, *, db, core=None,
@@ -31,7 +54,9 @@ def build_employer_graph(agent, tools, after_agent, checkpointer, *, db, core=No
     def generate_for(_state):
         return gate_generate(turn_model.get())
 
-    async def call_tool(state, name, args):
+    async def call_tool(state, name, args, *, approved: bool = False):
+        """approved: the employer answered a flow gate that showed this exact write, so it counts
+        as the card core asks for."""
         tool = (tools_by_name or {}).get(name)
         if tool is None:
             return {"error": "UNKNOWN_TOOL"}
@@ -46,7 +71,10 @@ def build_employer_graph(agent, tools, after_agent, checkpointer, *, db, core=No
             core=core,
             access_mode=str(state.get("access_mode") or "AUTO"),
         )
-        result, _ok = await call_structured(tool, tool.args_model.model_validate(args), ctx)
+        parsed = tool.args_model.model_validate(args)
+        if approved:
+            await record_gate_approval(db, ctx, tool, parsed)
+        result, _ok = await call_structured(tool, parsed, ctx)
         return result
 
     state_type, flows = build_flows(
