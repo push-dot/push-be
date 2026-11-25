@@ -538,7 +538,9 @@ export const resolveApproval = async (ctx: Ctx, idRaw: string, approvalRaw: stri
   const body = await readObject(ctx.request);
   forbidExtra(body, ["optionId", "optionIds"]);
   const row = await one(ctx.deps.query,
-    "SELECT id, status, kind, options, job_id, expires_at FROM approvals WHERE id = $1 AND conversation_id = $2 AND user_id = $3",
+    `SELECT id, status, kind, options, job_id, expires_at FROM approvals WHERE id = $1 AND conversation_id = $2 AND (user_id = $3 OR EXISTS (
+       SELECT 1 FROM company_members m JOIN conversations owned ON owned.company_id = m.company_id
+       WHERE owned.id = approvals.conversation_id AND m.user_id = $3))`,
     [approvalId, conversationId, ctx.user.id]);
   if (!row) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
   const picked = selectedOptions(body, cardOptionIds(row.options));
@@ -548,8 +550,8 @@ export const resolveApproval = async (ctx: Ctx, idRaw: string, approvalRaw: stri
   // 닫기 on an expired card answers reject. It closes the card and resumes nothing.
   if (expired && optionId === "reject") {
     const closed = await one(ctx.deps.query,
-      "UPDATE approvals SET status = 'REJECTED', option_id = $2, decided_at = now(), updated_at = now(), revision = revision + 1 WHERE id = $1 AND status IN ('PENDING', 'EXPIRED') RETURNING id",
-      [approvalId, optionId]);
+      "UPDATE approvals SET status = 'REJECTED', option_id = $2, decided_at = now(), decided_by = $3, updated_at = now(), revision = revision + 1 WHERE id = $1 AND status IN ('PENDING', 'EXPIRED') RETURNING id",
+      [approvalId, optionId, ctx.user.id]);
     if (!closed) {throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");}
     return data(200, { id: approvalId, status: "REJECTED", optionId }, ctx.rid);
   }
@@ -561,8 +563,8 @@ export const resolveApproval = async (ctx: Ctx, idRaw: string, approvalRaw: stri
   const kind = String(row.kind ?? "");
   const status = kind === "TOOL_ACTION" && optionId === "reject" ? "REJECTED" : "APPROVED";
   const updated = await one(ctx.deps.query,
-    "UPDATE approvals SET status = $1, option_id = $2, decided_at = now(), updated_at = now(), revision = revision + 1 WHERE id = $3 AND status = 'PENDING' RETURNING id",
-    [status, optionId, approvalId]);
+    "UPDATE approvals SET status = $1, option_id = $2, decided_at = now(), decided_by = $4, updated_at = now(), revision = revision + 1 WHERE id = $3 AND status = 'PENDING' RETURNING id",
+    [status, optionId, approvalId, ctx.user.id]);
   if (!updated) {throw new HttpError(409, "APPROVAL_ALREADY_RESOLVED", "approval already resolved");}
   const result = { id: approvalId, status, optionId, ...(picked.optionIds ? { optionIds: picked.optionIds } : undefined) };
   const resumes = RESUMABLE.has(kind) || (row.job_id !== null && row.job_id !== undefined);
@@ -576,7 +578,7 @@ export const resolveApproval = async (ctx: Ctx, idRaw: string, approvalRaw: stri
     return data(202, { ...result, jobId }, ctx.rid);
   } catch (error) {
     await query(ctx.deps.query,
-      "UPDATE approvals SET status = 'PENDING', option_id = NULL, decided_at = NULL, updated_at = now() WHERE id = $1 AND status = $2",
+      "UPDATE approvals SET status = 'PENDING', option_id = NULL, decided_at = NULL, decided_by = NULL, updated_at = now() WHERE id = $1 AND status = $2",
       [approvalId, status]);
     throw error;
   }
