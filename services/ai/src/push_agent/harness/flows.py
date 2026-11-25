@@ -292,7 +292,7 @@ def build_flows(
         now = utcnow()
         tasks = []
         if not (cached and nodes.profile_is_fresh((company or {}).get("profile_refreshed_at"), now)):
-            emit({"type": "status", "text": "회사 정보를 찾는 중"})
+            emit(line("research_company", "run", "회사 정보 찾기", name))
 
             async def research() -> dict:
                 text = await research_text(state, name)
@@ -318,19 +318,8 @@ def build_flows(
         else:
             # Fresh cache, or research ran late: go on with the stored (even stale) or an empty profile.
             profile = CompanyProfile.model_validate(cached) if cached else CompanyProfile(name=name)
-        emit(
-            {
-                "type": "employer_research",
-                "company": profile.name or name,
-                "summary": profile.summary,
-                "sourceCounts": {
-                    "homepage": profile.homepage_count,
-                    "news": profile.news_count,
-                    "postings": profile.posting_count,
-                },
-                "facts": [f.model_dump(by_alias=True) for f in profile.facts[:3]],
-            }
-        )
+        emit(line("research_company", "ok", "회사 정보 찾기", profile.name or name,
+                  _research_line(profile)))
         return flow_update(
             state,
             step="role_options",
@@ -435,14 +424,10 @@ def build_flows(
             requests=flow.get("requests") or [],
         )
         version = int(flow.get("version") or 0) + 1
-        emit(
-            {
-                "type": "posting_draft",
-                "version": version,
-                "draft": _draft_event(review.draft),
-                "notes": review.notes,
-            }
-        )
+        # Shown before the confirm gate, so the employer answers it with the draft in view.
+        preview = "초안을 만들었어요. 읽어 보고 아래에서 골라 주세요.\n\n"
+        preview += _fence_text(review.draft)
+        emit({"token": preview})
         notes = _notes(flow)
         asks = _cut_asks(draft, review.draft, role, flow.get("need") or "")
         ask_lines, recut = "", []
@@ -466,6 +451,8 @@ def build_flows(
             late=[*(flow.get("late") or []), *(dropped.get("late") or [])],
             failed=[*(flow.get("failed") or []), *(dropped.get("failed") or [])],
             reviewed=int(flow.get("reviewed") or 0) + len(objections),
+            reply=preview,
+            reply_job=job_of(state),
         )
 
     async def pf_confirm(state):
@@ -507,9 +494,7 @@ def build_flows(
     async def pf_save(state):
         flow = flow_of(state)
         draft = PostingDraft.model_validate(flow["draft"])
-        fence = (
-            "```posting-draft\n" + json.dumps(_fence(draft), ensure_ascii=False, indent=2) + "\n```"
-        )
+        fence = _fence_text(draft)
         decided = [_career_line(draft)]
         if flow.get("reference"):
             decided.append("참고 공고는 구조만 따르고 문장은 새로 썼어요")
@@ -575,7 +560,7 @@ def build_flows(
             return _done(state, "cancelled", reply=reply)
         docs = await store.snapshots(app_id, state.get("company_id"))
         documents = "\n\n".join(f"# {d['title']}\n{d['content']}" for d in docs)
-        emit({"type": "status", "text": "제출 서류를 읽는 중"})
+        emit(line("read_documents", "ok", "제출 서류 읽기", f"서류 {len(docs)}개"))
         ctx = await store.applicant_context(row["user_id"])
         category = (ctx or {}).get("job_category") or row["job_category"]
         tenure = (ctx or {}).get("tenure_years")
@@ -621,7 +606,7 @@ def build_flows(
             emit({"token": reply})
             return _done(state, "cancelled", reply=reply)
         text = await read_pdf(bytes(found["content"]))
-        emit({"type": "status", "text": "첨부 서류를 읽는 중"})
+        emit(line("read_documents", "ok", "첨부 서류 읽기", found["file_name"]))
         return flow_update(
             state,
             step="match",
@@ -733,17 +718,7 @@ def build_flows(
                 report,
                 attachment_name=flow.get("attachment_name"),
             )
-        emit(
-            {
-                "type": "review_report",
-                "applicationId": flow.get("application_id"),
-                "attachmentName": flow.get("attachment_name"),
-                "summary": report["summary"],
-                "matches": report["matches"],
-                "flags": report["flags"],
-                "disclaimer": DECISION_DISCLAIMER,
-            }
-        )
+        emit(review_plan(report, flow.get("attachment_name")))
         checks = sum(1 for f in flags if f.level == "CHECK")
         matches = report["matches"]
         final = Final(
@@ -831,8 +806,9 @@ def build_flows(
         report = json.loads(report) if isinstance(report, str) else report
         row = await store.application(app_id, state.get("company_id"))
         docs = await store.snapshots(app_id, state.get("company_id"))
-        emit({"type": "status", "text": "검토 결과를 이어받는 중"})
         flags = [Flag.model_validate(f) for f in report.get("flags") or []]
+        emit(line("carry_review", "ok", "서류 검토 결과 이어받기",
+                  f"확인 필요 {sum(1 for f in flags if f.level == 'CHECK')}곳"))
         # Questions are made only for what the review marked CHECK, and each must name one of them.
         checks = {_title_key(f.title): f.title for f in flags if f.level == "CHECK"}
         if not checks:
@@ -866,29 +842,13 @@ def build_flows(
             found["id"],
             kit.model_dump(),
         )
-        emit(
-            {
-                "type": "interview_kit",
-                "applicationId": app_id,
-                "questions": [
-                    {
-                        "text": q.text,
-                        "verify": q.verify,
-                        "goodSignals": q.good_signals,
-                        "cautionSignals": q.caution_signals,
-                        "fromFlag": q.from_flag,
-                    }
-                    for q in kit.questions
-                ],
-            }
-        )
         final = Final(
             made=[f"면접 질문 {len(tied)}개를 만들었어요"],
             decided=["서류 검토에서 확인이 필요하다고 짚은 곳에 질문을 묶었어요"],
             left=left,
             next="면접에서 질문마다 좋은 신호와 주의 신호를 함께 봐 주세요",
         )
-        reply = render(final)
+        reply = render(final) + "\n\n" + kit_text(kit)
         emit({"token": reply})
         return _done(state, "done", reply=reply)
 
@@ -1070,21 +1030,54 @@ def build_flows(
     }
 
 
-def _draft_event(draft: PostingDraft) -> dict:
-    return {
-        "title": draft.title,
-        "jobCategory": draft.job_category,
-        "careerMin": draft.career_min,
-        "careerMax": draft.career_max,
-        "location": draft.location,
-        "employmentType": draft.employment_type,
-        "workStyle": draft.work_style,
-        "salaryRange": draft.salary_range,
-        "description": draft.description,
-        "requirements": draft.requirements,
-        "preferred": draft.preferred,
-        "skills": draft.skills,
-    }
+_MATCH_TAGS = {"MET": "통과", "PARTIAL": "조건부", "MISSING": "보완"}
+_FLAG_TAGS = {"CHECK": "확인", "SUPPORTED": "근거 있음", "UNKNOWN": "판단 못 함"}
+
+
+def review_plan(report: dict, attachment_name: str | None) -> dict:
+    """The review as a plan card: what to check in the interview first, then each requirement."""
+    rows = []
+    for flag in report.get("flags") or []:
+        quote = flag.get("quote")
+        note = flag.get("reason") or ""
+        rows.append({
+            "tag": _FLAG_TAGS.get(flag.get("level"), "확인"),
+            "label": flag.get("title") or "",
+            "note": f"{note}\n“{quote}”" if quote else note,
+        })
+    for match in report.get("matches") or []:
+        rows.append({
+            "tag": _MATCH_TAGS.get(match.get("status"), "보완"),
+            "label": match.get("requirement") or "",
+            "note": match.get("evidence") or "",
+        })
+    title = f"서류 검토 · {attachment_name}" if attachment_name else "서류 검토"
+    return {"type": "plan", "id": "review", "title": title,
+            "meta": DECISION_DISCLAIMER, "rows": rows}
+
+
+def kit_text(kit: InterviewKit) -> str:
+    """Numbered questions in the shape fo-web answer-text.ts reads (copy and PDF buttons)."""
+    blocks = []
+    for n, q in enumerate(kit.questions, 1):
+        lines = [f"{n}. {q.text}", f"확인할 점 · {q.verify}"]
+        if q.good_signals:
+            lines.append("좋은 신호 · " + ", ".join(q.good_signals))
+        if q.caution_signals:
+            lines.append("주의 신호 · " + ", ".join(q.caution_signals))
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+def _research_line(profile: CompanyProfile) -> str:
+    sources = profile.homepage_count + profile.news_count + profile.posting_count
+    if not profile.facts:
+        return "확인된 사실을 찾지 못했어요"
+    return f"출처 {sources}곳 · 사실 {len(profile.facts)}개"
+
+
+def _fence_text(draft: PostingDraft) -> str:
+    return "```posting-draft\n" + json.dumps(_fence(draft), ensure_ascii=False, indent=2) + "\n```"
 
 
 def _fence(draft: PostingDraft) -> dict:

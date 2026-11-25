@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from app.domain.services.conversation import _live_event
 from scripts.kstyle_loop import play
 
 CASES = Path(__file__).parent / "loop" / "cases" / "employer"
@@ -47,7 +48,15 @@ def test_the_saved_reply_has_the_final_shape(name):
 def test_the_flow_streams_its_cards_and_events():
     rows, _status, _log = _run(NAMES[0])
     kinds = {event.get("type") for row in rows for event in row["events"]}
-    assert {"choice", "employer_research", "posting_draft"} <= kinds
+    assert {"choice", "tool"} <= kinds
+    # Every typed event is one the worker stores, so the client sees it live and on reload.
+    stored = [_live_event(e, "job-1") for row in rows for e in row["events"] if e.get("type")]
+    assert None not in stored
+    research = [e for row in rows for e in row["events"] if e.get("name") == "research_company"]
+    assert research and research[-1]["state"] == "ok"
+    # The draft is in view before the confirm gate asks about it.
+    confirm = next(row for row in rows if (row["stop"] or {}).get("gate") == "pf_confirm_1")
+    assert "```posting-draft" in confirm["reply"]
     # A gate's card goes out on the turn that opens it, never again on the turn that answers it.
     cards = [[event["id"] for event in row["events"] if event.get("type") == "choice"]
              for row in rows]
