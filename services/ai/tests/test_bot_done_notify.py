@@ -60,8 +60,15 @@ async def test_finished_turn_posts_ai_done_with_the_job():
     )]
 
 
+def ai_done(outcome=None):
+    body = {"userId": str(USER), "conversationId": str(CONV), "jobId": str(FIRST)}
+    if outcome:
+        body["outcome"] = outcome
+    return [("POST", "/api/v1/internal/notifications/ai-done", str(USER), body)]
+
+
 @pytest.mark.asyncio
-async def test_card_cancel_and_failure_send_nothing():
+async def test_a_run_with_no_operation_and_a_cancel_send_nothing():
     core = Core()
     outcome, _, _ = await run(chat({}), core=core)
     assert outcome == "done"
@@ -74,10 +81,26 @@ async def test_card_cancel_and_failure_send_nothing():
     assert outcome == "cancelled"
     assert core.calls == []
 
+
+@pytest.mark.asyncio
+async def test_a_run_waiting_on_a_card_posts_waiting():
+    core = Core()
+    outcome, _, _ = await run(chat({"awaiting": "approval"}), core=core)
+    assert outcome == "done"
+    assert core.calls == ai_done("waiting")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_bot_run_posts_failed_and_an_employer_run_does_not():
     async def fail(_ctx):
         raise JobFailed({"message": "no"})
 
-    outcome, _, core = await run(fail, core=Core())
+    outcome, db, core = await run(fail, core=Core())
+    assert outcome == "failed"
+    assert db.jobs[FIRST]["status"] in {"FAILED", "DEAD"}
+    assert core.calls == ai_done("failed")
+
+    outcome, _, core = await run(fail, job_type="employer_ai", core=Core())
     assert outcome == "failed"
     assert core.calls == []
 

@@ -474,6 +474,19 @@ async def test_queue_turn_checks_cancellation_once_per_second_and_before_done(mo
     assert ctx.events[0] == ("token", {"text": "0"}) and ctx.events[-1][0] == "done"
 
 
+async def test_queue_turn_reports_a_run_that_stops_on_a_card():
+    class Graph:
+        async def astream(self, *args, **kwargs):
+            yield "custom", {"type": "done", "awaiting": "approval"}
+            yield "values", {}
+
+    async def cancelled(_job_id):
+        return False
+
+    ctx = _JobCtx()
+    assert await jobs.run_queue_turn(SimpleNamespace(graph=Graph()), ctx, cancelled) == {"awaiting": "approval"}
+
+
 async def test_queue_turn_stores_a_graph_result_for_the_stream_and_replay():
     card = {
         "type": "result",
