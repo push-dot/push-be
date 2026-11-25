@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextvars
 import hashlib
 import json
+import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -269,7 +270,12 @@ async def create_tool_approval(
     token = approval_conversation_id.set(str(conversation_id) if conversation_id else None)
     try:
         hook = getattr(tool, "display", None)
-        rows = await hook(args, db) if hook is not None else None
+        # The rows only illustrate the card; a failed read still asks, without them.
+        try:
+            rows = await hook(args, db) if hook is not None else None
+        except Exception:
+            logging.getLogger(__name__).warning("card rows failed: %s", tool.name, exc_info=True)
+            rows = None
     finally:
         approval_conversation_id.reset(token)
     card = CARDS.get(tool.name, DEFAULT_CARD)
