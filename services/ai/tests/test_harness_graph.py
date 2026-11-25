@@ -214,6 +214,7 @@ async def test_tool_cap_8():
     graph, _db = _graph(model, runs)
     await _events(graph, _input("BYPASS"))
     assert len(runs) == 8
+    assert "이어서 해 줘" in model.seen[-1][-1].content, "the capped answer tells the user how to go on"
     assert "도구 호출 한도" in model.seen[-1][-1].content or any(
         isinstance(message, ToolMessage) and "도구 호출 한도" in message.content
         for message in model.seen[-1]
