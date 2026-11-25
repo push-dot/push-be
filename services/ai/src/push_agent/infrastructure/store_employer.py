@@ -83,6 +83,14 @@ class EmployerStore(Store):
         )
         return [dict(r) for r in rows]
 
+    async def attachments(self, conversation_id, company_id) -> list[dict]:
+        """The PDFs attached to this conversation, newest first, without their bytes."""
+        rows = await self.q().fetch(
+            "SELECT id, file_name, created_at FROM conversation_attachments "
+            "WHERE conversation_id = $1 AND company_id = $2 ORDER BY created_at DESC, id LIMIT 20",
+            _uuid(conversation_id), _uuid(company_id))
+        return [dict(r) for r in rows]
+
     async def attachment(self, attachment_id, conversation_id, company_id):
         """An Ultra external PDF: readable only inside the conversation it was attached to."""
         return await self.q().fetchrow(

@@ -38,9 +38,10 @@ _TIERS = {
     "review_attachment": Tier.READ,
     "find_talent": Tier.READ,
     "prepare_interview": Tier.READ,
+    "list_attachments": Tier.READ,
 }
 
-_PYTHON = {"get_fit_score", "start_posting", "review_applicant", "review_attachment", "find_talent", "prepare_interview"}
+_PYTHON = {"get_fit_score", "start_posting", "review_applicant", "review_attachment", "find_talent", "prepare_interview", "list_attachments"}
 
 P = "11111111-1111-4111-8111-111111111111"
 A = "22222222-2222-4222-8222-222222222222"

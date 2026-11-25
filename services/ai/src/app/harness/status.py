@@ -110,6 +110,7 @@ TOOL_STATUS = {
     "start_posting": "공고 작성을 준비하는 중",
     "review_applicant": "지원자 서류를 검토하는 중",
     "review_attachment": "첨부 서류를 검토하는 중",
+    "list_attachments": "올린 PDF를 찾는 중",
     "find_talent": "맞는 인재를 찾는 중",
 }
 
