@@ -45,9 +45,6 @@ async def notify_turn_done(core, job, result, outcome: str | None = None) -> Non
     outcome = outcome or _outcome(result)
     if core is None or outcome is None or job.get("type") not in _TURN:
         return
-    # Only bot threads push a wait or a failure; employer turns run on the web.
-    if outcome != "done" and job.get("type") != "chat":
-        return
     conversation_id = job.get("conversation_id")
     if not conversation_id:
         return
