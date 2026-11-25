@@ -9,7 +9,7 @@ STATS_WINDOW = timedelta(hours=24)
 # token rows when they merge.
 COMPACT_AFTER = timedelta(minutes=10)
 COMPACT_BATCH = 200
-# Orphan threads erased per maintenance pass (SWEEP_S, 15 minutes). An orphan is a thread whose run
+# Orphan threads erased per maintenance pass (SWEEP_S, 1 hour). An orphan is a thread whose run
 # wrote checkpoints after the thread was deleted. While fewer than this many wait, each goes in the
 # first pass after its run ends, and a run ends within its deadline (JOB_DEADLINE_CHAT_S).
 CHECKPOINT_SWEEP_BATCH = 500

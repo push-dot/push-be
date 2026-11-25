@@ -105,20 +105,34 @@ class Dispatcher:
         self._requeued = 0
         # The kick endpoint and the periodic sweep must not dispatch concurrently.
         self._pass = asyncio.Lock()
+        # The fast tick reads Postgres only while jobs are in flight, so idle Neon can suspend.
+        # True at start: kicks sent while the dispatcher was down are found on the first tick.
+        self._busy = True
 
     async def run_once(self, now, *, maintain: bool = False) -> DispatchStats:
         async with self._pass:
             return await self._run_once(now, maintain)
 
+    async def tick(self, now) -> None:
+        """The fast pass: Redis every time, Postgres only while the last pass saw work in flight."""
+        async with self._pass:
+            if self._busy:
+                await self._run_once(now, False)
+            elif await self.queue.promote_due(now):
+                self._busy = True
+
     async def _run_once(self, now, maintain: bool) -> DispatchStats:
         db = await self.open_db()
         try:
-            requeued = await self._requeue_stale(db, now)
+            running = await db.running_jobs()
+            requeued = await self._requeue_stale(db, running, now)
             self._requeued += requeued
             promoted = await self.queue.promote_due(now)
             dispatched = await self._dispatch_outbox(db, now)
-            rehydrated = await self._rehydrate(db, now)
+            pending = await db.pending_jobs(now)
+            rehydrated = await self._rehydrate(pending, now)
             stats = DispatchStats(dispatched, promoted, requeued, rehydrated)
+            self._busy = bool(running or pending or promoted or dispatched)
             if maintain:
                 await db.reconcile_credits(now)
                 await db.compact_finished(now)
@@ -174,14 +188,14 @@ class Dispatcher:
         return [
             asyncio.create_task(every(SWEEP_S, lambda now: self.run_once(now, maintain=True))),
             asyncio.create_task(every(ALERT_S, self.check_alerts)),
-            asyncio.create_task(every(PROMOTE_S, self.run_once)),
+            asyncio.create_task(every(PROMOTE_S, self.tick)),
         ]
 
-    async def _requeue_stale(self, db, now) -> int:
+    async def _requeue_stale(self, db, running, now) -> int:
         ids = []
         beats = {}
         limits = heartbeat_limits()
-        for row in await db.running_jobs():
+        for row in running:
             beat = row["heartbeat_at"]
             if beat is None:
                 continue
@@ -208,12 +222,12 @@ class Dispatcher:
             await db.mark_dispatched([row["id"] for row in rows], now)
         return len(rows)
 
-    async def _rehydrate(self, db, now) -> int:
+    async def _rehydrate(self, pending, now) -> int:
         delayed = await self.queue.delayed_job_ids()
         present: dict[str, set[str]] = {}
         limits = visibility_limits()
         added = 0
-        for row in await db.pending_jobs(now):
+        for row in pending:
             job_id = str(row["id"])
             queue = row["queue"]
             if job_id in delayed:
