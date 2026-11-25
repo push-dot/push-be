@@ -7,6 +7,9 @@ from typing import Final
 from app.domain.errors import DomainError
 
 _CANCEL_CHECK_SECONDS: Final = 1.0
+# Tokens are stored as one chat_events row per batch, not per model chunk.
+_TOKEN_FLUSH_SECONDS: Final = 0.1
+_TOKEN_FLUSH_CHARS: Final = 200
 
 
 async def run_queue_turn(svc, ctx, cancelled) -> dict:
@@ -30,6 +33,17 @@ async def run_queue_turn(svc, ctx, cancelled) -> dict:
         **({"resume": payload["resume"]} if payload.get("resume") else {}),
     }
     result: dict = {}
+    pending: list[str] = []
+    pending_chars = 0
+    pending_at = 0.0
+
+    async def flush() -> None:
+        nonlocal pending, pending_chars
+        if pending:
+            text = "".join(pending)
+            pending, pending_chars = [], 0
+            await ctx.emit("token", {"text": text})
+
     checked_at = -_CANCEL_CHECK_SECONDS
     stream = source.astream(
         state, config={"configurable": {"thread_id": str(job["conversation_id"])}},
@@ -50,14 +64,24 @@ async def run_queue_turn(svc, ctx, cancelled) -> dict:
                     if chunk.get("type") == "done" and chunk.get("awaiting"):
                         result["awaiting"] = chunk["awaiting"]
                     if "token" in chunk:
-                        await ctx.emit("token", {"text": chunk["token"]})
+                        if not pending:
+                            pending_at = monotonic()
+                        pending.append(chunk["token"])
+                        pending_chars += len(chunk["token"])
+                        if (pending_chars >= _TOKEN_FLUSH_CHARS
+                                or monotonic() - pending_at >= _TOKEN_FLUSH_SECONDS):
+                            await flush()
                     elif (live := _live_event(chunk, job["id"])) is not None:
+                        await flush()
                         await ctx.emit(*live)
                 elif final:
+                    await flush()
                     operation = to_jsonable(chunk["operation"])
                     result = {"operationId": str(operation.get("id") or "")}
                     await ctx.emit("done", {"operation": operation})
+        await flush()
     except DomainError as err:
+        await flush()
         error = {"code": err.code, "message": err.message, "details": err.details}
         await ctx.emit("error", {"error": error})
         raise JobFailed(error)
