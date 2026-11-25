@@ -6,6 +6,7 @@ import { WebSocketServer } from "ws";
 import { inTransaction } from '../../src/db.ts';
 import type { Query, Row, Transaction } from '../../src/db.ts';
 
+types.setTypeParser(1082, (value: string) => value);
 types.setTypeParser(1114, (value: string) => value);
 types.setTypeParser(1184, (value: string) => value);
 
