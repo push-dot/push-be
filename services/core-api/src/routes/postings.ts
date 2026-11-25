@@ -502,7 +502,8 @@ function applicationDto(row: Row) {
 }
 
 const companyApplicationDto = (row: Row) => {
-  const { notes: _notes, stageEnteredAt: _stageEnteredAt, ...dto } = applicationDto(row);
+  // notes, nextActionAt and fitScore are the applicant's own tracking: never the company's.
+  const { notes: _notes, stageEnteredAt: _stageEnteredAt, nextActionAt: _nextActionAt, fitScore: _fitScore, ...dto } = applicationDto(row);
   return dto;
 };
 
