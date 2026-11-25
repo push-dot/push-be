@@ -32,6 +32,7 @@ from push_agent.domain.fair_hiring import DECISION_DISCLAIMER, banned_in_posting
 from app.domain.plan_levers import levers_for
 from app.harness.approvals import insert_chat_approval
 from push_agent.harness import nodes
+from push_agent.harness.nodes import DOC_LIMIT
 from push_agent.harness.recruit_prompts import CLAIM_READER, POSTING_REVIEWERS, node_prompt
 from push_agent.harness.schemas import (
     CompanyProfile,
@@ -165,6 +166,12 @@ def _title_key(title: str | None) -> str:
     return squash(title or "").strip("'\"「」 ")
 
 
+def _cut_note(documents: str) -> list[str]:
+    if len(documents) <= DOC_LIMIT:
+        return []
+    return [f"서류가 길어서 앞 {DOC_LIMIT:,}자까지만 읽었어요. 뒷부분은 직접 확인해 주세요"]
+
+
 def _career_line(draft: PostingDraft) -> str:
     if draft.career_max:
         return f"경력은 {draft.career_min}~{draft.career_max}년으로 잡았어요"
@@ -182,7 +189,7 @@ def _baseline_line(stats: dict) -> str:
 async def _read_claims(model, documents: str) -> dict:
     summary = "서류에서 확인할 주장을 골라요"
     emit(line("claim_reader", "run", summary, ""))
-    out = await single_call(model, CLAIM_READER, {"documents": documents[:20000]})
+    out = await single_call(model, CLAIM_READER, {"documents": documents[:DOC_LIMIT]})
     claims = [{"quote": str(c.get("quote") or ""), "claim": str(c.get("claim") or "")}
               for c in out.get("claims") or [] if isinstance(c, dict)]
     emit(line("claim_reader", "ok", summary, "", f"주장 {len(claims)}개"))
@@ -629,7 +636,7 @@ def build_flows(
             found = await generate(
                 Matches,
                 node_prompt("rv_match"),
-                f"[공고]\n{flow['posting']}\n\n[제출 서류]\n{documents[:20000]}",
+                f"[공고]\n{flow['posting']}\n\n[제출 서류]\n{documents[:DOC_LIMIT]}",
             )
             return {"matches": [m.model_dump() for m in found.matches]}
 
@@ -673,7 +680,7 @@ def build_flows(
         if light is None or not supported:
             return flags, []
         try:
-            wrong = await fact_check(light, "\n".join(supported.values()), documents[:20000], emit,
+            wrong = await fact_check(light, "\n".join(supported.values()), documents[:DOC_LIMIT], emit,
                                      noun="검토 결과")
         except Exception:
             return flags, ["서류 대조를 끝내지 못했어요. '근거 있음' 항목은 직접 확인해 주세요"]
@@ -728,7 +735,8 @@ def build_flows(
                 f"면접에서 확인할 곳 {checks}곳을 짚었어요" if checks else "따로 확인할 곳은 찾지 못했어요",
             ],
             decided=[_baseline_line(stats)],
-            left=[*(flow.get("left") or []), *dropped, *_unfinished(flow)],
+            left=[*(flow.get("left") or []), *dropped, *_cut_note(flow["documents"]),
+                  *_unfinished(flow)],
             next="" if flow.get("attachment_name") else "면접 질문 만들기",
         )
         reply = render(final)
