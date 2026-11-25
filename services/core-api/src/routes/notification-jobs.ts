@@ -81,24 +81,28 @@ const DUE_REMINDERS = claimed(`SELECT e.user_id, e.id, e.title, 'remind:' || e.i
     WHERE e.remind_at IS NOT NULL AND e.remind_at <= $1::timestamptz AND e.remind_at > $3::timestamptz AND COALESCE(s.notify_deadline, true)`);
 
 // A company bot watches its posting and its company: a close after the bot was made, and an open posting of the
-// same company made after the bot (a draft counts once it is published) that the user has no bot for yet.
+// same company made after the bot (a draft counts once it is published) that the user has no bot for yet. A bot
+// without a posting knows its company only by name (bots.company_id is unused since 0053).
 // `watch:baseline`, claimed on the first run, is when watching began, so the first run announces nothing older.
-// The dedupe key per user and posting is the only other state: rows already claimed or for opted-out users are
-// dropped before the batch limit, so a later run picks up where this one stopped, and a user hears once.
+// The dedupe key per user and posting is the only other state. Rows already claimed or for opted-out users are
+// dropped before the limit, and the limit counts groups: a close is its own group, and every new posting of one
+// company for one user is one group that becomes one push, so a company opening 40 postings sends one push each.
 const DUE_WATCH = `WITH mark AS (
     INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ('watch:baseline', $1::timestamptz) ON CONFLICT (dedupe_key) DO NOTHING
   ), base AS (
     SELECT COALESCE((SELECT created_at FROM notification_dedupes WHERE dedupe_key = 'watch:baseline'), $1::timestamptz) AS at
   ), changes AS (
-    SELECT b.user_id, b.display_name, p.id, p.title, 'closed' AS change, p.closed_at AS at,
-      'watch:closed:' || b.user_id || ':' || p.id AS dedupe_key
+    SELECT b.user_id, b.id AS bot_id, b.display_name, p.id, p.title, 'closed' AS change, p.closed_at AS at,
+      p.id::text AS grp, 'watch:closed:' || b.user_id || ':' || p.id AS dedupe_key
     FROM bots b JOIN job_postings p ON p.id = b.posting_id CROSS JOIN base
     WHERE b.kind = 'company' AND b.deleted_at IS NULL AND NOT b.notifications_muted
       AND p.closed_at > GREATEST(b.created_at, base.at, $2::timestamptz)
     UNION ALL
-    SELECT b.user_id, b.display_name, p.id, p.title, 'new', p.created_at, 'watch:new:' || b.user_id || ':' || p.id
+    SELECT b.user_id, b.id, b.display_name, p.id, p.title, 'new', p.created_at,
+      p.company_id::text, 'watch:new:' || b.user_id || ':' || p.id
     FROM bots b LEFT JOIN job_postings src ON src.id = b.posting_id CROSS JOIN base
-    JOIN job_postings p ON p.company_id = COALESCE(b.company_id, src.company_id)
+    JOIN job_postings p ON p.company_id IS NOT NULL
+      AND (p.company_id = src.company_id OR (b.posting_id IS NULL AND p.company = b.company_name))
     WHERE b.kind = 'company' AND b.deleted_at IS NULL AND NOT b.notifications_muted
       AND COALESCE(p.status, 'OPEN') = 'OPEN' AND p.closed_at IS NULL
       AND p.created_at > GREATEST(b.created_at, base.at, $3::timestamptz)
@@ -110,24 +114,44 @@ const DUE_WATCH = `WITH mark AS (
     WHERE COALESCE(s.notify_ai_done, true)
       AND NOT EXISTS (SELECT 1 FROM notification_dedupes d WHERE d.dedupe_key = c.dedupe_key)
     ORDER BY c.dedupe_key, c.at
+  ), groups AS (
+    SELECT user_id, change, grp, min(at) AS at FROM due GROUP BY user_id, change, grp ORDER BY min(at), user_id, grp LIMIT 500
   ), batch AS (
-    SELECT * FROM due ORDER BY at, dedupe_key LIMIT 500
+    SELECT due.* FROM due JOIN groups USING (user_id, change, grp)
   ), claimed AS (
     INSERT INTO notification_dedupes (dedupe_key, created_at) SELECT dedupe_key, $1::timestamptz FROM batch ON CONFLICT (dedupe_key) DO NOTHING RETURNING dedupe_key
-  ) SELECT batch.user_id, batch.display_name, batch.id, batch.title, batch.change FROM batch JOIN claimed USING (dedupe_key)`;
+  ) SELECT batch.user_id, batch.bot_id, batch.display_name, batch.id, batch.title, batch.change, batch.grp, batch.at
+    FROM batch JOIN claimed USING (dedupe_key) ORDER BY batch.user_id, batch.grp, batch.at DESC`;
 
-export const watchNotice = (row: Row): Notice => {
-  const title = String(row.title ?? "");
-  const name = String(row.display_name ?? "").trim();
-  const closed = row.change === "closed";
-  return {
-    userId: String(row.user_id),
-    type: "AI_DONE",
-    title: closed ? "공고가 마감됐어요" : "새 공고가 올라왔어요",
-    body: title,
-    pushBody: closed ? `${title} 공고가 마감됐어요` : `${name}에 새 공고가 올라왔어요: ${title}`,
-    target: { kind: "posting", id: String(row.id) },
-  };
+/** One notice per user and group: a close, or every new posting of one company. Rows come newest first per group. */
+export const watchNotices = (rows: ReadonlyArray<Row>): Array<Notice> => {
+  const groups = new Map<string, Array<Row>>();
+  for (const row of rows) {
+    const key = `${String(row.user_id)}|${String(row.change)}|${String(row.grp)}`;
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  return [...groups.values()].map((group) => {
+    const [row] = group;
+    const title = String(row?.title ?? "");
+    const name = String(row?.display_name ?? "").trim();
+    if (row?.change === "closed") {
+      return {
+        userId: String(row.user_id), type: "AI_DONE", title: "공고가 마감됐어요", body: title,
+        pushBody: `${title} 공고가 마감됐어요`, target: { kind: "posting", id: String(row.id) },
+      };
+    }
+    if (group.length === 1) {
+      return {
+        userId: String(row?.user_id), type: "AI_DONE", title: "새 공고가 올라왔어요", body: title,
+        pushBody: `${name}에 새 공고가 올라왔어요: ${title}`, target: { kind: "posting", id: String(row?.id) },
+      };
+    }
+    const line = `${name}에 새 공고 ${group.length}개가 올라왔어요`;
+    return {
+      userId: String(row?.user_id), type: "AI_DONE", title: "새 공고가 올라왔어요", body: line,
+      pushBody: line, target: { kind: "bot", id: String(row?.bot_id) },
+    };
+  });
 };
 
 const utcDay = (moment: Date, shiftDays: number): string => {
@@ -188,10 +212,11 @@ export const runNotificationJobs = async (ctx: Ctx): Promise<Response> => {
   for (const row of reminders.rows) {
     await sendNotification(ctx, { userId: String(row.user_id), type: "DEADLINE", title: String(row.title ?? ""), body: "", target: { kind: "calendar", id: String(row.id) } });
   }
-  for (const row of watched.rows) {
-    await sendNotification(ctx, watchNotice(row));
+  const notices = watchNotices(watched.rows);
+  for (const notice of notices) {
+    await sendNotification(ctx, notice);
   }
-  return data(200, { deadlines: due.rows.length, reminders: reminders.rows.length, watched: watched.rows.length }, ctx.rid);
+  return data(200, { deadlines: due.rows.length, reminders: reminders.rows.length, watched: notices.length }, ctx.rid);
 };
 
 export const dispatchNotificationJobs = async (ctx: Ctx, path: string): Promise<Response | null> => {

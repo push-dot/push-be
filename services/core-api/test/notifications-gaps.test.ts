@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import type { QueryResult } from "../src/db.ts";
 import { handle } from '../src/handler.ts';
-import { watchNotice } from "../src/routes/notification-jobs.ts";
+import { watchNotices } from "../src/routes/notification-jobs.ts";
 import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
 import type { Ctx, UserRow } from "../src/types.ts";
@@ -335,8 +335,8 @@ test("a company bot pushes once when its posting closes or its company opens a n
   resetLimits();
   const pushed: Array<string> = [];
   const watched = [
-    { user_id: OTHER, display_name: "모아페이", id: "p-closed", title: "백엔드 개발자", change: "closed" },
-    { user_id: OTHER, display_name: "모아페이", id: "p-new", title: "데이터 엔지니어", change: "new" },
+    { user_id: OTHER, bot_id: "b-1", display_name: "모아페이", id: "p-closed", title: "백엔드 개발자", change: "closed", grp: "p-closed" },
+    { user_id: OTHER, bot_id: "b-1", display_name: "모아페이", id: "p-new", title: "데이터 엔지니어", change: "new", grp: "c-1" },
   ];
   const res = await handle(new Request("https://core.example/api/v1/internal/notifications/run", {
     method: "POST",
@@ -347,6 +347,7 @@ test("a company bot pushes once when its posting closes or its company opens a n
       assert.match(sql, /ON CONFLICT \(dedupe_key\) DO NOTHING/);
       assert.match(sql, /NOT EXISTS \(SELECT 1 FROM notification_dedupes d WHERE d\.dedupe_key = c\.dedupe_key\)[\s\S]*LIMIT 500/, "claimed rows leave before the limit");
       assert.match(sql, /'watch:new:' \|\| b\.user_id/, "one push per user, not per bot");
+      assert.match(sql, /GROUP BY user_id, change, grp[\s\S]*LIMIT 500/, "the limit counts groups, not postings");
       assert.match(sql, /'watch:baseline'/, "the first run sets a baseline and announces nothing older");
       assert.match(sql, /NOT EXISTS \(SELECT 1 FROM bots own WHERE own\.user_id = b\.user_id AND own\.posting_id = p\.id/, "no news about a posting the user already has a bot for");
       return { rows: watched, rowCount: 2 };
@@ -360,7 +361,21 @@ test("a company bot pushes once when its posting closes or its company opens a n
   const [closed, opened] = pushed;
   assert.ok(closed?.includes("공고가 마감됐어요") && closed.includes("p-closed"));
   assert.ok(opened?.includes("새 공고가 올라왔어요") && opened.includes("p-new"));
-  const [closedRow, newRow] = watched;
-  assert.equal(closedRow && watchNotice(closedRow).pushBody, "백엔드 개발자 공고가 마감됐어요");
-  assert.equal(newRow && watchNotice(newRow).pushBody, "모아페이에 새 공고가 올라왔어요: 데이터 엔지니어");
+  assert.deepEqual(watchNotices(watched).map((notice) => notice.pushBody), [
+    "백엔드 개발자 공고가 마감됐어요", "모아페이에 새 공고가 올라왔어요: 데이터 엔지니어",
+  ]);
+});
+
+test("a company that opens many postings sends each user one push with the count", () => {
+  const rows = Array.from({ length: 40 }, (_, i) => ({
+    user_id: OTHER, bot_id: "b-1", display_name: "모아페이", id: `p-${i}`, title: `공고 ${i}`, change: "new", grp: "c-1",
+  }));
+  const other = { user_id: "u-2", bot_id: "b-2", display_name: "모아페이", id: "p-0", title: "공고 0", change: "new", grp: "c-1" };
+  const notices = watchNotices([...rows, other]);
+  assert.equal(notices.length, 2);
+  assert.deepEqual(notices[0], {
+    userId: OTHER, type: "AI_DONE", title: "새 공고가 올라왔어요", body: "모아페이에 새 공고 40개가 올라왔어요",
+    pushBody: "모아페이에 새 공고 40개가 올라왔어요", target: { kind: "bot", id: "b-1" },
+  });
+  assert.equal(notices[1]?.target.id, "p-0", "a single new posting still opens the posting");
 });
