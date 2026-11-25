@@ -9,9 +9,11 @@ KEEP_LIMIT = 100
 TEXT_MAX = 300
 
 _LIST = "SELECT text FROM user_memories WHERE user_id = $1 ORDER BY updated_at DESC, id LIMIT $2"
-# Saying the same thing again moves it to the top instead of adding a copy.
-_TOUCH = "UPDATE user_memories SET updated_at = now() WHERE user_id = $1 AND text = $2 RETURNING id"
-_INSERT = "INSERT INTO user_memories (id, user_id, text) VALUES ($1, $2, $3)"
+# Saying the same thing again moves it to the top instead of adding a copy (unique on user_id, text).
+_UPSERT = (
+    "INSERT INTO user_memories (id, user_id, text) VALUES ($1, $2, $3) "
+    "ON CONFLICT (user_id, text) DO UPDATE SET updated_at = now() RETURNING (xmax = 0) AS added"
+)
 _PRUNE = (
     "DELETE FROM user_memories WHERE user_id = $1 AND id NOT IN ("
     "SELECT id FROM user_memories WHERE user_id = $1 ORDER BY updated_at DESC, id LIMIT $2)"
@@ -38,7 +40,6 @@ async def remember(db, user_id, text: str) -> dict:
     fact = " ".join(text.split())[:TEXT_MAX]
     if db is None or uid is None or not fact:
         return {"saved": False}
-    if await db.q().fetchval(_TOUCH, uid, fact) is None:
-        await db.q().execute(_INSERT, uuid4(), uid, fact)
+    if await db.q().fetchval(_UPSERT, uuid4(), uid, fact):
         await db.q().execute(_PRUNE, uid, KEEP_LIMIT)
     return {"saved": True, "text": fact}

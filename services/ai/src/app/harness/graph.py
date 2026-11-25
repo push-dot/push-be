@@ -478,8 +478,7 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 kept = []
             if kept:
                 # After the fixed system prompt, so its cached prefix stays the same across turns.
-                facts = SystemMessage(content=as_data("
-".join(kept), "user_memories", None))
+                facts = SystemMessage(content=as_data("\n".join(kept), "user_memories", None))
                 messages = [messages[0], facts, *messages[1:]]
         remembered = (state.get("summary") or "").strip()
         if remembered:

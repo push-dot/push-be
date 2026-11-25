@@ -22,18 +22,17 @@ class Rows:
         assert "ORDER BY updated_at DESC" in sql
         return [{"text": text} for text in self.texts[:limit]]
 
-    async def fetchval(self, sql, user_id, text):
-        if text not in self.texts:
-            return None
-        self.texts.remove(text)
+    async def fetchval(self, sql, _id, user_id, text):
+        assert "ON CONFLICT (user_id, text)" in sql
+        added = text not in self.texts
+        if not added:
+            self.texts.remove(text)
         self.texts.insert(0, text)
-        return 1
+        return added
 
     async def execute(self, sql, *args):
-        if sql.startswith("INSERT"):
-            self.texts.insert(0, args[2])
-        elif sql.startswith("DELETE"):
-            del self.texts[args[1]:]
+        assert sql.startswith("DELETE")
+        del self.texts[args[1]:]
 
 
 @pytest.mark.asyncio
