@@ -6,6 +6,7 @@ import { handle } from './handler.ts';
 import type { CoreEnv } from './handler.ts';
 import { ReadCache } from "./read-cache.ts";
 
+types.setTypeParser(1082, (value: string) => value);
 types.setTypeParser(1114, (value: string) => value);
 types.setTypeParser(1184, (value: string) => value);
 
