@@ -57,7 +57,7 @@ const bodyFields = async (request: Request, keys: ReadonlyArray<string>): Promis
 };
 
 const CONSUME_APPROVAL = `UPDATE approvals SET consumed_at = COALESCE(consumed_at, now()), consumed_key = $5::uuid
-  WHERE id = $1 AND user_id = $2 AND kind = 'TOOL_ACTION'
+  WHERE id = $1 AND $2::uuid IN (user_id, decided_by) AND kind = 'TOOL_ACTION'
   AND tool_name = $3 AND status = 'APPROVED' AND option_id = 'approve' AND tool_args @> $4::jsonb
   AND (consumed_at IS NULL OR consumed_key = $5::uuid)
   RETURNING id`;
