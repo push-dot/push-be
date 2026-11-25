@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-scripts=(harden.sh bin/check-compose bin/push-firewall bin/push-watchdog bin/push-deploy test/run.sh test/real-logrotate.sh)
+scripts=(harden.sh bin/check-compose bin/push-firewall bin/push-watchdog bin/push-deploy bin/service-healthy test/run.sh test/real-logrotate.sh)
 for s in "${scripts[@]}"; do bash -n "$s"; done
 if command -v shellcheck >/dev/null; then
   shellcheck -x "${scripts[@]}"
@@ -51,6 +51,72 @@ if awk '
   echo "VPS deploy is still skipped unless the vps filter matches" >&2
   exit 1
 fi
+
+# bin/service-healthy reads the table `push-deploy ps` prints and passes only when the named service's
+# container is up and healthy. A container that exited is not in the table at all.
+ps_table() {
+  cat <<EOF
+NAME                   IMAGE              COMMAND                  SERVICE      CREATED         STATUS                   PORTS
+push-ai-dispatcher-1   push-bot:local     "python -m app.worke…"   dispatcher   2 minutes ago   Up 2 minutes (healthy)   8091/tcp
+push-ai-push-bot-1     push-bot:local     "python -m push_bot.…"   push-bot     2 minutes ago   Up 2 minutes (healthy)   8080/tcp
+$1
+EOF
+}
+agent_row() { echo "push-ai-push-agent-1   push-agent:local   \"python -m push_agen…\"   push-agent   2 minutes ago   $1   8080/tcp"; }
+staging_agent_row() {
+  echo "push-ai-staging-staging-push-agent-1   push-agent:staging   \"python -m push_agen…\"   staging-push-agent   2 minutes ago   $1   8080/tcp"
+}
+up="Up 2 minutes (healthy)"
+down=("Up 5 seconds (health: starting)" "Up 3 minutes (unhealthy)" "Restarting (1) 4 seconds ago")
+ps_table "$(agent_row "$up")" | bin/service-healthy push-agent >/dev/null
+ps_table "$(staging_agent_row "$up")" | bin/service-healthy staging-push-agent >/dev/null
+for status in "${down[@]}"; do
+  ! ps_table "$(agent_row "$status")" | bin/service-healthy push-agent >/dev/null 2>&1 \
+    || { echo "service-healthy accepted push-agent while: $status" >&2; exit 1; }
+done
+# Neither a healthy push-bot nor the other stack's agent stands in for the service asked about.
+! ps_table "" | bin/service-healthy push-agent >/dev/null 2>&1 \
+  || { echo "service-healthy passed with no push-agent container" >&2; exit 1; }
+! ps_table "$(staging_agent_row "$up")" | bin/service-healthy push-agent >/dev/null 2>&1 \
+  || { echo "service-healthy took staging-push-agent for push-agent" >&2; exit 1; }
+
+# The deploy step must not pass while push-agent is down. push-agent has no public host unless
+# AGENT_HOST is set, and core queues company turns for it either way. This runs the step's own health
+# phase from ci.yml against a stub VPS: every URL answers 200 and `ps` prints the given table.
+health_phase="$(awk '
+  /name: Deploy AI service to VPS/ { step = 1; next }
+  step && /^      - name:/ { step = 0 }
+  step && /^          urls=\(/ { phase = 1 }
+  step && phase { sub(/^          /, ""); print }
+' "$ci")"
+[ -n "$health_phase" ] || { echo "ci.yml: the VPS deploy step has no health phase" >&2; exit 1; }
+# No -u in the stub: macOS bash 3.2 rejects the step's empty "${stage_arg[@]}" under it; the runner's bash does not.
+# shellcheck disable=SC2016
+stub_vps='set -eo pipefail
+ssh_vps() { [ "${*: -1}" != ps ] || printf "%s\n" "$PS_TABLE"; }
+curl() { printf 200; }
+sleep() { :; }
+'
+deploy_health() { # <stage> <AGENT_HOST> <ps table>
+  local args="stage_arg=()"
+  [ "$1" != staging ] || args="stage_arg=(staging)"
+  (cd ../.. && STAGE="$1" AGENT_HOST="$2" PS_TABLE="$3" AI_HOST=bot.example DISPATCH_HOST=dispatch.example \
+    bash -c "$stub_vps$args"$'\n'"$health_phase") >/dev/null 2>&1
+}
+deploy_health production "" "$(ps_table "$(agent_row "$up")")" \
+  || { echo "the deploy health phase rejected a healthy production stack" >&2; exit 1; }
+deploy_health staging "" "$(ps_table "$(staging_agent_row "$up")")" \
+  || { echo "the deploy health phase rejected a healthy staging stack" >&2; exit 1; }
+! deploy_health staging "" "$(ps_table "$(agent_row "$up")")" \
+  || { echo "the staging deploy passed without staging-push-agent" >&2; exit 1; }
+for host in "" agent.example; do
+  for status in "${down[@]}"; do
+    ! deploy_health production "$host" "$(ps_table "$(agent_row "$status")")" \
+      || { echo "the deploy passed with push-agent '$status' (AGENT_HOST='$host')" >&2; exit 1; }
+  done
+  ! deploy_health production "$host" "$(ps_table "")" \
+    || { echo "the deploy passed with no push-agent container (AGENT_HOST='$host')" >&2; exit 1; }
+done
 
 # The one-time purge in harden.sh: force-rotates the live IP-bearing logs (fake logrotate and
 # systemctl below record their calls and leave the files a real rotation would), then drops every

@@ -589,6 +589,24 @@ jobs:
             fi
             echo "$url ok"
           done
+          # push-agent has no public host unless AGENT_HOST is set, and core queues company turns for it
+          # either way, so its container has to be healthy too. `ps` is the table of the release just started.
+          agent=push-agent
+          [ "$STAGE" != "staging" ] || agent=staging-push-agent
+          ok=0
+          for _ in $(seq 1 36); do
+            if ssh_vps "${stage_arg[@]}" ps | infra/vps/bin/service-healthy "$agent"; then
+              ok=1
+              break
+            fi
+            sleep 10
+          done
+          if [ "$ok" != "1" ]; then
+            echo "::error::$agent is not healthy"
+            ssh_vps "${stage_arg[@]}" ps || true
+            ssh_vps "${stage_arg[@]}" logs || true
+            exit 1
+          fi
       - name: Deploy core worker
         working-directory: services/core-api
         env:

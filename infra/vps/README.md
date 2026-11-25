@@ -76,14 +76,14 @@ CI가 하는 일:
 
 1. VPS: 저장소 tar를 `/opt/push-be/releases/<sha>`에 풀고, 위 값으로 `/opt/push-be/.env`(0600, `deploy` 소유)를 새로 쓴 뒤 `check-compose`를 통과하면 `docker compose up -d --build`를 실행한다. 값은 로그에 찍지 않는다. 작은따옴표나 줄바꿈이 든 값은 거부한다. 최근 릴리스 3개만 남긴다.
 2. Worker: `wrangler secret bulk`로 `push-be`와 `push-be-core`에만 시크릿을 쓴다. 다른 기존 시크릿은 그대로 둔다. OAuth 클라이언트 ID와 Stripe 가격 ID는 비밀이 아니지만 `wrangler deploy`가 지우지 않도록 시크릿으로 넣는다. `push-be-python`은 배포하지 않고 시크릿도 넣지 않는다. `AI_SHARED_SECRET`은 VPS·코어·게이트웨이가 같이 쓴다. 게이트웨이가 Python으로 넘길 때 `x-push-ai-secret`에 넣는다.
-3. `https://<AI_HOST>/healthz`(push-bot)와 `https://<DISPATCH_HOST>/healthz`가 200을 줄 때까지 6분 동안 기다린다. `AGENT_HOST`가 있으면 `https://<AGENT_HOST>/healthz`(push-agent)도 기다린다.
+3. `https://<AI_HOST>/healthz`(push-bot)와 `https://<DISPATCH_HOST>/healthz`가 200을 줄 때까지 6분 동안 기다린다. `AGENT_HOST`가 있으면 `https://<AGENT_HOST>/healthz`(push-agent)도 기다린다. 그다음 `push-deploy ps`가 `push-agent` 컨테이너를 `(healthy)`로 보여 줄 때까지 6분 동안 기다린다(`bin/service-healthy`). push-agent는 `AGENT_HOST`가 없으면 공개 주소가 없는데 core는 기업 턴을 항상 `q:agent*`에 넣으므로, 컨테이너가 뜨지 않으면 배포가 실패한다.
 4. Worker 배포에 `--var AI_ORIGIN:https://<AI_HOST>`를 넘긴다. `AGENT_HOST`가 있으면 `--var AGENT_ORIGIN:https://<AGENT_HOST>`도 넘긴다.
 
 ## Neon 연결과 DB 풀
 
 Postgres는 Neon이다. VPS는 compose로 AI를 돌리고 `DB_DRIVER=asyncpg`, `PG_TRANSPORT=tcp`로 접속한다. `push-be-core`는 Cloudflare Workers에서 `DATABASE_URL`로 같은 DB를 쓰되, Workers 런타임 규칙 때문에 `app.pgproto`가 **요청마다 ContextVar로 한 연결**만 연다(프로세스 단위 asyncpg 풀과 분리).
 
-VPS에서는 `push-bot`, `push-agent`, `ingest-worker`, `dispatcher`, `notify-worker` 등 **여러 컨테이너**가 각자 `create_pool`을 연다. 기본은 컨테이너당 asyncpg `DB_POOL_MAX_SIZE=10`, checkpointer가 켜진 서비스는 추가로 `CHECKPOINTER_POOL_MAX_SIZE=4`다. `DB_POOL_MIN_SIZE=0`이면 유휴 시 연결을 들고 있지 않는다. `ai-worker`만 예외로 `DB_POOL_MAX_SIZE` 기본값이 `AI_WORKER_CONCURRENCY`와 같다. 동시 작업 하나가 풀 연결 하나를 쓰므로 풀이 동시성보다 작으면 작업이 연결을 기다린다. `DB_POOL_MAX_SIZE`를 직접 지정할 때는 `AI_WORKER_CONCURRENCY` 이상으로 둔다.
+VPS에서는 `push-bot`, `push-agent`, `ingest-worker`, `dispatcher`, `notify-worker` 등 **여러 컨테이너**가 각자 `create_pool`을 연다. 기본은 컨테이너당 asyncpg `DB_POOL_MAX_SIZE=10`, checkpointer가 켜진 서비스는 추가로 `CHECKPOINTER_POOL_MAX_SIZE=4`다. `DB_POOL_MIN_SIZE=0`이면 유휴 시 연결을 들고 있지 않는다. `push-bot`과 `push-agent`는 예외다. `push-bot`의 `DB_POOL_MAX_SIZE` 기본값은 `AI_WORKER_CONCURRENCY`와 같고, `push-agent`의 `DB_POOL_MAX_SIZE`는 `AGENT_WORKER_CONCURRENCY`와 같다. 동시 작업 하나가 풀 연결 하나를 쓰므로 풀이 동시성보다 작으면 작업이 연결을 기다린다. `push-bot`의 `DB_POOL_MAX_SIZE`를 직접 지정할 때는 `AI_WORKER_CONCURRENCY` 이상으로 둔다.
 
 | Neon 엔드포인트 | 용도 |
 | --- | --- |
