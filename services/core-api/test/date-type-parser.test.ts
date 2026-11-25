@@ -5,5 +5,6 @@ import { types } from "@neondatabase/serverless";
 import "../src/index.ts";
 
 test("date columns reach handlers as YYYY-MM-DD text", () => {
-  assert.equal(types.getTypeParser(1082)("2026-12-16"), "2026-12-16");
+  const parseDate = types.getTypeParser(1082) as (value: string) => unknown;
+  assert.equal(parseDate("2026-12-16"), "2026-12-16");
 });
