@@ -16,7 +16,8 @@ from app.domain.errors import DomainError
 from app.domain.pagination import PageRequest
 from app.domain.validators import validate_https_url
 from app.framework.fit_judge import judge_fit
-from app.harness.approval import approval_id_for, site_granted, site_host, user_supplied
+from app.harness.approval import (
+    approval_conversation_id, approval_id_for, site_granted, site_host, user_supplied)
 from app.harness.approvals import insert_chat_approval
 from app.harness.binding import bound_services, current_ai_gate
 from app.harness.core_client import idempotency_key
@@ -162,7 +163,7 @@ class PageArgs(BaseModel):
         return value
 
 
-def _core(name, tier, model, summary, method, path_of, *, write=False, drop=()):
+def _core(name, tier, model, summary, method, path_of, *, write=False, drop=(), display=None):
     async def run(ctx: ToolContext, args):
         body = args.model_dump(mode="json", exclude_none=True, by_alias=True, exclude=set(drop))
         return await ctx.core.call(
@@ -175,7 +176,27 @@ def _core(name, tier, model, summary, method, path_of, *, write=False, drop=()):
             approval_id=approval_id_for(ctx.job_id, ctx.tool_call_id) if name in ALWAYS_ASK_TOOLS else None,
         )
 
-    return ToolSpec(name, tier, model, run, lambda _args: summary)
+    return ToolSpec(name, tier, model, run, lambda _args: summary, display=display)
+
+
+_PROFILE_NOW = (
+    "SELECT u.display_name, p.headline FROM conversations c JOIN users u ON u.id = c.user_id "
+    "LEFT JOIN profiles p ON p.user_id = u.id WHERE c.id = $1"
+)
+_PROFILE_FIELDS = (("display_name", "이름"), ("headline", "헤드라인"))
+
+
+async def _profile_rows(args, db) -> list[dict]:
+    """What a profile edit card shows: each changed field, now and after."""
+    conversation_id = approval_conversation_id.get()
+    if not conversation_id or db is None:
+        return []
+    patch = args if isinstance(args, dict) else args.model_dump()
+    now = await db.q().fetchrow(_PROFILE_NOW, UUID(str(conversation_id)))
+    return [
+        {"name": label, "from": str(_cell(now, key) or "") or "비어 있음", "to": str(patch[key])}
+        for key, label in _PROFILE_FIELDS if patch.get(key) is not None
+    ]
 
 
 def _svc():
@@ -749,7 +770,7 @@ PERSONAL_TOOLS = [
           lambda args: f"/api/v1/users/{args.user_id}/follow",
           write=True, drop=("user_id",)),
     _core("update_my_profile", Tier.RISKY_WRITE, ProfilePatch, "내 프로필을 수정해요", "PATCH",
-          lambda _args: "/api/v1/me/profile", write=True),
+          lambda _args: "/api/v1/me/profile", write=True, display=_profile_rows),
     _core("delete_calendar_event", Tier.RISKY_WRITE, EventId, "일정을 삭제해요", "DELETE",
           lambda args: f"/api/v1/calendar/events/{args.event_id}",
           write=True, drop=("event_id",)),
