@@ -248,14 +248,14 @@ docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/i
 
 ## 경보
 
-디스패처는 1분마다 Redis만 보고, 15분 스윕 때 DB를 본다. Neon 무료 플랜이 쉬는 상태로 들어갈 수 있도록 1분 주기로는 DB에 연결하지 않는다.
+디스패처는 1분마다 Redis만 보고, 1시간 스윕 때 DB를 본다. 15초 틱도 Redis만 본다. 틱이 DB를 보는 때는 실행 중이거나 대기 중인 작업이 있을 때뿐이다. 놀고 있을 때 DB에 연결하지 않아야 Neon 컴퓨트가 5분 뒤 쉬는 상태로 들어간다.
 
 | 조건 | 기준 | 주기 |
 | --- | --- | --- |
 | `queue_wait` | 가장 오래 기다린 메시지가 120초를 넘는다 | 1분 |
 | `dead_recent` | 최근 10분 안에 `q:dead`에 들어온 작업이 있다 | 1분 |
-| `heartbeat_lost` | 하트비트가 끊겨 `RETRY`로 되돌린 작업이 있다 | 15분 |
-| `db_size` | DB 크기가 `NEON_STORAGE_LIMIT_BYTES`의 80% 이상이다 | 15분 |
+| `heartbeat_lost` | 하트비트가 끊겨 `RETRY`로 되돌린 작업이 있다 | 1시간 |
+| `db_size` | DB 크기가 `NEON_STORAGE_LIMIT_BYTES`의 80% 이상이다 | 1시간 |
 
 같은 조건은 30분에 한 번만 보낸다. 조건이 풀리면 `[복구]`를 보낸다. Discord 웹훅(`DISCORD_ALERT_WEBHOOK_URL`)으로 보내고, 실패하면 Resend(`RESEND_API_KEY`)로 `ALERT_EMAIL_TO`에 메일을 보낸다. 임베딩 처리량 경보는 아직 없다. 처리량은 `bench_embed.py`로 배포 전에 잰다.
 
@@ -266,7 +266,7 @@ docker compose -p push-ai --env-file /opt/push-be/.env -f /opt/push-be/current/i
 
 ## 보관 정리
 
-15분 스윕마다 끝난 지 30일이 지난 `ai_jobs`(`DONE`, `FAILED`, `DEAD`, `CANCELLED`)를 지운다. `outbox`, `chat_events`, `credit_reservations`는 함께 지워지고, `ai_usage.job_id`는 `NULL`이 된다. 비용 기록인 `ai_usage` 행은 남는다.
+1시간 스윕마다 끝난 지 30일이 지난 `ai_jobs`(`DONE`, `FAILED`, `DEAD`, `CANCELLED`)를 지운다. `outbox`, `chat_events`, `credit_reservations`는 함께 지워지고, `ai_usage.job_id`는 `NULL`이 된다. 비용 기록인 `ai_usage` 행은 남는다.
 
 ## 로그와 추적
 
@@ -295,4 +295,4 @@ Worker 시크릿은 CI가 GitHub에서 쓴다(위 [GitHub Actions 시크릿과 �
 
 Google OAuth 클라이언트의 승인된 리디렉션 URI에 `https://<게이트웨이 호스트>/api/v1/integrations/google/callback`을 추가한다. 이 경로는 이제 core가 받고, 요청이 들어온 게이트웨이 호스트로 콜백 주소를 만든다.
 
-core는 작업을 넣고 커밋한 뒤 `DISPATCH_ORIGIN/internal/kick`을 부른다. 이 호출이 실패해도 작업은 `outbox`에 남고, 다음 15분 스윕에서 처리된다.
+core는 작업을 넣고 커밋한 뒤 `DISPATCH_ORIGIN/internal/kick`을 부른다. 이 호출이 실패해도 작업은 `outbox`에 남고, 다음 1시간 스윕에서 처리된다. 디스패처가 다시 뜨면 첫 틱에서 바로 처리한다.

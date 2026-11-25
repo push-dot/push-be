@@ -3,9 +3,13 @@ import os
 STREAM_MAXLEN = 100_000
 DELAYED_KEY = "q:delayed"
 DEAD_QUEUE = "q:dead"
-SWEEP_S = 15 * 60
+# Also the Postgres safety net while idle. Neon stays awake ~5 minutes after each pass,
+# so this must stay well above that.
+SWEEP_S = 60 * 60
 ALERT_S = 60
-# The light pass (promote due retries, requeue stale jobs, dispatch the outbox) between the maintenance sweeps.
+# The fast tick between the maintenance sweeps: it promotes due retries (Redis) every time,
+# and runs the Postgres pass (requeue stale jobs, dispatch the outbox, rehydrate) only while
+# jobs are in flight.
 # A retry waits in q:delayed and a dead worker's job waits for it, so it must be shorter than the first backoff.
 PROMOTE_S = 15
 PAUSE_PREFIX = "pause:"

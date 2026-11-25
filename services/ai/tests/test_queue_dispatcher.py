@@ -7,7 +7,7 @@ from fakeredis.aioredis import FakeRedis
 from fastapi.testclient import TestClient
 
 from app.queue.backoff import backoff_seconds
-from app.queue.config import PROMOTE_S, heartbeat_limits, visibility_limits
+from app.queue.config import PROMOTE_S, SWEEP_S, heartbeat_limits, visibility_limits
 from app.queue.dispatcher import Dispatcher, kick_app
 from app.queue.streams import StreamQueue
 
@@ -468,3 +468,84 @@ async def test_a_job_that_beat_after_it_was_read_is_not_requeued():
     await box.run_once(NOW)
     assert jobs[0]["status"] == "RUNNING"
     assert jobs[0]["attempts"] == 0
+
+
+NEON_SUSPEND_S = 5 * 60
+
+
+def test_the_idle_safety_net_lets_neon_suspend_between_passes():
+    assert SWEEP_S > NEON_SUSPEND_S
+
+
+async def idle_dispatcher(redis, outbox):
+    holder = {"live": 0, "opened": 0}
+    box = Dispatcher(StreamQueue(redis), opener(holder, [], outbox), SECRET)
+    await box.tick(NOW)
+    holder["opened"] = 0
+    return box, holder
+
+
+@pytest.mark.asyncio
+async def test_an_idle_dispatcher_opens_no_db_connection_on_fast_ticks():
+    redis = FakeRedis(decode_responses=True)
+    box, holder = await idle_dispatcher(redis, [])
+    for _ in range(50):
+        await box.tick(NOW)
+    assert holder["opened"] == 0
+
+
+@pytest.mark.asyncio
+async def test_an_idle_dispatcher_still_promotes_due_retries_then_watches_the_job():
+    redis = FakeRedis(decode_responses=True)
+    queue = StreamQueue(redis)
+    box, holder = await idle_dispatcher(redis, [])
+    await queue.delay("q:chat", CHAT, NOW - timedelta(seconds=1))
+    await box.tick(NOW)
+    assert await stream_job_ids(redis, "q:chat") == [str(CHAT)]
+    assert holder["opened"] == 0
+    await box.tick(NOW)
+    assert holder["opened"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_kick_dispatches_an_outbox_row_while_idle():
+    import httpx
+    redis = FakeRedis(decode_responses=True)
+    outbox = []
+    box, _ = await idle_dispatcher(redis, outbox)
+    outbox.append({"id": 9, "job_id": CHAT, "queue": "q:chat", "dispatched_at": None})
+    transport = httpx.ASGITransport(app=kick_app(box))
+    async with httpx.AsyncClient(transport=transport, base_url="http://dispatch") as client:
+        res = await client.post(
+            "/internal/kick", json={"queue": "q:chat"}, headers={"x-push-dispatch-secret": SECRET})
+    assert res.status_code == 200
+    assert await stream_job_ids(redis, "q:chat") == [str(CHAT)]
+    assert outbox[0]["dispatched_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_dispatches_an_outbox_row_whose_kick_was_lost():
+    redis = FakeRedis(decode_responses=True)
+    outbox = []
+    box, _ = await idle_dispatcher(redis, outbox)
+    outbox.append({"id": 9, "job_id": CHAT, "queue": "q:chat", "dispatched_at": None})
+    await box.tick(NOW)
+    assert outbox[0]["dispatched_at"] is None
+    await box.run_once(NOW, maintain=True)
+    assert await stream_job_ids(redis, "q:chat") == [str(CHAT)]
+    assert outbox[0]["dispatched_at"] == NOW
+
+
+@pytest.mark.asyncio
+async def test_fast_ticks_keep_reading_the_db_while_a_job_runs():
+    redis = FakeRedis(decode_responses=True)
+    beat = NOW - timedelta(seconds=1)
+    jobs = [job(CHAT, "chat", "q:chat", "RUNNING", beat)]
+    box, holder = dispatcher(redis, jobs=jobs)
+    for _ in range(3):
+        await box.tick(NOW)
+    assert holder["opened"] == 3
+    jobs[0]["status"] = "DONE"
+    for _ in range(3):
+        await box.tick(NOW)
+    assert holder["opened"] == 4
