@@ -45,6 +45,11 @@ from app.harness.tools import (
 
 _CAP = 8
 _CAP_NOTE = "도구 호출 한도"
+# The last answer of a capped turn hands the rest back to the user instead of stopping mid-task.
+_OVER_NOTE = (
+    "이번 요청에서 쓸 수 있는 도구 호출을 다 썼어요. 도구를 더 부르지 말고, 지금까지 한 일과 남은 일을 "
+    "짧게 말한 뒤 \"이어서 해 줘\"라고 보내면 이어서 한다고 알려요."
+)
 # Worst case is one agent and one tools step per counted call, plus the over-cap flush and final answer.
 RECURSION_LIMIT: Final = 2 * _CAP + 4
 
@@ -472,6 +477,8 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 messages = [messages[0], folded, *messages[1:]]
         chat = turn_model.get() or model
         over = int(state.get("tool_calls_used") or 0) >= _CAP
+        if over:
+            messages = [*messages, SystemMessage(content=_OVER_NOTE)]
         target = chat if over else chat.bind_tools(list(structured.values()))
         thinking()
         reply = await _complete(target, messages, text_only=over)
