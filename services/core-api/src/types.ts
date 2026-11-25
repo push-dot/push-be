@@ -1,3 +1,4 @@
+import type { AuthCache } from "./auth-cache.ts";
 import type { StoreReceipts } from "./billing/stores.ts";
 import type { Query, QueryResult, Transaction } from "./db.ts";
 import type { Mailer } from "./mail/mailer.ts";
@@ -90,6 +91,8 @@ export interface Deps {
   stores?: StoreReceipts;
   /** Isolate-local cache for caller-independent reads. Absent in tests, so they always hit the fake database. */
   cache?: ReadCache<QueryResult>;
+  /** Isolate-local access token cache for GET requests. Absent in tests. */
+  authCache?: AuthCache;
 }
 
 export interface UserRow {

@@ -159,12 +159,21 @@ export async function resolveUser(ctx: Omit<Ctx, "user">, token: string): Promis
     return userFrom(row);
   }
   const hash = await sha256Hex(token);
+  const cache = ctx.deps.authCache;
+  const nowMs = ctx.now.getTime();
+  const reads = ctx.request.method === "GET";
+  const cached = reads ? cache?.get(hash, nowMs) : undefined;
+  if (cached) {return { ...cached };}
   const row = await userBy(ctx, USER_BY_TOKEN, USER_BY_TOKEN_BASE, [hash]);
   if (!row) {throw new HttpError(401, "UNAUTHENTICATED", "invalid access token");}
-  if (ctx.now.getTime() > Date.parse(String(row.token_expires_at))) {
+  const expiresMs = Date.parse(String(row.token_expires_at));
+  if (nowMs > expiresMs) {
     throw new HttpError(401, "TOKEN_EXPIRED", "access token expired");
   }
-  return userFrom(row);
+  const user = userFrom(row);
+  if (reads) {cache?.put(hash, user, nowMs, expiresMs);}
+  else {cache?.dropUser(user.id);}
+  return user;
 }
 
 function sessionBody(access: string, refresh: string, user: UserRow) {
