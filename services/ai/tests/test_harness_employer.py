@@ -129,7 +129,8 @@ async def test_employer_core_tool_paths(name):
     assert (request.method, request.url.path) == expected
     assert request.headers["x-push-company"] == "co-1"
     assert request.headers.get("x-push-approval") == (
-        approval_id_for("job-1", "call-1") if name in ALWAYS_ASK_TOOLS else None)
+        approval_id_for("job-1", "call-1")
+        if name in ALWAYS_ASK_TOOLS or tool.tier is Tier.RISKY_WRITE else None)
     if expected[0] in _WRITES:
         assert request.headers["idempotency-key"]
     if name == "draft_posting":

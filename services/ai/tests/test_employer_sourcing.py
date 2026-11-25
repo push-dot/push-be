@@ -25,8 +25,10 @@ def _graph(calls, messages, drafted: list | None = None):
             return OfferDraft(message=messages.pop(0) if len(messages) > 1 else messages[0], reasons=["a", "b"])
         raise AssertionError(schema)
 
-    async def call_tool(state, name, args):
+    async def call_tool(state, name, args, *, approved=False):
         calls.append((name, args))
+        if name == "send_offer":
+            assert approved, "a send carries the gate answer as its card"
         if name == "search_profiles":
             return {
                 "data": {
@@ -160,7 +162,7 @@ async def test_offers_are_drafted_concurrently():
         running -= 1
         return OfferDraft(message="경험을 보고 연락드려요.")
 
-    async def call_tool(state, name, args):
+    async def call_tool(state, name, args, **_kw):
         return {"data": {"items": [{"userId": "p1"}, {"userId": "p2"}]}}
 
     state_type, flows = build_flows(db=None, generate_for=lambda _s: generate, research_text=None,
@@ -187,7 +189,7 @@ async def test_one_failing_offer_draft_leaves_the_other_and_names_the_skipped_pe
             raise RuntimeError("provider error")
         return OfferDraft(message="경험을 보고 연락드려요.")
 
-    async def call_tool(state, name, args):
+    async def call_tool(state, name, args, **_kw):
         return {"data": {"items": [{"userId": "p1"}, {"userId": "p2"}]}}
 
     state_type, flows = build_flows(db=None, generate_for=lambda _s: generate, research_text=None,
