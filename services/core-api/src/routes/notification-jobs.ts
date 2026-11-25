@@ -25,7 +25,7 @@ export const requireJob = async (ctx: Ctx): Promise<void> => {
 };
 
 const THREAD = `SELECT c.bot_id, b.notifications_muted, COALESCE(b.display_name, s.display_name) AS display_name,
-    s.last_message_preview, s.unread, COALESCE(us.notify_ai_done, true) AS allowed
+    s.last_message_preview, s.card_title, s.unread, COALESCE(us.notify_ai_done, true) AS allowed
   FROM conversations c
   LEFT JOIN bots b ON b.id = c.bot_id AND b.deleted_at IS NULL
   LEFT JOIN bot_state_v s ON s.bot_id = b.id
@@ -35,11 +35,25 @@ const THREAD = `SELECT c.bot_id, b.notifications_muted, COALESCE(b.display_name,
 const CLAIM = `INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ($1, $2::timestamptz)
   ON CONFLICT (dedupe_key) DO NOTHING RETURNING dedupe_key`;
 
-const pushSentence = (name: unknown): string => {
+type Outcome = "done" | "waiting" | "failed";
+
+const OUTCOMES: Record<Outcome, { title: string; tail: string }> = {
+  done: { title: "Bot 작업 완료", tail: "작업을 마쳤어요" },
+  waiting: { title: "확인이 필요해요", tail: "확인을 기다려요" },
+  failed: { title: "작업을 마치지 못했어요", tail: "작업을 마치지 못했어요" },
+};
+
+const outcomeOf = (value: unknown): Outcome => {
+  if (value === undefined || value === null || value === "done") {return "done";}
+  if (value === "waiting" || value === "failed") {return value;}
+  throw fieldError("outcome", "must be done, waiting or failed");
+};
+
+const pushSentence = (name: unknown, tail: string): string => {
   const text = String(name ?? "").trim();
-  if (!text) {return "Bot이 작업을 마쳤어요";}
-  if (text.endsWith("봇") || text.endsWith("Bot")) {return `${text}이 작업을 마쳤어요`;}
-  return `${text} Bot이 작업을 마쳤어요`;
+  if (!text) {return `Bot이 ${tail}`;}
+  if (text.endsWith("봇") || text.endsWith("Bot")) {return `${text}이 ${tail}`;}
+  return `${text} Bot이 ${tail}`;
 };
 
 const alreadyRead = (value: unknown): boolean => value === false || value === "f" || value === "false";
@@ -68,24 +82,29 @@ export const recordAiDone = async (ctx: Ctx): Promise<Response> => {
   const userId = requireUuid(String(body.userId ?? ""), "userId");
   const conversationId = requireUuid(String(body.conversationId ?? ""), "conversationId");
   const jobId = requireUuid(String(body.jobId ?? ""), "jobId");
+  const outcome = outcomeOf(body.outcome);
   const row = await one(ctx.deps.query, THREAD, [conversationId, userId]);
-  if (!row || !asBool(row.allowed) || asBool(row.notifications_muted) || alreadyRead(row.unread)) {
+  // A failure adds no message, so the read marker cannot tell whether the user saw it.
+  const seen = outcome !== "failed" && alreadyRead(row?.unread);
+  if (!row || !asBool(row.allowed) || asBool(row.notifications_muted) || seen) {
     return data(201, { id: null }, ctx.rid);
   }
-  const claim = await one(ctx.deps.query, CLAIM, [`ai-done:${jobId}`, ctx.now.toISOString()]);
-  if (!claim) {return data(201, { id: null }, ctx.rid);}
   const botId = (row.bot_id === null || row.bot_id === undefined) || row.bot_id === "" ? "" : String(row.bot_id);
-  const title = botId ? "Bot 작업 완료" : ((body.title === null || body.title === undefined) || body.title === "" ? "AI 작업이 끝났어요" : String(body.title));
+  if (!botId && outcome !== "done") {return data(201, { id: null }, ctx.rid);}
+  const key = outcome === "done" ? `ai-done:${jobId}` : `ai-${outcome}:${jobId}`;
+  const claim = await one(ctx.deps.query, CLAIM, [key, ctx.now.toISOString()]);
+  if (!claim) {return data(201, { id: null }, ctx.rid);}
+  const title = botId ? OUTCOMES[outcome].title : ((body.title === null || body.title === undefined) || body.title === "" ? "AI 작업이 끝났어요" : String(body.title));
   if (title.length > 200) {throw fieldError("title", "must be at most 200 characters");}
   const notice: Notice = {
     userId,
     type: "AI_DONE",
     title,
-    body: botId ? plainLine(String(row.last_message_preview ?? "")) : "",
+    body: !botId || outcome === "failed" ? "" : plainLine(String((outcome === "waiting" ? row.card_title : row.last_message_preview) ?? "")),
     target: botId ? { kind: "bot", id: botId } : { kind: "conversation", id: conversationId },
     conversationId,
   };
-  if (botId) {notice.pushBody = pushSentence(row.display_name);}
+  if (botId) {notice.pushBody = pushSentence(row.display_name, OUTCOMES[outcome].tail);}
   const id = await sendNotification(ctx, notice);
   return data(201, { id }, ctx.rid);
 };
