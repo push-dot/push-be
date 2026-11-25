@@ -96,3 +96,30 @@ async def test_notify_reads_tokens_only_for_users_not_being_deleted():
     result = await handler(type("Ctx", (), {"job": notify_job(FIRST)})())
     assert "u.deletion_requested_at IS NULL" in seen[0]
     assert pushed == [] and result["pushed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_expo_push_prunes_tokens_expo_says_are_gone():
+    def handler(_request):
+        return httpx.Response(200, json={"data": [
+            {"status": "ok", "id": "t1"},
+            {"status": "error", "message": "gone", "details": {"error": "DeviceNotRegistered"}},
+            {"status": "error", "message": "slow", "details": {"error": "MessageRateExceeded"}},
+        ]})
+
+    pruned = []
+
+    async def prune(tokens):
+        pruned.extend(tokens)
+
+    messages = [{"to": "a"}, {"to": "b"}, {"to": "c"}]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await expo_push("expo-secret", client, prune)(messages) == 1
+    assert pruned == ["b"]
+
+
+@pytest.mark.asyncio
+async def test_expo_push_counts_nothing_when_expo_rejects_the_request():
+    transport = httpx.MockTransport(lambda _r: httpx.Response(401, json={}))
+    async with httpx.AsyncClient(transport=transport) as client:
+        assert await expo_push("bad", client)([{"to": "a"}]) == 0

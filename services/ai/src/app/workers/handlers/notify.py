@@ -1,3 +1,5 @@
+import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from uuid import UUID
 
@@ -5,18 +7,51 @@ import httpx
 
 EXPO_PUSH = "https://exp.host/--/api/v2/push/send"
 
+logger = logging.getLogger(__name__)
 
-def expo_push(token: str, client: httpx.AsyncClient):
+
+def dead_tokens(messages: list[dict], tickets: object) -> list[str]:
+    """Expo answers one ticket per message, in order. DeviceNotRegistered means the app is gone
+    from that device, so its token will never take a push again."""
+    if not isinstance(tickets, list):
+        return []
+    return [
+        message["to"] for message, ticket in zip(messages, tickets, strict=False)
+        if isinstance(ticket, dict) and ticket.get("status") == "error"
+        and (ticket.get("details") or {}).get("error") == "DeviceNotRegistered"]
+
+
+def expo_push(token: str, client: httpx.AsyncClient,
+              prune: Callable[[list[str]], Awaitable[object]] | None = None):
     async def push(messages: list[dict]) -> int:
         if not token:
             return 0
         try:
-            await client.post(EXPO_PUSH, json=messages, headers={
+            res = await client.post(EXPO_PUSH, json=messages, headers={
                 "authorization": "Bearer " + token, "accept": "application/json"})
-        except httpx.HTTPError:
+            tickets = res.json().get("data") if res.status_code == 200 else None
+        except (httpx.HTTPError, ValueError, AttributeError):
             return 0
-        return len(messages)
+        if res.status_code != 200:
+            logger.warning("expo push rejected: %s", res.status_code)
+            return 0
+        dead = dead_tokens(messages, tickets)
+        if dead and prune is not None:
+            try:
+                await prune(dead)
+            except Exception:
+                logger.exception("dead push token cleanup failed")
+        failed = sum(1 for t in tickets or [] if isinstance(t, dict) and t.get("status") == "error")
+        if failed:
+            logger.warning("expo push: %d of %d tickets failed", failed, len(messages))
+        return len(messages) - failed
     return push
+
+
+def prune_devices(query):
+    async def prune(tokens: list[str]) -> None:
+        await query().execute("DELETE FROM user_devices WHERE token = ANY($1::text[])", tokens)
+    return prune
 
 
 def make_notify(query, push):
