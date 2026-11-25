@@ -56,8 +56,9 @@ class ConversationStore(Store):
 
     async def get(self, user_id: UUID, id_: UUID) -> Conversation:
         return to_model(Conversation, await self.one(
+            # A company conversation is reached only by current members, its author included.
             f"SELECT {_CONV_COLS} FROM conversations WHERE id = $1 AND ("
-            "user_id = $2 OR (company_id IS NOT NULL AND EXISTS ("
+            "(company_id IS NULL AND user_id = $2) OR (company_id IS NOT NULL AND EXISTS ("
             "SELECT 1 FROM company_members m WHERE m.user_id = $2 "
             "AND m.company_id = conversations.company_id)))",
             id_, user_id))
@@ -121,10 +122,12 @@ class ConversationStore(Store):
         c = Conds()
         c.add("conversation_id = {}", conversation_id)
         c.add(
-            "(user_id = {} OR EXISTS (SELECT 1 FROM conversations cv "
+            "((user_id = {} AND EXISTS (SELECT 1 FROM conversations pv "
+            "WHERE pv.id = {} AND pv.company_id IS NULL)) "
+            "OR EXISTS (SELECT 1 FROM conversations cv "
             "JOIN company_members m ON m.company_id = cv.company_id "
             "AND m.user_id = {} WHERE cv.id = {} AND cv.company_id IS NOT NULL))",
-            user_id, user_id, conversation_id)
+            user_id, conversation_id, user_id, conversation_id)
         c.cursor(page)
         sql, args = c.query(_MSG_COLS, "messages", page.effective_limit())
         rows = await self.q().fetch(sql, *args)

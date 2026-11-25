@@ -13,7 +13,8 @@ _TRUE: Final = frozenset({"1", "true"})
 
 
 def env(key: str, default: str = "") -> str:
-    return os.environ.get(key) or default
+    # A value of only spaces (an empty compose substitution, a stray quote) means unset.
+    return (os.environ.get(key) or "").strip() or default
 
 
 def env_json(key: str) -> list[Any]:

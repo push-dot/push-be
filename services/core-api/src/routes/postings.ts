@@ -836,8 +836,7 @@ type Row = NonNullable<Awaited<ReturnType<typeof one>>>;
 const isRow = (value: unknown): value is Row => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
 const APPLICANT_SQL = `SELECT a.id, a.user_id, a.revision, a.job_id, a.company, a.title, a.stage, a.notes, a.applied_at, a.next_action_at, a.imported, a.created_at, a.updated_at,
-  (to_jsonb(a) -> 'applicant_snapshot') AS applicant_snapshot,
-  (SELECT g.fit_score FROM gap_analyses g WHERE g.application_id = a.id ORDER BY g.created_at DESC, g.id DESC LIMIT 1) AS fit_score
+  (to_jsonb(a) -> 'applicant_snapshot') AS applicant_snapshot
   FROM applications a JOIN jobs j ON j.id = a.job_id
   WHERE a.id = $1 AND j.source_posting_id = $2`;
 

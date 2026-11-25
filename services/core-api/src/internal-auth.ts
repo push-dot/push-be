@@ -37,54 +37,86 @@ const ACT_AS_ROUTES: ReadonlyArray<readonly [RegExp, ReadonlySet<string>]> = [
 
 // AI calls that commit the user need the TOOL_ACTION card the user approved for the same target, in
 // every access mode (약관 9조3항). services/ai/src/app/harness/policy.py ALWAYS_ASK_TOOLS asks for them.
-// For a company conversation, every write that reaches people outside the company needs its card too:
-// the employer harness never runs RISKY_WRITE tools without asking (runtime.py company access mode).
-// tool: the approved tool this call needs, or null when it needs none. keys/bodyKeys must equal the
-// approved tool_args.
-type ApprovalRoute = {
-  method: string;
-  pattern: RegExp;
-  tool: string | ((match: RegExpExecArray, request: Request, query: Query, companyId: string) => Promise<string | null>);
-  keys: ReadonlyArray<string>;
-  bodyKeys: ReadonlyArray<string>;
-  company?: true;
-};
-
+// A company's writes that reach people outside it need their card too, whatever headers the call has:
+// the posting's company or the actor's membership decides, not x-push-company.
+// need() names the approved tool and the exact target its tool_args must contain, or null for no card.
 type Json = string | number | boolean | null | Array<Json> | { [key: string]: Json };
 type JsonObject = { [key: string]: Json };
+type Need = { tool: string; target: JsonObject } | null;
+type Asked = { match: RegExpExecArray; request: Request; query: Query; userId: string; companyId: string | null };
+type ApprovalRoute = { method: string; pattern: RegExp; need: (asked: Asked) => Promise<Need> };
 
 const isJsonObject = (value: unknown): value is JsonObject => typeof value === "object" && value !== null && !Array.isArray(value);
 
-const jsonBody = async (request: Request): Promise<JsonObject | null> => {
+const jsonBody = async (request: Request): Promise<JsonObject> => {
   const body: unknown = await request.clone().json().catch(() => null);
-  return isJsonObject(body) ? body : null;
+  return isJsonObject(body) ? body : {};
 };
 
-const postingPatchTool = async (match: RegExpExecArray, request: Request, query: Query, companyId: string): Promise<string | null> => {
-  const body = await jsonBody(request);
-  if (body && "status" in body) {return "publish_posting";}
-  const postingId = parseUuid(decodeURIComponent(match[1]));
-  if (!postingId) {return null;}
-  const row = await one(query, "SELECT status FROM job_postings WHERE id = $1 AND company_id = $2", [postingId, companyId]);
-  return row && row.status !== "DRAFT" ? "update_published_posting" : null;
+const refuse = (): never => {
+  throw new HttpError(403, "APPROVAL_REQUIRED", "the user has not approved this action");
 };
+
+const pathKeys = (match: RegExpExecArray, keys: ReadonlyArray<string>): JsonObject =>
+  Object.fromEntries(keys.map((key, i) => [key, decodeURIComponent(match[i + 1])]));
+
+// A missing field stays null, which no approved card contains.
+const bodyKeys = (body: JsonObject, keys: ReadonlyArray<string>): JsonObject =>
+  Object.fromEntries(keys.map((key) => [key, body[key] ?? null]));
+
+const fixed = (tool: string, keys: ReadonlyArray<string>, fields: ReadonlyArray<string> = []) =>
+  async ({ match, request }: Asked): Promise<Need> => ({ tool, target: { ...pathKeys(match, keys), ...bodyKeys(await jsonBody(request), fields) } });
+
+const companyOf = async ({ query, userId, companyId }: Asked): Promise<string | null> => {
+  if (companyId) {return companyId;}
+  const row = await one(query, "SELECT company_id FROM company_members WHERE user_id = $1", [userId]);
+  return row?.company_id ? String(row.company_id) : null;
+};
+
+const postingOf = async ({ match, query }: Asked): Promise<{ id: string; status: string } | null> => {
+  const id = parseUuid(decodeURIComponent(match[1]));
+  if (!id) {return null;}
+  const row = await one(query, "SELECT status FROM job_postings WHERE id = $1 AND company_id IS NOT NULL", [id]);
+  return row ? { id, status: String(row.status) } : null;
+};
+
+const onlyKeys = (body: JsonObject, allowed: ReadonlyArray<string>): void => {
+  if (Object.keys(body).some((key) => !allowed.includes(key))) {refuse();}
+};
+
+// Publishing binds the one change it makes; editing a live posting binds the text it writes.
+const postingPatch = async (asked: Asked): Promise<Need> => {
+  const posting = await postingOf(asked);
+  if (!posting) {return null;}
+  const body = await jsonBody(asked.request);
+  if ("status" in body) {
+    if (body.status !== "OPEN") {refuse();}
+    onlyKeys(body, ["status", "expectedRevision"]);
+    return { tool: "publish_posting", target: { posting_id: posting.id } };
+  }
+  if (posting.status === "DRAFT") {return null;}
+  onlyKeys(body, ["title", "description", "expectedRevision"]);
+  // The tool omits an empty field and its card stores "", so a title-only change matches only a title-only card.
+  return { tool: "update_published_posting", target: { posting_id: posting.id, title: body.title ?? "", description: body.description ?? "" } };
+};
+
+const close = async (asked: Asked): Promise<Need> => {
+  const posting = await postingOf(asked);
+  return posting ? { tool: "close_posting", target: { posting_id: posting.id } } : null;
+};
+
+const asCompany = (tool: string, keys: ReadonlyArray<string>, fields: ReadonlyArray<string>) =>
+  async (asked: Asked): Promise<Need> => ((await companyOf(asked)) ? fixed(tool, keys, fields)(asked) : null);
 
 const APPROVAL_ROUTES: ReadonlyArray<ApprovalRoute> = [
-  { method: "POST", pattern: /^\/api\/v1\/postings\/([^/]+)\/apply$/, tool: "apply_to_posting", keys: ["posting_id"], bodyKeys: [] },
-  { method: "POST", pattern: /^\/api\/v1\/me\/offers\/([^/]+)\/accept$/, tool: "accept_offer", keys: ["offer_id"], bodyKeys: [] },
-  { method: "PATCH", pattern: /^\/api\/v1\/postings\/([^/]+)\/applicants\/([^/]+)$/, tool: "change_applicant_stage", keys: ["posting_id", "application_id"], bodyKeys: ["stage"] },
-  { method: "PATCH", pattern: /^\/api\/v1\/postings\/([^/]+)$/, tool: postingPatchTool, keys: ["posting_id"], bodyKeys: [], company: true },
-  { method: "POST", pattern: /^\/api\/v1\/postings\/([^/]+)\/close$/, tool: "close_posting", keys: ["posting_id"], bodyKeys: [], company: true },
-  { method: "POST", pattern: /^\/api\/v1\/profiles\/([^/]+)\/offer$/, tool: "send_offer", keys: ["profile_id"], bodyKeys: ["message"], company: true },
-  { method: "POST", pattern: /^\/api\/v1\/posts$/, tool: "create_company_post", keys: [], bodyKeys: ["category", "title", "body"], company: true },
+  { method: "POST", pattern: /^\/api\/v1\/postings\/([^/]+)\/apply$/, need: fixed("apply_to_posting", ["posting_id"]) },
+  { method: "POST", pattern: /^\/api\/v1\/me\/offers\/([^/]+)\/accept$/, need: fixed("accept_offer", ["offer_id"]) },
+  { method: "PATCH", pattern: /^\/api\/v1\/postings\/([^/]+)\/applicants\/([^/]+)$/, need: fixed("change_applicant_stage", ["posting_id", "application_id"], ["stage"]) },
+  { method: "PATCH", pattern: /^\/api\/v1\/postings\/([^/]+)$/, need: postingPatch },
+  { method: "POST", pattern: /^\/api\/v1\/postings\/([^/]+)\/close$/, need: close },
+  { method: "POST", pattern: /^\/api\/v1\/profiles\/([^/]+)\/offer$/, need: asCompany("send_offer", ["profile_id"], ["message"]) },
+  { method: "POST", pattern: /^\/api\/v1\/posts$/, need: asCompany("create_company_post", [], ["category", "title", "body"]) },
 ];
-
-const bodyFields = async (request: Request, keys: ReadonlyArray<string>): Promise<JsonObject> => {
-  if (!keys.length) {return {};}
-  const body = await jsonBody(request);
-  // A missing field stays null, which no approved card contains.
-  return Object.fromEntries(keys.map((key) => [key, body?.[key] ?? null]));
-};
 
 const CONSUME_APPROVAL = `UPDATE approvals SET consumed_at = COALESCE(consumed_at, now()), consumed_key = $5::uuid
   WHERE id = $1 AND $2::uuid IN (user_id, decided_by) AND kind = 'TOOL_ACTION'
@@ -94,19 +126,14 @@ const CONSUME_APPROVAL = `UPDATE approvals SET consumed_at = COALESCE(consumed_a
 
 const requireApproval = async (request: Request, path: string, userId: string, companyId: string | null, query: Query): Promise<void> => {
   for (const route of APPROVAL_ROUTES) {
-    if (route.company && !companyId) {continue;}
     const match = request.method === route.method ? route.pattern.exec(path) : null;
     if (!match) {continue;}
-    const tool = typeof route.tool === "string" ? route.tool : companyId ? await route.tool(match, request, query, companyId) : null;
-    if (!tool) {continue;}
+    const need = await route.need({ match, request, query, userId, companyId });
+    if (!need) {continue;}
     const approvalId = parseUuid(request.headers.get("x-push-approval") || "");
-    const target = {
-      ...Object.fromEntries(route.keys.map((key, i) => [key, decodeURIComponent(match[i + 1])])),
-      ...await bodyFields(request, route.bodyKeys),
-    };
     const retryKey = parseUuid(request.headers.get("idempotency-key") || "");
-    if (!approvalId || !(await one(query, CONSUME_APPROVAL, [approvalId, userId, tool, JSON.stringify(target), retryKey]))) {
-      throw new HttpError(403, "APPROVAL_REQUIRED", "the user has not approved this action");
+    if (!approvalId || !(await one(query, CONSUME_APPROVAL, [approvalId, userId, need.tool, JSON.stringify(need.target), retryKey]))) {
+      refuse();
     }
   }
 };

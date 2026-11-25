@@ -280,7 +280,7 @@ export const MESSAGE_ROWS = "COALESCE((SELECT json_agg(json_build_object("
 export const MESSAGES_SQL = AUTH_RATE_PREFIX
   + ", found AS ("
   + "SELECT id, company_id FROM conversations WHERE id = $8::uuid AND ("
-  + "user_id = (SELECT id FROM live) OR (company_id IS NOT NULL AND company_id = (SELECT company_id FROM auth))"
+  + "(company_id IS NULL AND user_id = (SELECT id FROM live)) OR (company_id IS NOT NULL AND company_id = (SELECT company_id FROM auth))"
   + ")), page AS ("
   + "SELECT m.id, m.conversation_id, m.role, m.text, m.attachments, m.operation_id, m.created_at "
   + "FROM messages m JOIN found ON found.id = m.conversation_id "
@@ -293,7 +293,7 @@ export const MESSAGES_SQL = AUTH_RATE_PREFIX
 export const STREAM_SQL = AUTH_RATE_PREFIX
   + ", found AS ("
   + "SELECT id, company_id FROM conversations WHERE id = $8::uuid AND ("
-  + "user_id = (SELECT id FROM live) OR (company_id IS NOT NULL AND company_id = (SELECT company_id FROM auth))"
+  + "(company_id IS NULL AND user_id = (SELECT id FROM live)) OR (company_id IS NOT NULL AND company_id = (SELECT company_id FROM auth))"
   + ")), job AS ("
   + "SELECT id FROM chat_jobs WHERE conversation_id = (SELECT id FROM found) "
   + "AND status IN ('PENDING', 'RUNNING') AND EXISTS (SELECT 1 FROM bumped) "

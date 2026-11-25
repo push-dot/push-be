@@ -53,3 +53,10 @@ def test_a_long_document_says_it_was_cut_and_a_short_one_says_nothing():
     assert _cut_note("가" * DOC_LIMIT) == []
     [note] = _cut_note("가" * (DOC_LIMIT + 1))
     assert "20,000자" in note
+
+
+def test_an_empty_review_still_reaches_the_client_with_its_disclaimer():
+    kind, payload = _live_event(review_plan({"flags": [], "matches": []}, None), "job-1")
+    assert kind == "plan" and payload["a2ui"]
+    assert payload["meta"] == DECISION_DISCLAIMER
+    assert [r["label"] for r in payload["rows"]] == ["서류에서 따로 확인할 곳을 찾지 못했어요"]

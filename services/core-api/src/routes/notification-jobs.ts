@@ -32,7 +32,7 @@ const THREAD = `SELECT c.bot_id, c.company_id, b.notifications_muted, COALESCE(b
   LEFT JOIN bots b ON b.id = c.bot_id AND b.deleted_at IS NULL
   LEFT JOIN bot_state_v s ON s.bot_id = b.id
   LEFT JOIN user_settings us ON us.user_id = $2
-  WHERE c.id = $1 AND (c.user_id = $2 OR (c.company_id IS NOT NULL
+  WHERE c.id = $1 AND ((c.company_id IS NULL AND c.user_id = $2) OR (c.company_id IS NOT NULL
     AND EXISTS (SELECT 1 FROM company_members m WHERE m.company_id = c.company_id AND m.user_id = $2)))`;
 
 const CLAIM = `INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ($1, $2::timestamptz)

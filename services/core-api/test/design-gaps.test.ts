@@ -186,7 +186,7 @@ test("applicant list and detail add profile fields and document pages", async ()
     profileSource: "CURRENT",
     capturedAt: null,
   });
-  const loaded = detailSeen.find((call) => call.sql.includes("fit_score"));
+  const loaded = detailSeen.find((call) => call.sql.includes("applicant_snapshot") && call.sql.includes("FROM applications a"));
   assert.match(loaded!.sql, /applicant_snapshot/);
   const personSql = detailSeen.find((call) => call.sql.includes("FROM users") && call.sql.includes("profiles"));
   assert.match(personSql!.sql, /p\.job_category/);

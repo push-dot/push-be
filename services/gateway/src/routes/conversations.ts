@@ -170,9 +170,10 @@ function conversationJson(row: Row) {
 // Reads for a session that is already authenticated. Each is one round
 // trip: visibility, then the page, job, or cancel, in a single statement.
 // $1 conversation, $2 user, $3 the user's company. A company conversation
-// is visible to every member; in a personal one only the author's rows are.
+// is visible to every current member and to no one else, its author included
+// once they leave; in a personal one only the author's rows are.
 const SCOPED_FOUND = "WITH found AS (SELECT id, company_id FROM conversations WHERE id = $1::uuid "
-  + "AND (user_id = $2::uuid OR ($3::uuid IS NOT NULL AND company_id = $3::uuid)))";
+  + "AND ((company_id IS NULL AND user_id = $2::uuid) OR ($3::uuid IS NOT NULL AND company_id = $3::uuid)))";
 
 const SCOPED_MESSAGES_SQL = SCOPED_FOUND + ", page AS ("
   + "SELECT m.id, m.conversation_id, m.role, m.text, m.attachments, m.operation_id, m.created_at "

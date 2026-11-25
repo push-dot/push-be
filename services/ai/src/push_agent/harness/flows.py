@@ -1066,6 +1066,9 @@ def review_plan(report: dict, attachment_name: str | None) -> dict:
             "label": match.get("requirement") or "",
             "note": match.get("evidence") or "",
         })
+    if not rows:
+        # The card carries the decision disclaimer, so it goes out even with nothing to list.
+        rows.append({"tag": "확인", "label": "서류에서 따로 확인할 곳을 찾지 못했어요", "note": ""})
     title = f"서류 검토 · {attachment_name}" if attachment_name else "서류 검토"
     return {"type": "plan", "id": "review", "title": title,
             "meta": DECISION_DISCLAIMER, "rows": rows}

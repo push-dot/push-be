@@ -285,7 +285,7 @@ test("the owner reads a personal conversation with user-scoped SQL, paging, and 
   const reads = dataSeen(seen);
   assert.equal(reads.length, 1);
   const [[sql, params]] = reads;
-  assert.match(sql, /user_id = \$2::uuid OR \(\$3::uuid IS NOT NULL AND company_id = \$3::uuid\)/);
+  assert.match(sql, /\(company_id IS NULL AND user_id = \$2::uuid\) OR \(\$3::uuid IS NOT NULL AND company_id = \$3::uuid\)/);
   assert.match(sql, /found\.company_id IS NOT NULL OR m\.user_id = \$2::uuid/);
   assert.match(sql, /\(m\.created_at, m\.id\) < \(\$4::timestamptz, \$5::uuid\)/);
   assert.deepEqual(params, [CONV_A, USER_A, null, "2026-10-03T00:00:00Z", MSG_2, 2]);
@@ -322,7 +322,7 @@ test("user B cannot read user A's personal conversation", async () => {
   assert.equal(res.status, 404);
   assert.equal(await errorCode(res), "NOT_FOUND");
   const [found] = dataSeen(seen);
-  assert.match(found[0], /user_id = \$2::uuid OR \(\$3::uuid IS NOT NULL AND company_id = \$3::uuid\)/);
+  assert.match(found[0], /\(company_id IS NULL AND user_id = \$2::uuid\) OR \(\$3::uuid IS NOT NULL AND company_id = \$3::uuid\)/);
   assert.deepEqual(found[1].slice(0, 3), [CONV_A, USER_B, null]);
 });
 
