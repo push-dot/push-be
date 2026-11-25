@@ -323,13 +323,13 @@ def test_share_expires_after_thirty_days():
     assert res.status_code == 404
 
 
-def test_revoke_kills_the_link_and_only_the_owner_can():
+def test_any_current_member_turns_off_a_company_link_and_an_outsider_cannot():
     db = _db(_ordered_messages(), company_id=COMPANY_ID, members={MEMBER_ID: COMPANY_ID})
     token = _share(_client(db, USER_ID)).json()["data"]["token"]
     url = f"/api/v1/conversations/{CONV_ID}/share"
-    assert _client(db, MEMBER_ID).delete(url).status_code == 404
+    assert _client(db, OTHER_ID).delete(url).status_code == 404
     assert CONV_ID in db.shares
-    assert _client(db, USER_ID).delete(url).status_code == 200
+    assert _client(db, MEMBER_ID).delete(url).status_code == 200
     assert _client(db, None).get(f"/api/v1/conversations/shared/{token}").status_code == 404
 
 

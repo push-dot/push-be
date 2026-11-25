@@ -58,7 +58,8 @@ async def share_conversation(id: str, request: Request):
 
 @router.delete("/conversations/{id}/share")
 async def revoke_conversation_share(id: str, request: Request):
-    conversation = await _owned_conversation(request, id)
+    # Any current member may turn off a company thread's link; only its author can make one.
+    conversation = await _visible_conversation(request, id)
     await _shares(request).delete_share(conversation.id)
     return data(200, {"revoked": True})
 
