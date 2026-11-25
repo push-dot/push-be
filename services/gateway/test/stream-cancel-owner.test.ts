@@ -77,4 +77,6 @@ test("any member stops a company conversation's running job", async () => {
 test("CANCEL_SQL keeps personal and bot jobs to their creator", () => {
   assert.match(CANCEL_SQL, /\(j\.user_id = \$2::uuid OR found\.company_id IS NOT NULL\) AS mine/);
   assert.match(CANCEL_SQL, /SELECT id FROM active WHERE mine/);
+  assert.match(CANCEL_SQL, /\(company_id IS NULL AND user_id = \$2::uuid\) OR \(\$3::uuid IS NOT NULL AND company_id = \$3::uuid\)/,
+    "a company conversation is reached only through current membership, not authorship");
 });

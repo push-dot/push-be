@@ -233,7 +233,7 @@ test("company act-as writes that reach people outside the company need the appro
   const post = { category: "work", title: "채용 소식", body: "함께해요" };
   const cases = [
     ["PATCH", `/api/v1/postings/${posting}`, { status: "OPEN" }, "DRAFT", "publish_posting", { posting_id: posting }],
-    ["PATCH", `/api/v1/postings/${posting}`, { title: "새 제목" }, "OPEN", "update_published_posting", { posting_id: posting }],
+    ["PATCH", `/api/v1/postings/${posting}`, { title: "새 제목", expectedRevision: 3 }, "OPEN", "update_published_posting", { posting_id: posting, title: "새 제목" }],
     ["POST", `/api/v1/postings/${posting}/close`, {}, "OPEN", "close_posting", { posting_id: posting }],
     ["POST", `/api/v1/profiles/${profile}/offer`, { message: "커피챗 해요" }, "OPEN", "send_offer", { profile_id: profile, message: "커피챗 해요" }],
     ["POST", "/api/v1/posts", post, "OPEN", "create_company_post", post],
@@ -298,4 +298,39 @@ test("a company draft edit and personal offers and posts need no card", async ()
     assert.notEqual(await code(res), "APPROVAL_REQUIRED", `${method} ${path}`);
     assert.deepEqual(asked, [], `${method} ${path}`);
   }
+});
+
+test("a company write needs its card without x-push-company too, and a card binds the change it approved", async () => {
+  const posting = "21212121-2121-4121-8121-212121212121";
+  const profile = "81818181-8181-4181-8181-818181818181";
+  const approval = "51515151-5151-4151-8151-515151515151";
+  const consumed: Array<Array<unknown>> = [];
+  const query = async (sql: string, params: Array<unknown> = []) => {
+    if (sql.includes("UPDATE approvals")) {consumed.push(params); return empty;}
+    if (sql.includes("SELECT status FROM job_postings")) {return { rows: [{ status: "OPEN" }], rowCount: 1 };}
+    if (sql.includes("SELECT company_id FROM company_members")) {return { rows: [{ company_id: COMPANY }], rowCount: 1 };}
+    return queryFor(null)(sql, params);
+  };
+  const call = (method: string, path: string, body: unknown) => {
+    resetLimits();
+    return handle(new Request(`https://core.example${path}`, {
+      method,
+      headers: {
+        "content-type": "application/json", "idempotency-key": "61616161-6161-4161-8161-616161616161",
+        "x-push-internal-secret": SECRET, "x-push-act-as": USER, "x-push-approval": approval,
+      },
+      body: JSON.stringify(body),
+    }), env(), deps(query));
+  };
+
+  assert.equal(await code(await call("POST", `/api/v1/postings/${posting}/close`, {})), "APPROVAL_REQUIRED", "close with no company header");
+  assert.equal(consumed.at(-1)?.[2], "close_posting");
+  assert.equal(await code(await call("POST", `/api/v1/profiles/${profile}/offer`, { message: "안녕하세요" })), "APPROVAL_REQUIRED", "offer by a member with no header");
+  assert.equal(consumed.at(-1)?.[2], "send_offer");
+
+  const before = consumed.length;
+  assert.equal(await code(await call("PATCH", `/api/v1/postings/${posting}`, { status: "DRAFT", expectedRevision: 3 })), "APPROVAL_REQUIRED", "a status other than OPEN");
+  assert.equal(await code(await call("PATCH", `/api/v1/postings/${posting}`, { status: "OPEN", title: "몰래 바꾼 제목" })), "APPROVAL_REQUIRED", "publish that also edits");
+  assert.equal(await code(await call("PATCH", `/api/v1/postings/${posting}`, { title: "새 제목", requirements: ["x"] })), "APPROVAL_REQUIRED", "live edit beyond title and description");
+  assert.equal(consumed.length, before, "refused before any card is consumed");
 });

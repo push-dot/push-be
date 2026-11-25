@@ -61,3 +61,38 @@ test("any member of the company answers a company card, and the card keeps who d
   assert.equal(row.status, "REJECTED");
   assert.equal(row.decided_by, teammate.id);
 });
+
+test("a teammate's approval resumes the run as the teammate", async (t) => {
+  if (!db) {return t.skip(SKIP);}
+  const opener = await db.person("PRO");
+  const teammate = await db.person("PRO");
+  const posting = await db.posting("모아페이");
+  const [{ company_id: company }] = await rows("SELECT company_id FROM job_postings WHERE id = $1::uuid", [posting]);
+  for (const user of [opener, teammate]) {
+    await rows("INSERT INTO company_members (company_id, user_id, role) VALUES ($1::uuid, $2::uuid, 'MEMBER')", [company, user.id]);
+  }
+  const thread = crypto.randomUUID();
+  await rows("INSERT INTO conversations (id, user_id, title, company_id) VALUES ($1::uuid, $2::uuid, '공고 마감', $3::uuid)",
+    [thread, opener.id, company]);
+  const card = crypto.randomUUID();
+  await rows(
+    `INSERT INTO approvals (id, user_id, kind, target_id, payload_hash, status, conversation_id, title, options, tool_name, job_id)
+     VALUES ($1::uuid, $2::uuid, 'TOOL_ACTION', $1::uuid, 'h', 'PENDING', $3::uuid, '공고를 마감해요', $4::jsonb, 'close_posting', gen_random_uuid())`,
+    [card, opener.id, thread, JSON.stringify([{ id: "approve" }, { id: "reject" }])]);
+
+  const res = await handle(
+    new Request(`https://core.example/api/v1/conversations/${thread}/approvals/${card}`, {
+      method: "POST",
+      headers: { authorization: "Bearer dev", "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
+      body: JSON.stringify({ optionId: "approve" }),
+    }),
+    { APP_ENV: "development", DEV_AUTH_TOKEN: "dev", DEV_USER_ID: teammate.id, AI_ORIGIN: "https://ai.example.test" },
+    { query: db.pg.query, transaction: db.pg.transaction, now: () => new Date(), fetch: async () => new Response("{}") },
+  );
+  assert.equal(res.status, 202, "approved and resumed");
+  const [row] = await rows("SELECT status, decided_by FROM approvals WHERE id = $1::uuid", [card]);
+  assert.equal(row.status, "APPROVED");
+  assert.equal(row.decided_by, teammate.id);
+  const jobs = await rows("SELECT user_id FROM chat_jobs WHERE conversation_id = $1::uuid", [thread]);
+  assert.deepEqual(jobs.map((job) => job.user_id), [teammate.id], "the resume job runs as the teammate");
+});
