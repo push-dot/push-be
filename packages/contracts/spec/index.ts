@@ -11,6 +11,7 @@ import { routes as botApprovalsRoutes, schemas as botApprovalsSchemas } from "./
 import { routes as botChatRoutes, schemas as botChatSchemas } from "./bot-chat.ts";
 import { routes as botTranscriptRoutes, schemas as botTranscriptSchemas } from "./bot-transcript.ts";
 import { routes as materialsRoutes, schemas as materialsSchemas } from "./materials.ts";
+import { routes as memoriesRoutes, schemas as memoriesSchemas } from "./memories.ts";
 
 const areas = [
   { routes: accountRoutes, schemas: accountSchemas },
@@ -22,6 +23,7 @@ const areas = [
   { routes: conversationsRoutes, schemas: conversationsSchemas },
   { routes: documentsRoutes, schemas: documentsSchemas },
   { routes: materialsRoutes, schemas: materialsSchemas },
+  { routes: memoriesRoutes, schemas: memoriesSchemas },
   { routes: postingsRoutes, schemas: postingsSchemas },
   { routes: socialRoutes, schemas: socialSchemas },
 ];

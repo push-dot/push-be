@@ -9724,6 +9724,21 @@
         ],
         "type": "object"
       },
+      "UpdateUserMemoryBody": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "description": "One fact the bots keep about the user, in Korean. Outer spaces are dropped.",
+            "maxLength": 300,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
       "UploadedImage": {
         "properties": {
           "key": {
@@ -9817,6 +9832,32 @@
           "email",
           "provider",
           "plan"
+        ],
+        "type": "object"
+      },
+      "UserMemory": {
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text",
+          "createdAt",
+          "updatedAt"
         ],
         "type": "object"
       },
@@ -26381,6 +26422,140 @@
         "summary": "Chips for matching postings",
         "tags": [
           "social"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/me/memories": {
+      "delete": {
+        "operationId": "deleteMeMemories",
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Forget everything",
+        "tags": [
+          "me"
+        ],
+        "x-owner": "core"
+      },
+      "get": {
+        "description": "Newest change first, at most 200. Every bot of the user reads these at the start of a turn; the AI service writes them with its remember tool.",
+        "operationId": "getMeMemories",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/UserMemory"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "List what the bots remember about the user",
+        "tags": [
+          "me"
+        ],
+        "x-owner": "core"
+      }
+    },
+    "/api/v1/me/memories/{id}": {
+      "delete": {
+        "operationId": "deleteMeMemoriesById",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Forget one memory",
+        "tags": [
+          "me"
+        ],
+        "x-owner": "core"
+      },
+      "patch": {
+        "operationId": "patchMeMemoriesById",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateUserMemoryBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/UserMemory"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Correct a memory",
+        "tags": [
+          "me"
         ],
         "x-owner": "core"
       }

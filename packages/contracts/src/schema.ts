@@ -2943,6 +2943,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/memories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List what the bots remember about the user
+         * @description Newest change first, at most 200. Every bot of the user reads these at the start of a turn; the AI service writes them with its remember tool.
+         */
+        get: operations["getMeMemories"];
+        put?: never;
+        post?: never;
+        /** Forget everything */
+        delete: operations["deleteMeMemories"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/memories/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Forget one memory */
+        delete: operations["deleteMeMemoriesById"];
+        options?: never;
+        head?: never;
+        /** Correct a memory */
+        patch: operations["patchMeMemoriesById"];
+        trace?: never;
+    };
     "/api/v1/me/notifications": {
         parameters: {
             query?: never;
@@ -6739,6 +6778,10 @@ export interface components {
             expectedRevision: number;
             notificationsMuted?: boolean;
         };
+        UpdateUserMemoryBody: {
+            /** @description One fact the bots keep about the user, in Korean. Outer spaces are dropped. */
+            text: string;
+        };
         UploadedImage: {
             key: string;
             /** @description /api/v1/uploads/images/<key> */
@@ -6761,6 +6804,15 @@ export interface components {
             plan: "FREE" | "PRO" | "ULTRA";
             /** @description google, github, apple, email, phone, or empty */
             provider: string;
+        };
+        UserMemory: {
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            text: string;
+            /** Format: date-time */
+            updatedAt: string;
         };
         UserSettings: {
             /** @enum {string} */
@@ -12681,6 +12733,98 @@ export interface operations {
                         data: {
                             chips: string[];
                         };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeMemories: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["UserMemory"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteMeMemories: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteMeMemoriesById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    patchMeMemoriesById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateUserMemoryBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["UserMemory"];
                     };
                 };
             };
