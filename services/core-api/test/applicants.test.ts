@@ -499,9 +499,7 @@ test("applicant detail returns the snapshot documents and never the applicant's 
   assert.equal("fitScore" in body.data.application, false, "the applicant's own fit score stays theirs");
   assert.equal("nextActionAt" in body.data.application, false, "the applicant's own next step stays theirs");
   assert.deepEqual(body.data.documents, [{ id: DOC, title: "Resume", content: "{\"summary\":\"hi\"}" }]);
-  const appSql = seen.find((call) => call.sql.includes("applications") && call.sql.includes("fit_score"));
-  assert.ok(appSql);
-  assert.match(appSql.sql, /gap_analyses/);
+  assert.equal(seen.some((call) => call.sql.includes("gap_analyses")), false, "the company view never reads the applicant's gap analysis");
 });
 
 const settingsRow = (notify: boolean, days: number | null) => ({
