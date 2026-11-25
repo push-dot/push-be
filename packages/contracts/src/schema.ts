@@ -3584,7 +3584,7 @@ export interface paths {
         head?: never;
         /**
          * Change an applicant's stage
-         * @description Company members of the posting only. Same stage returns the application unchanged, including its fitScore. A stage change returns fitScore null. Applications in ACCEPTED, REJECTED or WITHDRAWN return 409 INVALID_TRANSITION. Sends an APPLICATION_STAGE notification to the applicant.
+         * @description Company members of the posting only. Same stage returns the application unchanged. The applicant's own notes, nextActionAt and fitScore are never included. Applications in ACCEPTED, REJECTED or WITHDRAWN return 409 INVALID_TRANSITION. Sends an APPLICATION_STAGE notification to the applicant.
          */
         patch: operations["patchPostingsByIdApplicantsByApplicationId"];
         trace?: never;
@@ -6248,13 +6248,11 @@ export interface components {
             company: string;
             /** Format: date-time */
             createdAt: string;
-            fitScore: number | null;
             /** Format: uuid */
             id: string;
             imported: boolean;
             /** Format: uuid */
             jobId: string;
-            nextActionAt: string | null;
             revision: number;
             /** @enum {string} */
             stage: "DISCOVERED" | "PREPARING" | "READY" | "APPLIED" | "SCREENING" | "INTERVIEW" | "OFFER" | "ACCEPTED" | "REJECTED" | "WITHDRAWN";

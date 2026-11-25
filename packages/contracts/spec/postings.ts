@@ -135,7 +135,7 @@ export const routes: Array<Route> = [
   patch("core", "/api/v1/postings/{id}/applicants/{applicationId}", {
     tag: "postings",
     summary: "Change an applicant's stage",
-    description: "Company members of the posting only. Same stage returns the application unchanged, including its fitScore. A stage change returns fitScore null. Applications in ACCEPTED, REJECTED or WITHDRAWN return 409 INVALID_TRANSITION. Sends an APPLICATION_STAGE notification to the applicant.",
+    description: "Company members of the posting only. Same stage returns the application unchanged. The applicant's own notes, nextActionAt and fitScore are never included. Applications in ACCEPTED, REJECTED or WITHDRAWN return 409 INVALID_TRANSITION. Sends an APPLICATION_STAGE notification to the applicant.",
     params: [pathParam("id"), pathParam("applicationId")],
     body: body(obj({ stage: enumOf("SCREENING", "INTERVIEW", "OFFER", "REJECTED") })),
     responses: { 200: ok(ref("PostingsApplicantApplication")) },
@@ -285,11 +285,9 @@ export const schemas = {
     title: str,
     stage: applicationStage,
     appliedAt: nullable(dateTime),
-    nextActionAt: nullable(dateTime),
     imported: bool,
     createdAt: dateTime,
     updatedAt: dateTime,
-    fitScore: nullable(num),
   }),
   ApplicantDetail: obj({
     application: ref("PostingsApplicantApplication"),

@@ -7810,16 +7810,6 @@
             "format": "date-time",
             "type": "string"
           },
-          "fitScore": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "id": {
             "format": "uuid",
             "type": "string"
@@ -7830,17 +7820,6 @@
           "jobId": {
             "format": "uuid",
             "type": "string"
-          },
-          "nextActionAt": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "revision": {
             "type": "integer"
@@ -7876,11 +7855,9 @@
           "title",
           "stage",
           "appliedAt",
-          "nextActionAt",
           "imported",
           "createdAt",
-          "updatedAt",
-          "fitScore"
+          "updatedAt"
         ],
         "type": "object"
       },
@@ -29321,7 +29298,7 @@
         "x-owner": "core"
       },
       "patch": {
-        "description": "Company members of the posting only. Same stage returns the application unchanged, including its fitScore. A stage change returns fitScore null. Applications in ACCEPTED, REJECTED or WITHDRAWN return 409 INVALID_TRANSITION. Sends an APPLICATION_STAGE notification to the applicant.",
+        "description": "Company members of the posting only. Same stage returns the application unchanged. The applicant's own notes, nextActionAt and fitScore are never included. Applications in ACCEPTED, REJECTED or WITHDRAWN return 409 INVALID_TRANSITION. Sends an APPLICATION_STAGE notification to the applicant.",
         "operationId": "patchPostingsByIdApplicantsByApplicationId",
         "parameters": [
           {

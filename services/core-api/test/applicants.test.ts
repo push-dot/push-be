@@ -478,7 +478,7 @@ test("a terminal applicant stage cannot move to OFFER", async () => {
   assert.equal(seen.some((call) => call.sql.includes("INSERT INTO notifications")), false);
 });
 
-test("applicant detail returns the snapshot documents and fit score", async () => {
+test("applicant detail returns the snapshot documents and never the applicant's own tracking", async () => {
   resetLimits();
   const seen: Array<Call> = [];
   const res = await handle(
@@ -495,8 +495,9 @@ test("applicant detail returns the snapshot documents and fit score", async () =
     })),
   );
   assert.equal(res.status, 200);
-  const body = await readJson<{ data: { application: { fitScore: number }; documents: Array<{ id: string; title: string; content: string }> } }>(res);
-  assert.equal(body.data.application.fitScore, 80);
+  const body = await readJson<{ data: { application: Record<string, unknown>; documents: Array<{ id: string; title: string; content: string }> } }>(res);
+  assert.equal("fitScore" in body.data.application, false, "the applicant's own fit score stays theirs");
+  assert.equal("nextActionAt" in body.data.application, false, "the applicant's own next step stays theirs");
   assert.deepEqual(body.data.documents, [{ id: DOC, title: "Resume", content: "{\"summary\":\"hi\"}" }]);
   const appSql = seen.find((call) => call.sql.includes("applications") && call.sql.includes("fit_score"));
   assert.ok(appSql);
