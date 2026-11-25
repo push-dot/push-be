@@ -470,8 +470,34 @@ async def test_queue_turn_checks_cancellation_once_per_second_and_before_done(mo
     ctx = _JobCtx()
     assert await jobs.run_queue_turn(SimpleNamespace(graph=Graph()), ctx, cancelled) == {"operationId": "op-1"}
     assert len(checks) == 2
-    assert [kind for kind, _ in ctx.events].count("token") == 50
-    assert ctx.events[0] == ("token", {"text": "0"}) and ctx.events[-1][0] == "done"
+    tokens = [payload["text"] for kind, payload in ctx.events if kind == "token"]
+    assert "".join(tokens) == "".join(str(i) for i in range(50))
+    assert len(tokens) == 1, "tokens inside 100ms and under 200 characters are one row"
+    assert ctx.events[-1][0] == "done"
+
+
+async def test_queue_turn_flushes_tokens_before_a_card_and_at_the_size_cap(monkeypatch):
+    monkeypatch.setattr(jobs, "monotonic", lambda: 100.0)
+
+    class Graph:
+        async def astream(self, *args, **kwargs):
+            yield "custom", {"token": "가" * 150}
+            yield "custom", {"token": "나" * 60}
+            yield "custom", {"token": "다"}
+            yield "custom", {"type": "status", "text": "공고를 읽는 중", "phase": "working"}
+            yield "custom", {"token": "라"}
+
+    async def cancelled(_job_id):
+        return False
+
+    ctx = _JobCtx()
+    await jobs.run_queue_turn(SimpleNamespace(graph=Graph()), ctx, cancelled)
+    assert [(kind, payload.get("text")) for kind, payload in ctx.events] == [
+        ("token", "가" * 150 + "나" * 60),
+        ("token", "다"),
+        ("status", "공고를 읽는 중"),
+        ("token", "라"),
+    ]
 
 
 async def test_queue_turn_stores_a_graph_result_for_the_stream_and_replay():
