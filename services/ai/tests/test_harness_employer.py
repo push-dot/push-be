@@ -148,6 +148,9 @@ async def test_employer_core_tool_paths(name):
         assert json.loads(request.content)["stage"] == "INTERVIEW"
     if name == "publish_posting":
         assert json.loads(request.content)["status"] == "OPEN"
+    if name == "close_posting":
+        # core refuses a close without the revision the caller read (staging: VALIDATION_ERROR).
+        assert json.loads(request.content) == {"expectedRevision": 3}
     if request.method == "PATCH" and "/applicants/" not in request.url.path:
         assert json.loads(request.content)["expectedRevision"] == 3
 
