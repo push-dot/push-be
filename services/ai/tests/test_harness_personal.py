@@ -110,11 +110,8 @@ class _RevisionDb:
     def q(self):
         return self
 
-    async def execute(self, *_args):
-        return None
-
     async def fetchrow(self, *_args):
-        return {"body": "1"}
+        return {"revision": 1}
 
 
 def test_personal_tool_tiers():

@@ -1,4 +1,4 @@
-"""Calendar writes send the event revision, pinned per tool call; post and comment fields match core."""
+"""Calendar writes send the event's current revision; post and comment fields match core."""
 from __future__ import annotations
 
 import json
@@ -20,31 +20,38 @@ EVENT = uuid4()
 class Db:
     def __init__(self, revision):
         self.revision = revision
-        self.files = {}
 
     def q(self):
         return self
 
-    async def execute(self, sql, conversation_id, name, event_id, user_id):
+    async def fetchrow(self, sql, event_id, user_id):
         assert "calendar_events" in sql and event_id == EVENT and user_id == USER
-        self.files.setdefault((conversation_id, name), str(self.revision or 0))
-
-    async def fetchrow(self, sql, conversation_id, name):
-        return {"body": self.files[(conversation_id, name)]}
+        return None if self.revision is None else {"revision": self.revision}
 
 
-def _core(sent, status=200):
-    def handler(request):
-        sent.append((request.method, request.url.path, json.loads(request.content or b"null")))
-        if status == 409:
-            return httpx.Response(409, json={"error": {"code": "REVISION_CONFLICT", "message": "modified"}})
-        return httpx.Response(status, json={"data": {}}) if status != 204 else httpx.Response(204)
-    return CoreClient("http://core.test", "secret", httpx.MockTransport(handler))
+class Core:
+    def __init__(self, db, status=200):
+        self.db, self.status, self.sent = db, status, []
+
+    def client(self):
+        def handler(request):
+            body = json.loads(request.content or b"null")
+            self.sent.append((request.method, request.url.path, body))
+            if self.status == 409:
+                return httpx.Response(409, json={"error": {"code": "REVISION_CONFLICT", "message": "modified"}})
+            if self.status == 404:
+                return httpx.Response(404, json={"error": {"code": "NOT_FOUND", "message": "gone"}})
+            if request.method == "DELETE":
+                self.db.revision = None
+                return httpx.Response(204)
+            self.db.revision += 1
+            return httpx.Response(200, json={"data": {"revision": self.db.revision}})
+        return CoreClient("http://core.test", "secret", httpx.MockTransport(handler))
 
 
 def _ctx(db, core, call="call-1"):
     return ToolContext(user_id=USER, company_id=None, conversation_id=CONV, job_id="job-1",
-                       tool_call_id=call, db=db, core=core)
+                       tool_call_id=call, db=db, core=core.client() if core else None)
 
 
 def _tool(name):
@@ -57,52 +64,78 @@ async def _run(name, args, ctx):
 
 
 async def test_update_sends_the_event_revision():
-    sent, db = [], Db(3)
-    result, ok = await _run("update_calendar_event", {"event_id": str(EVENT), "title": "면접"}, _ctx(db, _core(sent)))
+    db = Db(3)
+    core = Core(db)
+    result, ok = await _run("update_calendar_event", {"event_id": str(EVENT), "title": "면접"}, _ctx(db, core))
 
     assert ok, result
-    assert sent == [("PATCH", f"/api/v1/calendar/events/{EVENT}", {"title": "면접", "expectedRevision": 3})]
+    assert core.sent == [("PATCH", f"/api/v1/calendar/events/{EVENT}", {"title": "면접", "expectedRevision": 3})]
+
+
+async def test_a_replayed_update_writes_the_same_values_at_the_new_revision():
+    db = Db(3)
+    core = Core(db)
+    args = {"event_id": str(EVENT), "title": "면접"}
+    first = await _run("update_calendar_event", args, _ctx(db, core))
+    replay = await _run("update_calendar_event", args, _ctx(db, core))
+
+    assert first[1] and replay[1]
+    assert [body for _, _, body in core.sent] == [
+        {"title": "면접", "expectedRevision": 3}, {"title": "면접", "expectedRevision": 4}]
 
 
 async def test_delete_sends_the_event_revision():
-    sent, db = [], Db(2)
-    result, ok = await _run("delete_calendar_event", {"event_id": str(EVENT)}, _ctx(db, _core(sent, 204)))
+    db = Db(2)
+    core = Core(db)
+    result, ok = await _run("delete_calendar_event", {"event_id": str(EVENT)}, _ctx(db, core))
 
-    assert ok, result
-    assert sent == [("DELETE", f"/api/v1/calendar/events/{EVENT}", {"expectedRevision": 2})]
-
-
-async def test_a_replayed_call_keeps_its_first_revision_and_a_new_call_reads_again():
-    sent, db = [], Db(3)
-    args = {"event_id": str(EVENT), "title": "면접"}
-    await _run("update_calendar_event", args, _ctx(db, _core(sent)))
-    db.revision = 4
-    await _run("update_calendar_event", args, _ctx(db, _core(sent)))
-    await _run("update_calendar_event", args, _ctx(db, _core(sent), call="call-2"))
-
-    assert [body["expectedRevision"] for _, _, body in sent] == [3, 3, 4]
+    assert (result, ok) == ({}, True)
+    assert core.sent == [("DELETE", f"/api/v1/calendar/events/{EVENT}", {"expectedRevision": 2})]
 
 
-async def test_a_stale_revision_surfaces_the_conflict():
-    sent = []
-    result, ok = await _run("delete_calendar_event", {"event_id": str(EVENT)}, _ctx(Db(1), _core(sent, 409)))
+async def test_a_replayed_delete_is_done_without_a_request():
+    db = Db(2)
+    core = Core(db)
+    await _run("delete_calendar_event", {"event_id": str(EVENT)}, _ctx(db, core))
+    replay = await _run("delete_calendar_event", {"event_id": str(EVENT)}, _ctx(db, core))
 
-    assert (result, ok) == ({"error": "REVISION_CONFLICT"}, False)
-    assert len(sent) == 1
+    assert replay == ({}, True)
+    assert len(core.sent) == 1
 
 
-async def test_a_missing_event_sends_revision_zero_so_core_answers_not_found():
-    sent = []
-    await _run("delete_calendar_event", {"event_id": str(EVENT)}, _ctx(Db(None), _core(sent, 204)))
+async def test_a_delete_that_core_finds_gone_is_done():
+    db = Db(2)
+    result = await _run("delete_calendar_event", {"event_id": str(EVENT)}, _ctx(db, Core(db, 404)))
 
-    assert sent[0][2] == {"expectedRevision": 0}
+    assert result == ({}, True)
+
+
+async def test_an_update_of_a_missing_event_is_not_found():
+    db = Db(None)
+    core = Core(db)
+    result = await _run("update_calendar_event", {"event_id": str(EVENT), "title": "면접"}, _ctx(db, core))
+
+    assert result == ({"error": "NOT_FOUND"}, False)
+    assert core.sent == []
+
+
+@pytest.mark.parametrize("name", ["update_calendar_event", "delete_calendar_event"])
+async def test_a_stale_revision_surfaces_the_conflict_once(name):
+    db = Db(1)
+    core = Core(db, 409)
+    result = await _run(name, {"event_id": str(EVENT), "title": "면접"} if name.startswith("update") else
+                        {"event_id": str(EVENT)}, _ctx(db, core))
+
+    assert result == ({"error": "REVISION_CONFLICT"}, False)
+    assert len(core.sent) == 1
 
 
 async def test_without_a_database_the_write_is_not_sent():
-    sent = []
-    result, ok = await _run("delete_calendar_event", {"event_id": str(EVENT)}, _ctx(None, _core(sent)))
+    core = Core(None)
+    result = await _run("delete_calendar_event", {"event_id": str(EVENT)}, _ctx(None, core))
 
-    assert (result, ok, sent) == ({"error": "UNAVAILABLE"}, False, [])
+    assert result == ({"error": "UNAVAILABLE"}, False)
+    assert core.sent == []
 
 
 @pytest.mark.parametrize(("name", "args"), [

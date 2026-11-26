@@ -169,27 +169,22 @@ class PageArgs(BaseModel):
         return value
 
 
-# Core PATCH and DELETE take no Idempotency-Key, so a replayed call keeps the revision its first run
-# read: after the first run landed, the replay gets 409 REVISION_CONFLICT instead of writing twice.
-_PIN_REVISION = (
-    "INSERT INTO workspace_files (conversation_id, name, body, updated_at) "
-    "SELECT $1, $2, coalesce((SELECT revision::text FROM calendar_events WHERE id = $3 AND user_id = $4), '0'), "
-    "now() ON CONFLICT (conversation_id, name) DO NOTHING"
-)
-_PINNED = "SELECT body FROM workspace_files WHERE conversation_id = $1 AND name = $2"
+# Core PATCH and DELETE ignore Idempotency-Key. Each run sends the current revision: a replayed update
+# writes the same values again, and a replayed delete finds the event gone.
+_EVENT_REVISION = "SELECT revision FROM calendar_events WHERE id = $1 AND user_id = $2"
 
 
 async def _event_revision(ctx: ToolContext, event_id: UUID) -> int:
     if ctx.db is None:
         raise CoreError(503, "UNAVAILABLE", "no database")
-    name = f"revision:{idempotency_key(ctx.job_id, ctx.tool_call_id)}"
-    await ctx.db.q().execute(_PIN_REVISION, ctx.conversation_id, name, event_id, ctx.user_id)
-    row = await ctx.db.q().fetchrow(_PINNED, ctx.conversation_id, name)
-    return int(row["body"])
+    row = await ctx.db.q().fetchrow(_EVENT_REVISION, event_id, ctx.user_id)
+    if row is None:
+        raise CoreError(404, "NOT_FOUND", "resource not found")
+    return int(row["revision"])
 
 
 def _core(name, tier, model, summary, method, path_of, *, write=False, drop=(), display=None, revision=False):
-    async def run(ctx: ToolContext, args):
+    async def send(ctx: ToolContext, args):
         body = args.model_dump(mode="json", exclude_none=True, by_alias=True, exclude=set(drop))
         if revision:
             body["expectedRevision"] = await _event_revision(ctx, args.event_id)
@@ -203,6 +198,14 @@ def _core(name, tier, model, summary, method, path_of, *, write=False, drop=(), 
             idempotency_key=idempotency_key(ctx.job_id, ctx.tool_call_id) if write else None,
             approval_id=approval_id_for(ctx.job_id, ctx.tool_call_id) if name in ALWAYS_ASK_TOOLS else None,
         )
+
+    async def run(ctx: ToolContext, args):
+        try:
+            return await send(ctx, args)
+        except CoreError as err:
+            if revision and method == "DELETE" and err.code == "NOT_FOUND":
+                return {}
+            raise
 
     return ToolSpec(name, tier, model, run, lambda _args: summary, display=display)
 
