@@ -349,7 +349,10 @@ def build_flows(
         flow = flow_of(state)
         profile = CompanyProfile.model_validate(flow["profile"])
         reference = flow.get("reference") or "없음"
-        user = f"[회사 프로필]\n{profile.model_dump_json()}\n\n[참고 공고]\n{reference}"
+        # What the employer said when starting this flow comes first in the choices.
+        asked = flow.get("asked") or ""
+        user = (f"[담당자 요청]\n{asked or '없음'}\n\n"
+                f"[회사 프로필]\n{profile.model_dump_json()}\n\n[참고 공고]\n{reference}")
         choices = await generate_for(state)(RoleOptions, node_prompt("pf_role"), user)
         options = [
             {"id": o.id or f"r{i}", "label": o.label} for i, o in enumerate(choices.options[:3])
@@ -379,7 +382,9 @@ def build_flows(
         role = await generate_for(state)(
             RoleSpec,
             node_prompt("pf_role_detail"),
-            f"[담당자 답]\n{flow.get('need')}\n\n[회사 프로필]\n{profile.model_dump_json()}",
+            f"[담당자 요청]\n{flow.get('asked') or '없음'}\n\n"
+            f"[담당자 답]\n{flow.get('need')}\n\n"
+            f"[회사 프로필]\n{profile.model_dump_json()}",
         )
         return flow_update(state, step="draft", role=role.model_dump())
 
