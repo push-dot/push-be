@@ -68,7 +68,10 @@ async def check_receipts(token: str, client: httpx.AsyncClient, redis,
         and (receipt.get("details") or {}).get("error") == "DeviceNotRegistered"})
     if dead:
         await prune(dead)
-    await redis.zrem(RECEIPTS_KEY, *members)
+    # A ticket Expo has no receipt for yet stays for the next pass; the 24-hour trim drops it at last.
+    done = [member for member in members if member.split("|", 1)[0] in receipts]
+    if done:
+        await redis.zrem(RECEIPTS_KEY, *done)
     return len(dead)
 
 

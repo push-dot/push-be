@@ -188,3 +188,29 @@ async def test_check_receipts_keeps_tickets_when_expo_fails():
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _r: httpx.Response(503))) as client:
         assert await check_receipts("expo-secret", client, redis, lambda _t: None, now=RECEIPT_AFTER) == 0
     assert await redis.zrange(RECEIPTS_KEY, 0, -1) == ["r1|a"]
+
+
+@pytest.mark.asyncio
+async def test_check_receipts_keeps_a_ticket_expo_has_no_receipt_for_yet():
+    redis = FakeRedis(decode_responses=True)
+    await redis.zadd(RECEIPTS_KEY, {"r1|a": 0, "late|b": 0})
+    pruned = []
+
+    async def prune(tokens):
+        pruned.extend(tokens)
+
+    def first(_request):
+        return httpx.Response(200, json={"data": {"r1": {"status": "ok"}}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(first)) as client:
+        await check_receipts("expo-secret", client, redis, prune, now=RECEIPT_AFTER)
+    assert await redis.zrange(RECEIPTS_KEY, 0, -1) == ["late|b"]
+
+    def later(_request):
+        return httpx.Response(200, json={"data": {
+            "late": {"status": "error", "details": {"error": "DeviceNotRegistered"}}}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(later)) as client:
+        assert await check_receipts("expo-secret", client, redis, prune, now=RECEIPT_AFTER + 300) == 1
+    assert pruned == ["b"]
+    assert await redis.zrange(RECEIPTS_KEY, 0, -1) == []
