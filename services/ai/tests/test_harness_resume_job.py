@@ -151,3 +151,26 @@ async def test_a_new_message_still_answers_the_waiting_text_gate():
     answered = [args for sql, args in rows.executed if "SET status = 'APPROVED'" in sql]
     assert [str(args[0]) for args in answered] == [gate_id], (
         "a person's new message answers the gate the earlier turn opened")
+
+
+async def test_an_approved_apply_posts_a_json_body_core_accepts():
+    import json as _json
+
+    import httpx as _httpx
+
+    from app.harness.personal.tools import PERSONAL_TOOLS
+    from app.harness.tools import ToolContext
+
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return _httpx.Response(201, json={"data": {"id": "app-1"}})
+
+    core = CoreClient("http://core.test", "secret", _httpx.MockTransport(handler))
+    tool = next(t for t in PERSONAL_TOOLS if t.name == "apply_to_posting")
+    ctx = ToolContext(user_id=str(USER), company_id=None, conversation_id=str(CONV), job_id=JOB_A,
+                      tool_call_id="call-1", db=None, core=core)
+    await tool.run(ctx, tool.args_model.model_validate({"posting_id": POSTING}))
+    # Staging: an empty body made core answer VALIDATION_ERROR "request body required".
+    assert _json.loads(seen[0].content) == {}

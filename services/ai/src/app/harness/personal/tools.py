@@ -198,7 +198,8 @@ def _core(name, tier, model, summary, method, path_of, *, write=False, drop=(), 
             path_of(args),
             user_id=ctx.user_id,
             company_id=ctx.company_id,
-            json=body or None,
+            # core's write routes need a JSON body even when it is empty (readObject).
+            json=body if write else (body or None),
             idempotency_key=idempotency_key(ctx.job_id, ctx.tool_call_id) if write else None,
             approval_id=approval_id_for(ctx.job_id, ctx.tool_call_id) if name in ALWAYS_ASK_TOOLS else None,
         )

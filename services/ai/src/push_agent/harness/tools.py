@@ -4,17 +4,19 @@ from typing import Literal
 from urllib.parse import urlencode
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 from app.framework.fit_judge import judge_fit
 from app.framework.untrusted import as_data
 from app.harness.approval import approval_conversation_id, approval_id_for
-from app.harness.core_client import idempotency_key
+from app.harness.core_client import CoreError, idempotency_key
 from app.harness.policy import ALWAYS_ASK_TOOLS, Tier
 from app.harness.tools import OptionalId, ToolContext, ToolSpec
 
-Stage = Literal["APPLIED", "SCREENING", "INTERVIEW", "OFFER", "REJECTED"]
+# Listing may filter on APPLIED; a stage change may not (core EMPLOYER_STAGES).
+ListStage = Literal["APPLIED", "SCREENING", "INTERVIEW", "OFFER", "REJECTED"]
+Stage = Literal["SCREENING", "INTERVIEW", "OFFER", "REJECTED"]
 
 
 class EmptyArgs(BaseModel):
@@ -27,7 +29,7 @@ class PostingId(BaseModel):
 
 class ApplicantsArgs(BaseModel):
     posting_id: UUID
-    stage: Stage | None = None
+    stage: ListStage | None = None
 
 
 class ApplicantArgs(BaseModel):
@@ -60,8 +62,9 @@ class OfferArgs(BaseModel):
 class DraftArgs(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
-    title: str = ""
-    description: str = ""
+    # core createPosting refuses an empty title or description.
+    title: str = Field(min_length=1)
+    description: str = Field(min_length=1)
     job_category: Literal["dev", "data", "design", "plan", "marketing", "sales", "hr", "ops"]
     career_min: int = 0
     career_max: int | None = None
@@ -139,6 +142,34 @@ def _patch_posting(name, tier, model, summary, body_of, *, draft_only=False):
         )
 
     return ToolSpec(name, tier, model, run, lambda _args: summary)
+
+
+def _close_posting():
+    """core closes a posting only at the revision the caller read (expectedRevision)."""
+    async def run(ctx: ToolContext, args):
+        path = f"/api/v1/postings/{args.posting_id}"
+        current = await ctx.core.call("GET", path, user_id=ctx.user_id, company_id=ctx.company_id)
+        try:
+            return await ctx.core.call(
+                "POST",
+                path + "/close",
+                user_id=ctx.user_id,
+                company_id=ctx.company_id,
+                json={"expectedRevision": current.get("revision")},
+                idempotency_key=idempotency_key(ctx.job_id, ctx.tool_call_id),
+                approval_id=_approval("close_posting", Tier.RISKY_WRITE, ctx),
+            )
+        except CoreError as error:
+            # A retry of a close that already ran reads the new revision, so its body differs
+            # from the stored call and core answers IDEMPOTENCY_CONFLICT: the posting is closed.
+            if error.code != "IDEMPOTENCY_CONFLICT":
+                raise
+            after = await ctx.core.call("GET", path, user_id=ctx.user_id, company_id=ctx.company_id)
+            if after.get("status") != "CLOSED":
+                raise
+            return after
+
+    return ToolSpec("close_posting", Tier.RISKY_WRITE, PostingId, run, lambda _args: "공고를 마감해요")
 
 
 def _arg(args, name: str):
@@ -235,8 +266,7 @@ EMPLOYER_TOOLS = [
                    lambda _args: {"status": "OPEN"}),
     _patch_posting("update_published_posting", Tier.RISKY_WRITE, PostingPatch, "게시한 공고를 수정해요",
                    lambda args: _kept(args, {"posting_id"})),
-    _http("close_posting", Tier.RISKY_WRITE, PostingId, "공고를 마감해요", "POST",
-          lambda args: f"/api/v1/postings/{args.posting_id}/close", write=True),
+    _close_posting(),
     _http("change_applicant_stage", Tier.RISKY_WRITE, StageArgs, "지원자 단계를 바꿔요", "PATCH",
           lambda args: f"/api/v1/postings/{args.posting_id}/applicants/{args.application_id}",
           write=True, body_of=lambda args: {"stage": args.stage}, display=_stage_rows),

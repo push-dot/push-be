@@ -8,7 +8,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from pydantic import ValidationError
 
 from app.harness.approval import approval_id_for
-from app.harness.core_client import CoreClient
+from app.harness.core_client import CoreClient, CoreError
 from app.harness.graph import astream_harness, build_harness_graph
 from app.harness.policy import ALWAYS_ASK_TOOLS, Tier
 from app.harness.registry import REGISTRY
@@ -63,7 +63,8 @@ _CORE = {
     "get_profile": ({"profile_id": U}, ("GET", f"/api/v1/profiles/{U}")),
     "get_company": ({}, ("GET", "/api/v1/companies/me")),
     "draft_posting": (
-        {"title": "백엔드", "job_category": "dev", "location": "서울", "employment_type": "full_time"},
+        {"title": "백엔드", "description": "결제 API를 운영해요", "job_category": "dev",
+         "location": "서울", "employment_type": "full_time"},
         ("POST", "/api/v1/postings"),
     ),
     "update_posting_draft": ({"posting_id": P, "title": "백엔드"}, ("PATCH", f"/api/v1/postings/{P}")),
@@ -148,6 +149,9 @@ async def test_employer_core_tool_paths(name):
         assert json.loads(request.content)["stage"] == "INTERVIEW"
     if name == "publish_posting":
         assert json.loads(request.content)["status"] == "OPEN"
+    if name == "close_posting":
+        # core refuses a close without the revision the caller read (staging: VALIDATION_ERROR).
+        assert json.loads(request.content) == {"expectedRevision": 3}
     if request.method == "PATCH" and "/applicants/" not in request.url.path:
         assert json.loads(request.content)["expectedRevision"] == 3
 
@@ -213,7 +217,9 @@ async def test_draft_posting_tool_event_has_draft():
                 "name": "draft_posting",
                 "id": "c1",
                 "type": "tool_call",
-                "args": {"title": "백엔드", "job_category": "dev", "location": "서울", "employment_type": "full_time"},
+                "args": {"title": "백엔드", "description": "결제 API를 운영해요",
+                         "job_category": "dev", "location": "서울",
+                         "employment_type": "full_time"},
             }],
         }, {"content": "done"}]),
         db=None,
@@ -242,3 +248,57 @@ def test_employer_fit_ids_must_be_uuids():
     assert FitArgs.model_validate({"posting_id": "", "document_id": ""}).posting_id is None
     with pytest.raises(ValidationError):
         FitArgs.model_validate({"document_id": "not-a-uuid"})
+
+
+async def test_a_replayed_close_of_a_closed_posting_is_a_success():
+    calls = []
+    state = {"revision": 3, "status": "OPEN"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": {"id": P, **state}})
+        if state["status"] == "CLOSED":
+            return httpx.Response(409, json={"error": {"code": "IDEMPOTENCY_CONFLICT",
+                                                       "message": "idempotency key conflict"}})
+        state.update(status="CLOSED", revision=4)
+        return httpx.Response(200, json={"data": {"id": P, **state}})
+
+    core = CoreClient("http://core.test", "secret", httpx.MockTransport(handler))
+    tool = _tool("close_posting")
+    ctx = ToolContext(user_id="user-1", company_id="co-1", conversation_id="conv-1",
+                      job_id="job-1", tool_call_id="call-1", db=None, core=core)
+    args = tool.args_model.model_validate({"posting_id": P})
+    assert (await tool.run(ctx, args))["status"] == "CLOSED"
+    # The worker retries the same call: it reads revision 4, so core sees a different body.
+    assert (await tool.run(ctx, args))["status"] == "CLOSED"
+
+
+async def test_a_conflict_on_an_open_posting_stays_an_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": {"id": P, "revision": 3, "status": "OPEN"}})
+        return httpx.Response(409, json={"error": {"code": "IDEMPOTENCY_CONFLICT", "message": "x"}})
+
+    core = CoreClient("http://core.test", "secret", httpx.MockTransport(handler))
+    tool = _tool("close_posting")
+    ctx = ToolContext(user_id="user-1", company_id="co-1", conversation_id="conv-1",
+                      job_id="job-1", tool_call_id="call-1", db=None, core=core)
+    with pytest.raises(CoreError):
+        await tool.run(ctx, tool.args_model.model_validate({"posting_id": P}))
+
+
+def test_a_draft_needs_a_title_and_description_and_a_stage_move_never_targets_applied():
+    from pydantic import ValidationError
+
+    draft = _tool("draft_posting").args_model
+    base = {"jobCategory": "dev", "location": "서울", "employmentType": "full_time"}
+    with pytest.raises(ValidationError):
+        draft.model_validate({**base, "title": "", "description": "결제 API"})
+    with pytest.raises(ValidationError):
+        draft.model_validate({**base, "title": "백엔드", "description": ""})
+    draft.model_validate({**base, "title": "백엔드", "description": "결제 API"})
+    with pytest.raises(ValidationError):
+        _tool("change_applicant_stage").args_model.model_validate(
+            {"posting_id": P, "application_id": A, "stage": "APPLIED"})
+    _tool("list_applicants").args_model.model_validate({"posting_id": P, "stage": "APPLIED"})
