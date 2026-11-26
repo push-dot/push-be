@@ -1,3 +1,4 @@
+import json
 from uuid import UUID
 
 import httpx
@@ -5,7 +6,16 @@ import pytest
 from fakeredis.aioredis import FakeRedis
 
 from app.queue.streams import StreamQueue
-from app.workers.handlers.notify import EXPO_PUSH, expo_push, make_notify
+from app.workers.handlers.notify import (
+    EXPO_PUSH,
+    EXPO_RECEIPTS,
+    RECEIPT_AFTER,
+    RECEIPT_KEEP,
+    RECEIPTS_KEY,
+    check_receipts,
+    expo_push,
+    make_notify,
+)
 from tests.test_queue_worker import FIRST, SECOND, USER, MemoryJobs, queued, worker
 
 NOTE = UUID("55555555-5555-4555-8555-555555555555")
@@ -123,3 +133,84 @@ async def test_expo_push_counts_nothing_when_expo_rejects_the_request():
     transport = httpx.MockTransport(lambda _r: httpx.Response(401, json={}))
     async with httpx.AsyncClient(transport=transport) as client:
         assert await expo_push("bad", client)([{"to": "a"}]) == 0
+
+
+@pytest.mark.asyncio
+async def test_expo_push_saves_ok_tickets_for_the_receipt_check():
+    def handler(_request):
+        return httpx.Response(200, json={"data": [
+            {"status": "ok", "id": "r1"},
+            {"status": "error", "details": {"error": "DeviceNotRegistered"}},
+        ]})
+
+    saved = []
+
+    async def remember(pairs):
+        saved.extend(pairs)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await expo_push("expo-secret", client, None, remember)([{"to": "a"}, {"to": "b"}])
+    assert saved == [("r1", "a")]
+
+
+@pytest.mark.asyncio
+async def test_check_receipts_prunes_a_token_gone_after_the_ticket():
+    redis = FakeRedis(decode_responses=True)
+    sent = 1_000_000.0
+    await redis.zadd(RECEIPTS_KEY, {"r1|a": sent, "r2|b": sent, "r3|c": sent + RECEIPT_AFTER, "old|d": sent - RECEIPT_KEEP})
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={"data": {
+            "r1": {"status": "ok"},
+            "r2": {"status": "error", "details": {"error": "DeviceNotRegistered"}},
+        }})
+
+    pruned = []
+
+    async def prune(tokens):
+        pruned.extend(tokens)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await check_receipts("expo-secret", client, redis, prune, now=sent + RECEIPT_AFTER) == 1
+    assert pruned == ["b"]
+    assert str(seen[0].url) == EXPO_RECEIPTS
+    assert sorted(json.loads(seen[0].content)["ids"]) == ["r1", "r2"]
+    assert await redis.zrange(RECEIPTS_KEY, 0, -1) == ["r3|c"]
+
+
+@pytest.mark.asyncio
+async def test_check_receipts_keeps_tickets_when_expo_fails():
+    redis = FakeRedis(decode_responses=True)
+    await redis.zadd(RECEIPTS_KEY, {"r1|a": 0})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _r: httpx.Response(503))) as client:
+        assert await check_receipts("expo-secret", client, redis, lambda _t: None, now=RECEIPT_AFTER) == 0
+    assert await redis.zrange(RECEIPTS_KEY, 0, -1) == ["r1|a"]
+
+
+@pytest.mark.asyncio
+async def test_check_receipts_keeps_a_ticket_expo_has_no_receipt_for_yet():
+    redis = FakeRedis(decode_responses=True)
+    await redis.zadd(RECEIPTS_KEY, {"r1|a": 0, "late|b": 0})
+    pruned = []
+
+    async def prune(tokens):
+        pruned.extend(tokens)
+
+    def first(_request):
+        return httpx.Response(200, json={"data": {"r1": {"status": "ok"}}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(first)) as client:
+        await check_receipts("expo-secret", client, redis, prune, now=RECEIPT_AFTER)
+    assert await redis.zrange(RECEIPTS_KEY, 0, -1) == ["late|b"]
+
+    def later(_request):
+        return httpx.Response(200, json={"data": {
+            "late": {"status": "error", "details": {"error": "DeviceNotRegistered"}}}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(later)) as client:
+        assert await check_receipts("expo-secret", client, redis, prune, now=RECEIPT_AFTER + 300) == 1
+    assert pruned == ["b"]
+    assert await redis.zrange(RECEIPTS_KEY, 0, -1) == []
