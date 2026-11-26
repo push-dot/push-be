@@ -156,6 +156,7 @@ const DUE = `SELECT s.id, s.user_id, s.bot_id, s.prompt, s.cadence, s.hour, s.we
 const CLAIM = `UPDATE bot_schedules SET next_run_at = $3, last_run_at = $4, updated_at = $4
   WHERE id = $1 AND next_run_at = $2::timestamptz AND enabled RETURNING id`;
 const BUSY = "SELECT 1 AS busy FROM bot_state_v s WHERE s.user_id = $1 AND s.bot_id = $2 AND (s.card_id IS NOT NULL OR s.job_id IS NOT NULL)";
+const LIVE_OWNER = "SELECT 1 AS live FROM users WHERE id = $1 AND deletion_requested_at IS NULL";
 const RAN = "UPDATE bot_schedules SET last_job_id = $2, last_error = NULL WHERE id = $1";
 const FAILED = "UPDATE bot_schedules SET last_error = $2 WHERE id = $1";
 
@@ -171,6 +172,8 @@ const runOne = async (ctx: Ctx, row: Row): Promise<string | null> => {
   await requireAgentConsent(owner);
   // A new message would close the card the user has not answered yet, so a busy bot skips this slot.
   if (await one(ctx.deps.query, BUSY, [owner.user.id, row.bot_id])) {throw new HttpError(409, "BOT_BUSY", "the bot is running or waiting on a card");}
+  // The batch can take a while, and a user who asked to delete the account in the meantime gets no more runs.
+  if (!(await one(ctx.deps.query, LIVE_OWNER, [owner.user.id]))) {throw new HttpError(403, "ACCOUNT_DELETING", "the account is being deleted");}
   const sent: unknown = await (await sendToBot(owner, String(row.bot_id), {
     text: String(row.prompt), materials: [], intent: null, ai: null, accessMode: "ALWAYS_ASK",
   })).json();

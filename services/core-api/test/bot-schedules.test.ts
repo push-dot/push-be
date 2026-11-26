@@ -50,7 +50,7 @@ const stored = (extra: Partial<Stored> = {}): Stored => ({
   next_run_at: "2026-11-26T00:00:00Z", last_run_at: null, last_error: null, plan: "FREE", ...extra,
 });
 
-type World = { schedules: Array<Stored>; due?: Array<Stored>; count?: number; noConsent?: Set<string>; busy?: Set<string> };
+type World = { schedules: Array<Stored>; due?: Array<Stored>; count?: number; noConsent?: Set<string>; busy?: Set<string>; deleting?: Set<string> };
 
 const fake = (world: World) => {
   const jobs: Array<{ userId: string; payload: Row; key: unknown }> = [];
@@ -84,6 +84,7 @@ const fake = (world: World) => {
     if (sql.includes("is_employer") && sql.includes("FROM users WHERE id = $1")) {
       return [{ id: String(params[0]), display_name: "Ada", locale: "ko", plan: "PRO", created_at: "2026-01-01T00:00:00Z", is_employer: false, provider: "email" }];
     }
+    if (sql.startsWith("SELECT 1 AS live FROM users")) {return world.deleting?.has(String(params[0])) ? [] : [{ live: 1 }];}
     if (sql.startsWith("SELECT 1 AS busy")) {return world.busy?.has(String(params[1])) ? [{ busy: 1 }] : [];}
     if (sql.startsWith("SELECT id FROM conversations WHERE bot_id")) {return [{ id: CONV }];}
     if (sql.includes("FROM conversations c LEFT JOIN companies")) {return [{ id: CONV, company_id: null, company_plan: null, user_plan: "FREE" }];}
@@ -247,6 +248,15 @@ test("an overlapping run that read the same slot sends nothing", async () => {
   world.due = [stale];
   assert.deepEqual((await readJson<Envelope>(await run(db.query))).data, { ran: 0, failed: 0 });
   assert.equal(db.jobs.length, 1);
+});
+
+test("the run sends nothing for an owner who asked to delete the account after the due rows were read", async () => {
+  const world: World = { schedules: [stored()], deleting: new Set([USER]) };
+  const db = fake(world);
+  assert.deepEqual((await readJson<Envelope>(await run(db.query))).data, { ran: 0, failed: 1 });
+  assert.equal(db.jobs.length, 0);
+  assert.equal(world.schedules[0].last_error, "ACCOUNT_DELETING");
+  assert.ok(db.calls.some((call) => call.sql.startsWith("SELECT 1 AS live FROM users") && call.params[0] === USER));
 });
 
 test("the run needs the internal job token", async () => {
