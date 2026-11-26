@@ -137,16 +137,49 @@ async def test_fit_quick_start_skips_the_analyze_card(monkeypatch):
     assert _choice(items)["title"] == "점수를 한 번 더 올릴까요?"
 
 
-async def test_gaps_without_analysis_enters_intake():
-    source = _bag("analysis")
-    _runtime, rows, items = await _open("gaps", source)
-    saved = _saved(rows)
-    assert _choice(items)["gate"] == "output_targets"
-    assert saved["phase"] == "intake"
-    assert saved["scenario"] == "A"
-    assert saved["strategy"]["focus"] == "bottleneck"
-    assert saved["strategy"]["steps"] == [1, 2, 3]
-    _assert_kept(saved, source)
+class _SeeingLC(ScriptedLC):
+    seen: list = []
+
+    async def ainvoke(self, messages, **kwargs):
+        _SeeingLC.seen.append(list(messages))
+        return await super().ainvoke(messages, **kwargs)
+
+
+_GAPS_REPLY = (
+    "부족한 점은 세 가지예요.\n"
+    "1. Kafka 운영 경험: 요건의 대용량 메시징을 보여 줄 근거가 없어요.\n"
+    "2. 결제 도메인: 승인 API 경험을 한 줄 더해 보세요.\n"
+    "3. Kotlin: 사이드 프로젝트로 채울 수 있어요."
+)
+
+
+async def test_gaps_without_analysis_lists_the_gaps_in_the_chat():
+    from tests.harness_fakes import managed_ai
+
+    for source in (None, _bag("analysis")):
+        rows = Rows({"company_id": None, "resume_state": source})
+        _SeeingLC.seen = []
+        ScriptedLC.replies = [{"content": _GAPS_REPLY}]
+        payload = _payload("모아페이 백엔드 엔지니어 공고 요건에 비해 내 프로필에서 부족한 점을 알려 주세요", "gaps")
+        payload["ai"] = managed_ai()
+        items = await run(HarnessRuntime(service(rows), model_cls=_SeeingLC), payload)
+        choices = [
+            chunk for mode, chunk in items
+            if mode == "custom" and isinstance(chunk, dict) and chunk.get("type") == "choice"
+        ]
+        assert choices == [], "no intake wizard on the first run"
+        saved = rows.conversation["resume_state"]
+        saved = json.loads(saved) if isinstance(saved, str) else saved
+        assert (saved or {}).get("status") != "active"
+        system = str(_SeeingLC.seen[0][0].content)
+        assert "빠른 시작은 부족한 점 찾기예요" in system
+        assert "부족한 점을 중요한 순서로 3~5개 목록으로" in system
+        assert '"posting": "모아페이 백엔드 엔지니어"' in system
+        said = "".join(
+            str(chunk["token"]) for mode, chunk in items
+            if mode == "custom" and isinstance(chunk, dict) and chunk.get("token"))
+        assert said == _GAPS_REPLY
+        assert [line for line in said.splitlines() if line[:2] in ("1.", "2.", "3.")], "the reply lists the gaps"
 
 
 async def test_gaps_with_analysis_enters_strategy():

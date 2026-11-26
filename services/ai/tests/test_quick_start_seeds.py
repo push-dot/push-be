@@ -29,6 +29,22 @@ def test_tool_quick_starts_do_not_enter_the_resume_flow():
         assert quick_start_resume(intent, {}) is None
 
 
+def test_gaps_enters_the_resume_flow_only_once_an_analysis_exists():
+    assert quick_start_resume("gaps", {}) is None
+    assert quick_start_resume("gaps", {"analysis": {}}) is None
+    seeded = quick_start_resume("gaps", {"analysis": {"role": "backend"}})
+    assert seeded is not None and seeded["phase"] == "strategy"
+
+
+def test_a_first_gaps_run_reads_only_and_names_the_posting():
+    text = "모아페이 백엔드 엔지니어 공고 요건에 비해 내 프로필에서 부족한 점을 알려 주세요"
+    seed = quick_start_seed("gaps", text, {"documentId": "doc-1", "postingId": "p-1"})
+    assert seed["write_tools"] == ()
+    assert {"get_posting", "get_my_profile", "get_fit_score"} <= set(seed["read_tools"])
+    assert seed["inputs"] == {"posting": "모아페이 백엔드 엔지니어", "postingId": "p-1", "documentId": "doc-1"}
+    assert "부족한 점" in seed["instruction"] and "승인" not in seed["instruction"]
+
+
 _APPLIED_DIRECTLY = {"calendar", "hub_profile"}
 
 
