@@ -353,4 +353,35 @@ test("the card check reads a tool_args stored as a JSON string", async () => {
     return queryFor(COMPANY)(sql, params);
   }));
   assert.match(sqlSeen, /CASE WHEN jsonb_typeof\(tool_args\) = 'string' THEN \(tool_args #>> '\{\}'\)::jsonb ELSE tool_args END\) @> \$4::jsonb/);
+
+test("a card is spent only by a call the handler accepts", async () => {
+  const posting = "21212121-2121-4121-8121-212121212121";
+  const approval = "51515151-5151-4151-8151-515151515151";
+  const key = "61616161-6161-4161-8161-616161616161";
+  const run = async (fresh: boolean, handlerStatus: number) => {
+    const released: Array<Array<unknown>> = [];
+    resetLimits();
+    const res = await handle(new Request(`https://core.example/api/v1/postings/${posting}/close`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json", "idempotency-key": key,
+        "x-push-internal-secret": SECRET, "x-push-act-as": USER, "x-push-company": COMPANY, "x-push-approval": approval,
+      },
+      body: "{}",
+    }), env(), deps(async (sql, params = []) => {
+      if (sql.includes("SET consumed_at = NULL")) {released.push(params); return empty;}
+      if (sql.includes("UPDATE approvals")) {return { rows: [{ id: approval, fresh }], rowCount: 1 };}
+      if (sql.includes("SELECT status FROM job_postings")) {return { rows: [{ status: "OPEN" }], rowCount: 1 };}
+      if (sql.includes("UPDATE job_postings") && handlerStatus >= 400) {throw new Error("db down");}
+      return queryFor(COMPANY)(sql, params);
+    }));
+    return { status: res.status, released };
+  };
+
+  const failed = await run(true, 500);
+  assert.ok(failed.status >= 400, "the handler rejected the close");
+  assert.deepEqual(failed.released, [[approval, key]], "the person's card is given back");
+
+  const replay = await run(false, 500);
+  assert.deepEqual(replay.released, [], "a retry of an already spent card gives nothing back");
 });

@@ -1,5 +1,5 @@
 import { isUnique, one, query } from "./db.ts";
-import { actAs, userForActAs } from "./internal-auth.ts";
+import { actAs, releaseApproval, userForActAs } from "./internal-auth.ts";
 import { HttpError, clientIp, errorOf, errorResponse, parseUuid, requestIdOf } from "./http.ts";
 import { allow, USER_LEASE } from "./ratelimit.ts";
 import { deleteAccount, exchange, logout, me, oauthCallback, oauthStart, refresh, resolveUser } from "./routes/auth.ts";
@@ -122,8 +122,15 @@ async function route(request: Request, env: CoreEnv, deps: Deps): Promise<Respon
         return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
       }
       const ctx = base(request, env, deps, rid, url, now, user);
-      if (request.method !== "POST" || path.endsWith("/stream")) {return await dispatch(ctx, path);}
-      return await idempotent(ctx, path);
+      let res: Response;
+      try {
+        res = request.method !== "POST" || path.endsWith("/stream") ? await dispatch(ctx, path) : await idempotent(ctx, path);
+      } catch (error) {
+        await releaseApproval(deps.query, acted);
+        throw error;
+      }
+      if (res.status >= 400) {await releaseApproval(deps.query, acted);}
+      return res;
     }
     if (isPublic(request.method, path, authz)) {
       if (!(await allow(deps.query, "ip", clientIp(request), 60, now.getTime()))) {
