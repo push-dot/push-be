@@ -217,11 +217,11 @@ async def test_a_company_bots_quick_start_reads_the_bots_posting_by_id(db):
             turn.user,
             posting,
         )
-        quick_start = {"text": "적합도 봐 줘", "ai": None, "access_mode": "AUTO"}
+        quick_start = {"text": "이 공고에 맞춰 줘", "ai": None, "access_mode": "AUTO"}
         await q.execute(
             "UPDATE ai_jobs SET payload = $2::jsonb WHERE id = $1",
             turn.job,
-            {**quick_start, "context": {}, "intent": "fit"},
+            {**quick_start, "context": {}, "intent": "match_posting"},
         )
 
         await run_turn(db, turn)
