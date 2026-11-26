@@ -67,23 +67,33 @@ test("600 followers of a company that opens 40 postings each hear once, at most 
   assert.deepEqual(await run(), [], "a later run has nothing left");
 });
 
-test("a cleanup that drops the watch keys also drops the baseline, so the next run announces nothing old", async (t) => {
+test("a cleanup of one user's watch keys restarts only that user's keys from now", async (t) => {
   if (!db) {return t.skip(SKIP);}
-  const key = `watch:new:${crypto.randomUUID()}:${crypto.randomUUID()}`;
-  const other = `deadline:${crypto.randomUUID()}`;
-  await db.pg.query(
+  const [mine, theirs] = [crypto.randomUUID(), crypto.randomUUID()];
+  const company = crypto.randomUUID();
+  const keys = {
+    news: `watch:new:${mine}:${company}`, other: `watch:new:${theirs}:${company}`,
+    closed: `watch:closed:${mine}:${crypto.randomUUID()}`, stale: `watch:closed:${mine}:${crypto.randomUUID()}`,
+    deadline: `deadline:${crypto.randomUUID()}`,
+  };
+  const baselineBefore = (await db.pg.query(
     "INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ('watch:baseline', now() - interval '90 days') "
-    + "ON CONFLICT (dedupe_key) DO UPDATE SET created_at = EXCLUDED.created_at");
-  await db.pg.query("INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ($1, now() - interval '60 days'), ($2, now() - interval '60 days')", [key, other]);
-  const baseline = async () => (await db!.pg.query("SELECT 1 FROM notification_dedupes WHERE dedupe_key = 'watch:baseline'")).rows.length;
+    + "ON CONFLICT (dedupe_key) DO UPDATE SET created_at = notification_dedupes.created_at RETURNING created_at")).rows[0]?.created_at;
+  await db.pg.query(
+    "INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ($1, now() - interval '60 days'), ($2, now() - interval '60 days'), "
+    + "($3, now() - interval '1 day'), ($4, now() - interval '10 days'), ($5, now() - interval '60 days')",
+    [keys.news, keys.other, keys.closed, keys.stale, keys.deadline]);
+  await db.pg.query("DELETE FROM notification_dedupes WHERE dedupe_key = ANY($1::text[])", [[keys.news, keys.closed, keys.stale, keys.deadline]]);
 
-  await db.pg.query("DELETE FROM notification_dedupes WHERE dedupe_key = $1", [other]);
-  assert.equal(await baseline(), 1, "removing other keys keeps the baseline");
-  await db.pg.query("DELETE FROM notification_dedupes WHERE dedupe_key = $1", [key]);
-  assert.equal(await baseline(), 0, "removing a watch key removes the baseline with it");
-
-  await db.pg.query(DUE_WATCH, [new Date().toISOString(), new Date(Date.now() - 2 * 86_400_000).toISOString(), new Date(Date.now() - 30 * 86_400_000).toISOString()]);
-  const fresh = (await db.pg.query("SELECT created_at FROM notification_dedupes WHERE dedupe_key = 'watch:baseline'")).rows[0];
-  assert.ok(fresh && Date.now() - new Date(String(fresh.created_at)).getTime() < 60_000, "the next run starts watching from now");
+  const left = new Map((await db.pg.query(
+    "SELECT dedupe_key, now() - created_at < interval '1 minute' AS fresh FROM notification_dedupes WHERE dedupe_key = ANY($1::text[])",
+    [[...Object.values(keys), "watch:baseline"]])).rows.map((row) => [String(row.dedupe_key), row.fresh === true]));
+  assert.equal(left.get(keys.news), true, "the removed watermark is back at now, so that user hears nothing older");
+  assert.equal(left.get(keys.closed), true, "a recent close stays sent");
+  assert.equal(left.has(keys.stale), false, "a close older than the 2-day lookback can go");
+  assert.equal(left.has(keys.deadline), false, "other keys are not touched");
+  assert.equal(left.get(keys.other), false, "another follower's watermark is unchanged");
+  const baselineAfter = (await db.pg.query("SELECT created_at FROM notification_dedupes WHERE dedupe_key = 'watch:baseline'")).rows[0]?.created_at;
+  assert.equal(String(baselineAfter), String(baselineBefore), "the shared baseline is unchanged");
   ownBaseline = true;
 });
