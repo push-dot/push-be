@@ -17,8 +17,7 @@ const sendBody = closed({
   ai: aiOptions,
 }, ["text"]);
 
-// A bot thread is personal, so the employer cards never run in it.
-const { employer_research: _research, posting_draft: _draft, review_report: _report, interview_kit: _kit, ...personalEvents } = chatEvents;
+const personalEvents = chatEvents;
 
 const required = (event: Schema, field: string) => {
   const fields: Array<Schema[string]> = Array.isArray(event.required) ? event.required : [];

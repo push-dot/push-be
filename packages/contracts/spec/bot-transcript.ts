@@ -28,11 +28,8 @@ const narrowed = (event: Schema, fields: Record<string, Schema>): Schema => ({
   properties: { ...schemaMap(event.properties), ...fields },
 });
 
-// A bot thread is personal, so the employer cards never run in it. done ends a stored turn and is not kept.
-const {
-  employer_research: _research, posting_draft: _draft, review_report: _report, interview_kit: _kit,
-  status: _status, done: _done, cancelled, tool, ...kept
-} = chatEvents;
+// done ends a stored turn and is not kept.
+const { status: _status, done: _done, cancelled, tool, ...kept } = chatEvents;
 
 // The shared event list is looser than the rows the AI service stores. These are the stored values.
 const turnEvents: Array<Schema> = [
