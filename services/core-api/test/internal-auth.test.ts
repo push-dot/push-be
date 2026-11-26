@@ -436,7 +436,7 @@ test("a failure before the route ran gives the card back, and a replay never re-
         return c.cached === undefined ? { rows: [{ id: "idem" }], rowCount: 1 } : empty;
       }
       if (sql.includes("FROM idempotency_keys WHERE user_id")) {
-        return { rows: [{ id: "idem", request_hash: bodyHash, response_status: c.cached, response_body: "{\"data\":{\"replayed\":true}}",
+        return { rows: [{ id: "idem", request_hash: bodyHash, response_status: c.cached ?? null, response_body: "{\"data\":{\"replayed\":true}}",
           response_headers: "[]", created_at: new Date().toISOString() }], rowCount: 1 };
       }
       if (sql.includes("UPDATE job_postings")) {wrote += 1;}
