@@ -50,6 +50,15 @@ _OVER_NOTE = (
     "이번 요청에서 쓸 수 있는 도구 호출을 다 썼어요. 도구를 더 부르지 말고, 지금까지 한 일과 남은 일을 "
     "짧게 말한 뒤 \"이어서 해 줘\"라고 보내면 이어서 한다고 알려요."
 )
+# Under ALWAYS_ASK the app asks with a card that shows the change, so a reply that asks "넣을까요?" in plain
+# text makes the user answer twice. Such a reply gets one more, silent try to call the tool instead.
+_TEXT_CONFIRM = re.compile(
+    r"(바꿀|고칠|저장할|추가할|넣을|지울|삭제할|등록할|수정할|반영할|적용할|보낼|지원할|수락할|거절할|올릴|남길|"
+    r"팔로우할|업데이트할|진행할|드릴|이대로 할|그대로 할|이렇게 할)까요\s*\??\s*$")
+_CARD_NOTE = (
+    "바꾸는 일은 글로 묻지 말고 그 도구를 바로 불러요. 앱이 바꿀 내용을 담은 승인 카드로 사용자에게 물어요. "
+    "무엇을 바꿀지 아직 모르면 도구를 부르지 말고 그대로 끝내요."
+)
 # Worst case is one agent and one tools step per counted call, plus the over-cap flush and final answer.
 RECURSION_LIMIT: Final = 2 * _CAP + 4
 
@@ -421,6 +430,14 @@ async def _complete(chat, messages, *, text_only: bool = False):
     return reply
 
 
+def _asks_in_text(state: dict, reply) -> bool:
+    if reply is None or getattr(reply, "tool_calls", None):
+        return False
+    if (state.get("access_mode") or AccessMode.AUTO) != AccessMode.ALWAYS_ASK.value:
+        return False
+    return bool(_TEXT_CONFIRM.search(_content(reply).strip()))
+
+
 def bot_prompt(prompt: str, bot: dict[str, Any] | None) -> str:
     """The system prompt of a thread. A bot thread exists only in the app, where the model is a
     Bot and never an 에이전트, so the bot's line takes the place of the prompt's first line. The app
@@ -491,6 +508,11 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
         target = chat if over else chat.bind_tools(list(structured.values()))
         thinking()
         reply = await _complete(target, messages, text_only=over)
+        if not over and _asks_in_text(state, reply):
+            # Not streamed: the question is already on screen, and only a card may follow it.
+            retry = await target.ainvoke([*messages, reply, SystemMessage(content=_CARD_NOTE)])
+            if getattr(retry, "tool_calls", None):
+                reply = AIMessage(content=_content(reply), tool_calls=retry.tool_calls)
         update = {"others_in_prompt": bool(lines)} if spec.id == "personal" else {}
         return {"messages": [reply], **update} if reply is not None else update
 

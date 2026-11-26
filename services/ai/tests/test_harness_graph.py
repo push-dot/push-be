@@ -757,3 +757,50 @@ async def test_a_tool_checks_against_every_message_the_user_sent():
     await _events(graph, {**_input("AUTO", "경력 첫 줄에 넣어줘"), "messages": [
         HumanMessage(content="전환율 30% 올렸어"), HumanMessage(content="경력 첫 줄에 넣어줘")]})
     assert "30%" in seen[0] and "경력 첫 줄에 넣어줘" in seen[0]
+
+
+async def test_always_ask_turns_a_text_confirm_question_into_the_card():
+    from langchain_core.messages import AIMessage, SystemMessage
+
+    from app.harness.graph import _CARD_NOTE
+
+    runs = []
+    model = ScriptedChat([
+        {"content": "이 공고를 저장할까요?"},
+        {"tool_calls": [_call("bookmark_posting", "c1")]},
+    ])
+    graph, db = _graph(model, runs)
+    events = await _events(graph, _input("ALWAYS_ASK", "이 공고 저장해 줘"))
+    approval = next(event for event in events if event.get("type") == "approval")
+    assert approval["toolName"] == "bookmark_posting"
+    assert runs == []
+    retry = model.seen[1]
+    assert isinstance(retry[-1], SystemMessage) and retry[-1].content == _CARD_NOTE
+    state = await graph.aget_state(_config())
+    asked = [m for m in state.values["messages"] if isinstance(m, AIMessage)]
+    assert asked[-1].content == "이 공고를 저장할까요?" and asked[-1].tool_calls
+
+
+async def test_the_text_question_stands_when_the_retry_still_answers_in_text():
+    runs = []
+    model = ScriptedChat([{"content": "이력서에 넣을까요?"}, {"content": "다른 말"}])
+    graph, _db = _graph(model, runs)
+    events = await _events(graph, _input("ALWAYS_ASK"))
+    tokens = "".join(str(event["token"]) for event in events if "token" in event)
+    assert tokens == "이력서에 넣을까요?"
+    assert not any(event.get("type") == "approval" for event in events)
+    state = await graph.aget_state(_config())
+    assert state.values["messages"][-1].content == "이력서에 넣을까요?"
+
+
+@pytest.mark.parametrize(("mode", "text"), [
+    ("AUTO", "이 공고를 저장할까요?"),
+    ("BYPASS", "이 공고를 저장할까요?"),
+    ("ALWAYS_ASK", "어떤 회사 공고를 찾을까요?"),
+    ("ALWAYS_ASK", "저장했어요."),
+])
+async def test_no_retry_outside_always_ask_or_for_other_questions(mode, text):
+    model = ScriptedChat([{"content": text}])
+    graph, _db = _graph(model, [])
+    await _events(graph, _input(mode))
+    assert len(model.seen) == 1
