@@ -20,7 +20,12 @@ export type EnqueueInput = {
   idempotencyKey?: string;
   conversationId?: string;
   now?: Date;
+  /** Refuse the job, in the same transaction that writes it, once the user has asked to delete the account. */
+  liveOwner?: boolean;
 };
+
+// FOR SHARE: a deletion request in flight either commits first and this finds no row, or waits until the job exists.
+const LIVE_OWNER = "SELECT id FROM users WHERE id = $1 AND deletion_requested_at IS NULL FOR SHARE";
 
 const EXISTING = "SELECT id, queue FROM ai_jobs WHERE user_id = $1 AND idempotency_key = $2";
 
@@ -138,8 +143,12 @@ export const enqueueJob = async (db: Query, input: EnqueueInput, transaction?: T
   if (hold) {params.push(amount.toString());}
   const inTransaction: Transaction = transaction ?? ((work) => work(db));
   try {
-    const row = !hold ? await one(db, INSERT_OPEN, params) : await inTransaction(async (tx) => {
+    const row = !hold && !input.liveOwner ? await one(db, INSERT_OPEN, params) : await inTransaction(async (tx) => {
       await boundTransaction(tx, "3s");
+      if (input.liveOwner && !(await one(tx, LIVE_OWNER, [input.userId]))) {
+        throw new HttpError(403, "ACCOUNT_DELETING", "the account is being deleted");
+      }
+      if (!hold) {return one(tx, INSERT_OPEN, params);}
       await lockOwner(tx, audience, input.companyId ?? input.userId);
       await ensureMonthlyGrant(tx, {
         audience,

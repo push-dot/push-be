@@ -173,6 +173,8 @@ const runOne = async (ctx: Ctx, row: Row): Promise<string | null> => {
   if (await one(ctx.deps.query, BUSY, [owner.user.id, row.bot_id])) {throw new HttpError(409, "BOT_BUSY", "the bot is running or waiting on a card");}
   const sent: unknown = await (await sendToBot(owner, String(row.bot_id), {
     text: String(row.prompt), materials: [], intent: null, ai: null, accessMode: "ALWAYS_ASK",
+    // The batch can take a while; a user who asked to delete the account in the meantime gets no more runs.
+    liveOwner: true,
   })).json();
   return hasDataRow(sent) ? String(sent.data.id) : null;
 };
