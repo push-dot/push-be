@@ -62,6 +62,8 @@ class HarnessSpec:
     build_graph: Callable[..., Any] | None = None
     # start_flow(payload, conversation) -> the flow this turn opens, or None for plain chat.
     start_flow: Callable[[dict, dict], dict | None] | None = None
+    # context(state) -> a system line about this conversation, placed after the fixed prompt.
+    context: Callable[[dict], str | None] | None = None
 
 
 @dataclass(frozen=True)
