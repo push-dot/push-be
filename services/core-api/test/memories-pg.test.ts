@@ -51,3 +51,19 @@ test("a user lists, corrects and forgets what the bots remember, and nobody else
   const left: unknown = (await db.call(stranger, "GET", "/me/memories")).body.data;
   assert.equal(Array.isArray(left) ? left.length : 0, 1, "forgetting everything is one user's rows only");
 });
+
+test("correcting a memory into one the user already has keeps one row", async (t) => {
+  if (!db) {return t.skip(SKIP);}
+  const user = await db.person("PRO");
+  const older = await remember(user.id, "원격 근무를 원해요", "2026-11-20T01:00:00Z");
+  const kept = await remember(user.id, "재택 근무를 원해요", "2026-11-21T01:00:00Z");
+  const merged = await db.call(user, "PATCH", `/me/memories/${older}`, { text: "재택 근무를 원해요" });
+  assert.equal(merged.status, 200);
+  assert.equal(merged.data.id, kept, "the existing memory answers");
+  const left: unknown = (await db.call(user, "GET", "/me/memories")).body.data;
+  assert.deepEqual(Array.isArray(left) ? left.map((row: { id: string }) => row.id) : [], [kept]);
+  assert.equal((await db.call(user, "PATCH", `/me/memories/${older}`, { text: "x" })).status, 404);
+  const spaced = await remember(user.id, "연봉은 6천 이상", "2026-11-22T01:00:00Z");
+  const folded = await db.call(user, "PATCH", `/me/memories/${kept}`, { text: " 연봉은   6천  이상 " });
+  assert.equal(folded.data.id, spaced, "inner spaces collapse like the AI's remember tool");
+});

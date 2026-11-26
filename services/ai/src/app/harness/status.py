@@ -84,6 +84,7 @@ TOOL_STATUS = {
     "edit_document": "서류를 고치는 중",
     "start_document": "서류 작성을 준비하는 중",
     "prepare_interview": "면접 준비를 시작하는 중",
+    "remember": "기억해 두는 중",
     "apply_to_posting": "공고에 지원하는 중",
     "accept_offer": "제안을 수락하는 중",
     "decline_offer": "제안을 거절하는 중",
