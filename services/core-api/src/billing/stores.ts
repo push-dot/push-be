@@ -6,7 +6,7 @@ import { APPLE_ROOT_G3_PEM } from "./apple-root-g3.ts";
 
 export interface StoreReceipts {
   verifyApple(signedTransaction: string): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean; sandbox?: boolean; superseded?: boolean }>;
-  verifyGoogle(purchaseToken: string, productId: string, subscription: boolean): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean; sandbox?: boolean; linkedPurchaseToken?: string; deferredProductId?: string; grace?: boolean }>;
+  verifyGoogle(purchaseToken: string, productId: string, subscription: boolean, signal?: AbortSignal): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean; sandbox?: boolean; linkedPurchaseToken?: string; deferredProductId?: string; grace?: boolean }>;
   googleLinkedToken(purchaseToken: string): Promise<string | undefined>;
   decodeAppleNotification(body: string): Promise<{ notificationType: string; originalTransactionId: string; productId: string; expiresAt: string | null; sandbox?: boolean }>;
   decodeGoogleNotification(body: unknown, authorization: string | null): Promise<{ notificationType: string; purchaseToken: string; productId: string; expiresAt: string | null }>;
@@ -444,7 +444,7 @@ const keyId = async (email: string, privateKey: string): Promise<string> => {
   return b64url(digest);
 };
 
-const googleAccessToken = async (env: CoreEnv, fetchImpl: typeof fetch, now: Date): Promise<string> => {
+const googleAccessToken = async (env: CoreEnv, fetchImpl: typeof fetch, now: Date, signal?: AbortSignal): Promise<string> => {
   const raw = env.GOOGLE_PLAY_KEY?.trim() ?? "";
   if (!raw.startsWith("{")) {throw notConfigured("google play is not configured");}
   let json: unknown;
@@ -477,6 +477,7 @@ const googleAccessToken = async (env: CoreEnv, fetchImpl: typeof fetch, now: Dat
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion }),
+    signal,
   });
   const body = await readStore(res);
   if (typeof body.access_token !== "string" || !body.access_token) {throw new HttpError(502, "PROVIDER_ERROR", "store request failed");}
@@ -535,14 +536,14 @@ export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch, now: 
       superseded: confirmed.isUpgraded === true,
     };
   },
-  verifyGoogle: async (purchaseToken, productId, subscription) => {
+  verifyGoogle: async (purchaseToken, productId, subscription, signal) => {
     if (!env.GOOGLE_PLAY_KEY || !env.GOOGLE_PLAY_PACKAGE) {throw notConfigured("google play is not configured");}
-    const accessToken = await googleAccessToken(env, fetchImpl, now);
+    const accessToken = await googleAccessToken(env, fetchImpl, now, signal);
     const app = playApp(env.GOOGLE_PLAY_PACKAGE);
     const url = subscription
       ? app + "/purchases/subscriptionsv2/tokens/" + encodeURIComponent(purchaseToken)
       : app + "/purchases/products/" + encodeURIComponent(productId) + "/tokens/" + encodeURIComponent(purchaseToken);
-    const res = await fetchImpl(url, { headers: { authorization: "Bearer " + accessToken } });
+    const res = await fetchImpl(url, { headers: { authorization: "Bearer " + accessToken }, signal });
     const body = await readStore(res);
     if (!subscription) {
       if (body.purchaseState !== 0) {throw invalidPurchase();}

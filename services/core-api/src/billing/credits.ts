@@ -93,11 +93,11 @@ export const ensureMonthlyGrant = async (
 
 export const STORE_GRACE_MS = 16 * 86_400_000;
 
-const CURRENT_STORE = "SELECT original_transaction_id, expires_at, (expires_at IS NULL OR expires_at > $2::timestamptz) AS live, platform, product_id, sandbox, (SELECT plan FROM users WHERE id = $1) AS plan FROM iap_subscriptions WHERE user_id = $1 AND status = 'ACTIVE' ORDER BY live DESC, expires_at DESC NULLS FIRST, (SELECT max(l.seq) FROM billing_ledger l WHERE l.user_id = $1 AND l.type = 'PURCHASE' AND (l.reference_id = iap_subscriptions.original_transaction_id OR l.reference_id LIKE 'period:' || iap_subscriptions.original_transaction_id || ':%')) DESC NULLS LAST LIMIT 1";
+const CURRENT_STORE = "SELECT original_transaction_id, expires_at, (expires_at IS NULL OR expires_at > $2::timestamptz) AS live, platform, product_id, sandbox, (SELECT plan FROM users WHERE id = $1) AS plan FROM iap_subscriptions WHERE user_id = $1 AND status = 'ACTIVE' ORDER BY live DESC, expires_at DESC NULLS FIRST, (SELECT max(l.seq) FROM billing_ledger l WHERE l.user_id = $1 AND l.type = 'PURCHASE' AND (l.reference_id = iap_subscriptions.original_transaction_id OR l.reference_id LIKE 'period:' || iap_subscriptions.original_transaction_id || ':%' OR l.reference_id LIKE 'grace:' || iap_subscriptions.original_transaction_id || ':%')) DESC NULLS LAST LIMIT 1";
 export const STRIPE_LAPSED = "(stripe_customer_id IS NULL OR period_ends_at IS NULL OR period_ends_at <= $2::timestamptz)";
 const RETIRE_STALE_STORE = "WITH stale AS (UPDATE iap_subscriptions SET status = 'CANCELED' WHERE user_id = $1 AND status = 'ACTIVE') UPDATE users SET plan = 'FREE', subscription_status = 'CANCELED' WHERE id = $1 AND " + STRIPE_LAPSED + " RETURNING id";
 const TOKEN_GRANTED = "SELECT 1 FROM billing_ledger WHERE user_id = $1 AND type = 'PURCHASE' AND (reference_id = $2 OR reference_id LIKE $3) LIMIT 1";
-const STORE_COVERED = "SELECT 1 FROM billing_ledger WHERE user_id = $1 AND type = 'PURCHASE' AND (reference_id = $2 OR (reference_id = $3 AND created_at >= $4::timestamptz AND created_at < $5::timestamptz) OR (reference_id = $6 AND amount_micro_credits > $7::bigint)) LIMIT 1";
+const STORE_COVERED = "SELECT 1 FROM billing_ledger WHERE user_id = $1 AND type = 'PURCHASE' AND (reference_id = $2 OR reference_id = $8 OR (reference_id = $3 AND created_at >= $4::timestamptz AND created_at < $5::timestamptz) OR (reference_id = $6 AND amount_micro_credits > $7::bigint)) LIMIT 1";
 
 export const storeCutoff = (now: Date): string => new Date(now.getTime() - STORE_GRACE_MS).toISOString();
 
@@ -109,21 +109,24 @@ export const storeExpiry = (value: unknown): string | null => {
   return (value instanceof Date ? value : new Date(String(value))).toISOString();
 };
 
-const coverOf = (userId: string, token: string, expiresAt: string | null): Array<unknown> => {
+const graceKey = (token: string, end: Date): string => `grace:${token}:${Math.floor(end.getTime() / 1000)}`;
+
+const coverOf = (userId: string, token: string, expiresAt: string | null, receipt?: "grace" | "paid"): Array<unknown> => {
   const end = expiresAt ? new Date(expiresAt) : null;
   const from = end ? new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - 1, 1)) : new Date(0);
   const to = end ? new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 1)) : new Date(0);
-  return [userId, end ? periodKey(token, end) : token, token, from.toISOString(), to.toISOString(), monthKey(from), grantMicro("PERSONAL", "FREE")];
+  return [userId, end ? periodKey(token, end) : token, token, from.toISOString(), to.toISOString(), monthKey(from), grantMicro("PERSONAL", "FREE"),
+    end && receipt !== "paid" ? graceKey(token, end) : null];
 };
 
 export const grantStorePeriod = async (
   q: Query,
-  input: { userId: string; token: string; expiresAt: string | null; amount: number; now: Date; fresh: boolean; sandbox?: boolean },
+  input: { userId: string; token: string; expiresAt: string | null; amount: number; now: Date; fresh: boolean; sandbox?: boolean; receipt?: "grace" | "paid" },
 ): Promise<void> => {
-  const cover = coverOf(input.userId, input.token, input.expiresAt);
+  const cover = coverOf(input.userId, input.token, input.expiresAt, input.receipt);
   if (!input.fresh && await one(q, STORE_COVERED, cover)) {return;}
   const repeat = input.sandbox === true && !input.fresh && await one(q, TOKEN_GRANTED, [input.userId, input.token, `period:${input.token}:%`]);
-  await q(USER_GRANT, [crypto.randomUUID(), input.userId, repeat ? 0 : input.amount, cover[1], input.now.toISOString()]);
+  await q(USER_GRANT, [crypto.randomUUID(), input.userId, repeat ? 0 : input.amount, input.receipt === "grace" && cover[7] ? cover[7] : cover[1], input.now.toISOString()]);
 };
 
 const USER_MONTH_GRANTED = "SELECT 1 FROM billing_ledger WHERE user_id = $1 AND type = 'PURCHASE' AND reference_id = $2";
