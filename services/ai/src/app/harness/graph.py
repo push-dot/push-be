@@ -438,22 +438,21 @@ def _asks_in_text(state: dict, reply) -> bool:
         return False
     if (state.get("access_mode") or AccessMode.AUTO) != AccessMode.ALWAYS_ASK.value:
         return False
-    return any(_TEXT_CONFIRM.search(sentence) for sentence in _closing_sentences(_content(reply)))
+    return bool(_TEXT_CONFIRM.search(_final_sentence(_content(reply))))
 
 
-def _closing_sentences(text: str, count: int = 2) -> list[str]:
-    """The last sentences of a reply, without markdown and trailing emoji or symbols, so "**넣을까요?** 🙂"
-    and "넣을까요? 확인해 주세요." both end in the question."""
+def _final_sentence(text: str) -> str:
+    """The last sentence of a reply, without markdown and emoji or symbols, so "**넣을까요?** 🙂" ends in the
+    question. Only the final one counts: "넣을까요? 넣었어요." already did the work."""
     plain = _MARKUP.sub("", text)
-    sentences = []
-    for part in _SENTENCE_END.split(plain):
+    for part in reversed(_SENTENCE_END.split(plain)):
         kept = "".join(
             ch for ch in part
             if ch == " " or not (unicodedata.category(ch).startswith(("S", "C")) or ch in "\ufe0e\ufe0f"))
         kept = kept.strip()
         if kept:
-            sentences.append(kept)
-    return sentences[-count:]
+            return kept
+    return ""
 
 
 def bot_prompt(prompt: str, bot: dict[str, Any] | None) -> str:
