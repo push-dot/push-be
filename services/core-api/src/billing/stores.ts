@@ -6,7 +6,7 @@ import { APPLE_ROOT_G3_PEM } from "./apple-root-g3.ts";
 
 export interface StoreReceipts {
   verifyApple(signedTransaction: string): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean; sandbox?: boolean; superseded?: boolean }>;
-  verifyGoogle(purchaseToken: string, productId: string, subscription: boolean): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean; sandbox?: boolean; linkedPurchaseToken?: string }>;
+  verifyGoogle(purchaseToken: string, productId: string, subscription: boolean): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean; sandbox?: boolean; linkedPurchaseToken?: string; deferredProductId?: string }>;
   googleLinkedToken(purchaseToken: string): Promise<string | undefined>;
   decodeAppleNotification(body: string): Promise<{ notificationType: string; originalTransactionId: string; productId: string; expiresAt: string | null; sandbox?: boolean }>;
   decodeGoogleNotification(body: unknown, authorization: string | null): Promise<{ notificationType: string; purchaseToken: string; productId: string; expiresAt: string | null }>;
@@ -549,8 +549,11 @@ export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch, now: 
       return { productId, originalTransactionId: purchaseToken, expiresAt: null, consumable: true, sandbox: body.purchaseType === 0 };
     }
     if (!LIVE_SUBSCRIPTION.has(String(body.subscriptionState ?? ""))) {throw invalidPurchase();}
-    const first = Array.isArray(body.lineItems) ? body.lineItems[0] : undefined;
-    const line = isJsonObject(first) ? first : undefined;
+    const lines = (Array.isArray(body.lineItems) ? body.lineItems : []).filter(isJsonObject);
+    const deferredOf = (item: JsonObject): string => isJsonObject(item.deferredItemReplacement) ? String(item.deferredItemReplacement.productId ?? "") : "";
+    const deferred = lines.map(deferredOf).find(Boolean);
+    const inEffect = lines.filter((item) => !deferred || String(item.productId ?? "") !== deferred);
+    const line = inEffect.find((item) => String(item.productId ?? "") === productId) ?? inEffect[0];
     return {
       productId: String(line?.productId ?? ""),
       originalTransactionId: purchaseToken,
@@ -558,14 +561,15 @@ export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch, now: 
       consumable: false,
       sandbox: body.testPurchase !== null && body.testPurchase !== undefined,
       linkedPurchaseToken: linkedOf(body),
+      deferredProductId: deferred,
     };
   },
   googleLinkedToken: async (purchaseToken) => {
     if (!env.GOOGLE_PLAY_KEY || !env.GOOGLE_PLAY_PACKAGE) {throw notConfigured("google play is not configured");}
     const accessToken = await googleAccessToken(env, fetchImpl, now);
     const res = await fetchImpl(playApp(env.GOOGLE_PLAY_PACKAGE) + "/purchases/subscriptionsv2/tokens/" + encodeURIComponent(purchaseToken),
-      { headers: { authorization: "Bearer " + accessToken } });
-    if (!res.ok) {return undefined;}
+      { headers: { authorization: "Bearer " + accessToken } }).catch(() => null);
+    if (!res?.ok) {return undefined;}
     const body: unknown = await res.json().catch(() => null);
     return isJsonObject(body) ? linkedOf(body) : undefined;
   },

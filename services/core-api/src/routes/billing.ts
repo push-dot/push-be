@@ -1,4 +1,4 @@
-import { DISPLAY_MICRO, boundTransaction, ensureMonthlyGrant, grantMicro, grantPeriod, iapTopupMicro, keyLevel, lockOwner, monthGranted, monthKey, periodKey, subscriptionLevel } from "../billing/credits.ts";
+import { DISPLAY_MICRO, boundTransaction, currentStore, ensureMonthlyGrant, grantMicro, grantPeriod, grantStorePeriod, iapTopupMicro, keyLevel, lockOwner, monthGranted, monthKey, periodKey, storeExpiry, subscriptionLevel } from "../billing/credits.ts";
 import { availableMicro, reservedMicro } from "../jobs/credits.ts";
 import { createStoreReceipts, googlePlayPubsub } from '../billing/stores.ts';
 import type { StoreReceipts } from '../billing/stores.ts';
@@ -948,7 +948,8 @@ export const verifyIap = async (ctx: Ctx): Promise<Response> => {
   if (receipt.superseded === true) {
     return data(200, { plan: ctx.user.plan || null, periodEndsAt: ts(ctx.user.periodEndsAt) }, ctx.rid);
   }
-  if (requireKind(ctx.env, receipt.productId) !== kind) {
+  const current = requireKind(ctx.env, receipt.productId);
+  if (current !== kind && !(receipt.deferredProductId && productKind(ctx.env, receipt.deferredProductId) === kind)) {
     throw new HttpError(400, "VALIDATION_ERROR", "unknown product", { field: "productId" });
   }
   if (kind !== "TOPUP" && (receipt.expiresAt !== null && receipt.expiresAt !== undefined) && Date.parse(receipt.expiresAt) <= ctx.now.getTime()) {
@@ -960,6 +961,7 @@ export const verifyIap = async (ctx: Ctx): Promise<Response> => {
   await inTransactionOf(ctx)(async (q) => {
     const tx: Ctx = { ...ctx, deps: { ...ctx.deps, query: q } };
     await lockOwner(q, "PERSONAL", ctx.user.id);
+    const known = await one(q, "SELECT 1 FROM iap_subscriptions WHERE original_transaction_id = $1", [receipt.originalTransactionId]);
     await claimPurchase(tx, platform, receipt, kind === "TOPUP" ? "CONSUMED" : "ACTIVE");
     if (kind === "TOPUP") {
       await userLedger(tx, ctx.user.id, iapTopupMicro(ctx.env.IAP_TOPUP_CREDITS), receipt.originalTransactionId);
@@ -967,16 +969,23 @@ export const verifyIap = async (ctx: Ctx): Promise<Response> => {
     }
     await query(q,
       "UPDATE users SET plan = $2, subscription_status = 'ACTIVE', period_ends_at = COALESCE($3::timestamptz, period_ends_at) WHERE id = $1",
-      [ctx.user.id, kind, receipt.expiresAt]);
+      [ctx.user.id, current, receipt.expiresAt]);
+    const lapsed = linked
+      ? await one(q, "SELECT 1 FROM iap_subscriptions WHERE original_transaction_id = $1 AND (status = 'CANCELED' OR (status = 'ACTIVE' AND expires_at <= $2::timestamptz))", [linked, ctx.now.toISOString()])
+      : null;
     if (linked) {
       await query(q,
         "UPDATE iap_subscriptions SET status = 'REPLACED' WHERE original_transaction_id = $1 AND user_id = $2 AND status NOT IN ('CONSUMED', 'REFUNDED')",
         [linked, ctx.user.id]);
     }
-    await userLedger(tx, ctx.user.id, receipt.linkedPurchaseToken ? 0 : grantMicro("PERSONAL", kind), receipt.originalTransactionId);
+    const replacement = Boolean(receipt.linkedPurchaseToken) && !lapsed && !known;
+    await grantStorePeriod(q, {
+      userId: ctx.user.id, token: receipt.originalTransactionId, expiresAt: receipt.expiresAt,
+      amount: replacement ? 0 : grantMicro("PERSONAL", current), now: ctx.now, fresh: !known,
+    });
   });
   if (kind === "TOPUP") {return data(200, { plan: ctx.user.plan || null, periodEndsAt: ts(ctx.user.periodEndsAt) }, ctx.rid);}
-  return data(200, { plan: kind, periodEndsAt: ts(receipt.expiresAt) }, ctx.rid);
+  return data(200, { plan: current, periodEndsAt: ts(receipt.expiresAt) }, ctx.rid);
 };
 
 // One transaction per notice, holding the user row lock as the Stripe webhook does: a refund reads what is left and writes it
@@ -995,10 +1004,8 @@ const grantNote = (
 const lockUser = (ctx: Ctx, userId: unknown) => lockOwner(ctx.deps.query, "PERSONAL", String(userId));
 
 const currentStoreSubscription = async (ctx: Ctx, userId: string): Promise<string | null> => {
-  const row = await one(ctx.deps.query,
-    "SELECT original_transaction_id FROM iap_subscriptions WHERE user_id = $1 AND status = 'ACTIVE' ORDER BY expires_at DESC NULLS FIRST LIMIT 1",
-    [userId]);
-  return (row?.original_transaction_id === null || row?.original_transaction_id === undefined) ? null : String(row.original_transaction_id);
+  const row = await currentStore(ctx.deps.query, userId, ctx.now);
+  return row?.live === true ? String(row.original_transaction_id) : null;
 };
 
 const storeNote = async (
@@ -1013,12 +1020,13 @@ const storeNote = async (
   if (upper === "REFUND" || upper === "EXPIRED" || upper === "REVOKE" || upper === "GRACE_PERIOD_EXPIRED") {
     // A top-up row is CONSUMED from verify (REFUNDED once refunded), whatever the product id is configured as today.
     const row = await one(ctx.deps.query,
-      "SELECT user_id, status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions WHERE original_transaction_id = $1",
+      "SELECT status = 'REPLACED' AS replaced, user_id, status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions WHERE original_transaction_id = $1",
       [transactionId]);
     if (row?.user_id) {await lockUser(ctx, row.user_id);}
     let drivesPlan = false;
-    if (row?.user_id && row.topup !== true) {
-      drivesPlan = (await currentStoreSubscription(ctx, String(row.user_id))) === transactionId;
+    if (row?.user_id && row.topup !== true && row.replaced !== true) {
+      const current = await currentStoreSubscription(ctx, String(row.user_id));
+      drivesPlan = current === transactionId || current === null;
     }
     await query(ctx.deps.query,
       "UPDATE iap_subscriptions SET status = CASE WHEN status IN ('CONSUMED', 'REFUNDED') THEN 'REFUNDED' WHEN status = 'REPLACED' THEN status ELSE 'CANCELED' END, expires_at = COALESCE($2::timestamptz, expires_at), sandbox = $3 WHERE original_transaction_id = $1",
@@ -1050,14 +1058,18 @@ const storeNote = async (
     await userLedger(ctx, userId, iapTopupMicro(ctx.env.IAP_TOPUP_CREDITS), transactionId);
     return;
   }
-  await query(ctx.deps.query,
-    "UPDATE iap_subscriptions SET status = 'ACTIVE', product_id = $2, expires_at = COALESCE($3::timestamptz, expires_at), sandbox = $4 WHERE original_transaction_id = $1",
+  const updated = await one(ctx.deps.query,
+    "UPDATE iap_subscriptions SET status = 'ACTIVE', product_id = $2, expires_at = COALESCE($3::timestamptz, expires_at), sandbox = $4 WHERE original_transaction_id = $1 RETURNING expires_at",
     [transactionId, productId, expiresAt, sandbox]);
   if ((await currentStoreSubscription(ctx, userId)) === transactionId) {
     await query(ctx.deps.query,
       "UPDATE users SET plan = $2, subscription_status = 'ACTIVE', period_ends_at = COALESCE($3::timestamptz, period_ends_at) WHERE id = $1",
       [userId, kind, expiresAt]);
-    await userLedger(ctx, userId, grantMicro("PERSONAL", kind), transactionId);
+    const end = updated?.expires_at;
+    await grantStorePeriod(ctx.deps.query, {
+      userId, token: transactionId, expiresAt: storeExpiry(end) ?? expiresAt,
+      amount: grantMicro("PERSONAL", kind), now: ctx.now, fresh: false,
+    });
   }
 };
 
@@ -1081,6 +1093,7 @@ export const googleWebhook = async (ctx: Ctx): Promise<Response> => {
   const note = await storePort(ctx).decodeGoogleNotification(body, ctx.request.headers.get("authorization"));
   let expiresAt = note.expiresAt;
   let sandbox = false;
+  let productId = note.productId;
   const pushed = googlePlayPubsub(body);
   const hasSubscriptionNotification = Boolean(pushed?.subscriptionNotification) && typeof pushed?.subscriptionNotification === "object";
   if (hasSubscriptionNotification) {
@@ -1090,8 +1103,9 @@ export const googleWebhook = async (ctx: Ctx): Promise<Response> => {
       const verified = await storePort(ctx).verifyGoogle(note.purchaseToken, note.productId, true);
       expiresAt = verified.expiresAt;
       sandbox = verified.sandbox === true;
+      productId = verified.productId || productId;
     }
   }
-  await grantNote(ctx, note.notificationType, note.purchaseToken, note.productId, expiresAt, sandbox);
+  await grantNote(ctx, note.notificationType, note.purchaseToken, productId, expiresAt, sandbox);
   return data(200, { received: true }, ctx.rid);
 };
