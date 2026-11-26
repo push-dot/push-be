@@ -133,6 +133,16 @@ def _hub_inputs(text: str, context: dict) -> dict:
     return {"sections": sections, "documentId": _document_id(context)}
 
 
+def _gaps_inputs(text: str, context: dict) -> dict:
+    matched = re.search(r"(.+?) 공고 요건에 비해", text)
+    posting = context.get("postingId") if isinstance(context, dict) else None
+    return {
+        "posting": matched.group(1).strip() if matched else "",
+        "postingId": str(posting) if posting else None,
+        "documentId": _document_id(context),
+    }
+
+
 def _offer_inputs(text: str, _context: dict) -> dict:
     matched = re.search(r"(.+) 님의 제안 [“\"](.+)[”\"]", text)
     if matched is None:
@@ -151,6 +161,20 @@ def _post_inputs(text: str, _context: dict) -> dict:
 
 
 _SPECS = {
+    # The first 부족한 점 찾기 of a thread; once an analysis exists the resume flow's strategy step takes over.
+    "gaps": {
+        "read_tools": ("get_posting", "search_postings", "get_my_profile", "list_documents", "get_document", "get_fit_score"),
+        "write_tools": (),
+        "instruction": (
+            "빠른 시작은 부족한 점 찾기예요. "
+            "공고는 get_posting으로 읽어요. 공고 id가 없으면 search_postings로 시트의 공고를 찾고, Bot의 기준 공고가 있으면 그 공고를 써요. "
+            "내 프로필과 서류는 get_my_profile, list_documents, get_document로 읽어요. "
+            "get_fit_score로 요건마다 맞는지 봐요. "
+            "부족한 점을 중요한 순서로 3~5개 목록으로 말하고, 하나마다 근거가 된 공고 요건과 채울 방법을 한 줄씩 붙여요. "
+            "맞는 점은 길게 말하지 않아요. 서류를 고치거나 저장하지 않아요."
+        ),
+        "inputs": _gaps_inputs,
+    },
     "find_postings": {
         "read_tools": ("find_matching_postings",),
         "write_tools": (),

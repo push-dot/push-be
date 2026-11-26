@@ -339,3 +339,38 @@ def test_materials_card_labels_a_github_list_as_links():
     inputs = {"github": ["https://github.com/acme-labs", "https://github.com/a/b"]}
     materials = next(s for s in intake_panel(inputs, {}) if s["id"] == "materials")
     assert materials["options"][0]["label"] == "https://github.com/acme-labs, https://github.com/a/b"
+
+
+@pytest.mark.parametrize(
+    ("conversation", "text", "context"),
+    [
+        pytest.param(_after_a, f"이 공고에서 부족한 점을 찾아 줘 {B_URL}", None, id="posting-b-after-a"),
+        pytest.param(
+            lambda: _after_a(resume_state=dict(WITH_PORTFOLIO)), f"부족한 점 찾아 줘 {B_URL}",
+            {"urls": [PORTFOLIO]}, id="portfolio-with-posting-b"),
+        pytest.param(
+            lambda: _company_bot({**FINISHED_ABOUT_A, "inputs": {"postingId": ATTACHED_POSTING, "attachments": []}}),
+            "이 회사 공고에서 부족한 점을 찾아 줘", None, id="company-bot-after-another-posting"),
+        pytest.param(lambda: _company_bot(None), f"내 포트폴리오로 부족한 점 찾아 줘 {PORTFOLIO}", None, id="company-bot-first-run"),
+    ],
+)
+async def test_gaps_about_a_new_posting_lists_gaps_in_the_chat_without_the_old_flow(
+    monkeypatch, conversation, text, context
+):
+    sent, saved = await _quick_start(monkeypatch, conversation(), "gaps", text, context)
+
+    assert sent == {}, "a new subject has no analysis yet, so no flow runs"
+    system = str(SeeingLC.seen[0][0].content)
+    assert "빠른 시작은 부족한 점 찾기예요" in system
+    assert "A사" not in system, "the finished flow about A does not reach the prompt"
+    assert (saved or {}).get("status") != "active"
+
+
+async def test_gaps_about_the_bots_own_posting_with_an_analysis_goes_on_with_the_flow(monkeypatch):
+    about_bot = {**FINISHED_ABOUT_A, "inputs": {"postingId": BOT_POSTING, "attachments": []}}
+
+    sent, saved = await _quick_start(monkeypatch, _company_bot(about_bot), "gaps", "부족한 점 찾아 줘")
+
+    assert sent["phase"] == "strategy"
+    assert sent["analysis"]["fit"] == 71
+    assert saved["strategy"]["focus"] == "bottleneck"
