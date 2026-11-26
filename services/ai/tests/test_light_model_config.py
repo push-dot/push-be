@@ -17,3 +17,19 @@ def test_a_setting_of_only_spaces_keeps_the_default(monkeypatch):
     assert env("MODEL_FREE", "deepseek/deepseek-v4.1-flash") == "deepseek/deepseek-v4.1-flash"
     monkeypatch.setenv("MODEL_FREE", " anthropic/claude-haiku-5-5 ")
     assert env("MODEL_FREE", "x") == "anthropic/claude-haiku-5-5"
+
+
+def test_a_structured_flow_call_never_runs_above_high_effort():
+    from app.domain.entities import AiOptions
+    from app.harness.kstyle.subagent import capped_model
+    from app.harness.model import GateModel
+
+    def chat(effort):
+        ai = AiOptions(provider="OPENROUTER", model="m", effort=effort)
+        return GateModel(None, "u", ai, "j", {})
+
+    assert capped_model(chat("MAX")).ai.effort == "HIGH"
+    for effort in ("LOW", "MEDIUM", "HIGH"):
+        model = chat(effort)
+        assert capped_model(model) is model
+    assert capped_model("not a gate model") == "not a gate model"
