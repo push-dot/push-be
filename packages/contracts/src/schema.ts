@@ -4617,7 +4617,7 @@ export interface components {
             canceled?: boolean;
             /**
              * Format: date-time
-             * @description When the plan credits are granted next: the first instant of the next UTC calendar month. The first read or AI job from then on writes them. Absent when there is no such date: a company whose credits follow its Stripe billing period gets them when a renewal invoice is paid, and a company without a plan gets none.
+             * @description When the plan credits are granted next: the first instant of the next UTC calendar month. The first read or AI job from then on writes them. A PERSONAL subscriber whose App Store or Google Play subscription drives the plan gets them per paid store period instead, so this is the end of that period, when its renewal grants the next ones. Absent when there is no such date: a store period end that has passed, a company whose credits follow its Stripe billing period gets them when a renewal invoice is paid, and a company without a plan gets none.
              */
             creditsRefillAt?: string;
             /**

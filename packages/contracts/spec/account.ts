@@ -541,7 +541,7 @@ export const schemas = {
     audience: accountType,
     source: nullable(enumOf("STRIPE", "TOSS", "APP_STORE", "GOOGLE_PLAY")),
     paymentsEnabled: { type: "boolean", description: "False while payments are closed (PAYMENTS_ENABLED off): checkout, top-up and iap/verify answer 503 PAYMENTS_DISABLED. Hide every buy button then; a store purchase would charge before verify refuses it." },
-    creditsRefillAt: { ...dateTime, description: "When the plan credits are granted next: the first instant of the next UTC calendar month. The first read or AI job from then on writes them. Absent when there is no such date: a company whose credits follow its Stripe billing period gets them when a renewal invoice is paid, and a company without a plan gets none." },
+    creditsRefillAt: { ...dateTime, description: "When the plan credits are granted next: the first instant of the next UTC calendar month. The first read or AI job from then on writes them. A PERSONAL subscriber whose App Store or Google Play subscription drives the plan gets them per paid store period instead, so this is the end of that period, when its renewal grants the next ones. Absent when there is no such date: a store period end that has passed, a company whose credits follow its Stripe billing period gets them when a renewal invoice is paid, and a company without a plan gets none." },
     provider: { type: "string", enum: ["toss"], description: "EMPLOYER only: the web payment provider." },
     currency: { type: "string", enum: ["KRW"], description: "EMPLOYER only: currency of prices." },
     prices: { ...obj({ BASIC: int, PRO: int, ULTRA: int, pack: int }), description: "EMPLOYER only: KRW per month for each plan, and per 1,500-credit pack." },

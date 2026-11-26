@@ -1004,7 +1004,7 @@ test("personal: an App Store row left ACTIVE past its expires_at no longer guard
   assert.deepEqual(await userRow(userId), { plan: "FREE", subscription_status: "CANCELED" });
 });
 
-test("personal grants are unchanged: one full row per store purchase and one monthly row", async (t) => {
+test("personal store grants: one full row per paid store period and no calendar row while the store drives the plan", async (t) => {
   if (!pg) {return t.skip("set BILLING_PG_URL to a migrated Postgres");}
   const userId = crypto.randomUUID();
   await pg.query("INSERT INTO users (id, provider, provider_subject, display_name) VALUES ($1, 'apple', $2, 'fixture')", [userId, userId]);
@@ -1027,7 +1027,7 @@ test("personal grants are unchanged: one full row per store purchase and one mon
     assert.equal((await handle(new Request("https://core.example/api/v1/billing", { headers: { authorization: "Bearer t" } }), env, deps(at))).status, 200);
   }
   const rows = (await pg.query("SELECT reference_id, amount_micro_credits FROM billing_ledger WHERE user_id = $1 ORDER BY created_at", [userId])).rows;
-  assert.deepEqual(rows.map((row) => [row.reference_id, Number(row.amount_micro_credits)]), [["tx-" + userId, 27_000_000], ["monthly:2026-11", 27_000_000]]);
+  assert.deepEqual(rows.map((row) => [row.reference_id, Number(row.amount_micro_credits)]), [["period:tx-" + userId + ":" + Date.parse("2026-12-02T09:00:00.000Z") / 1000, 27_000_000]]);
 });
 
 // D18: a refunded top-up takes its credits back, never below 0, and keeps the plan.

@@ -93,7 +93,7 @@ const duplicate = (): Error => {
 
 const takeLedger = (ledger: Array<LedgerRow>) => (sql: string, params: Array<unknown>) => {
   if (!sql.includes("INSERT INTO billing_ledger")) {return null;}
-  const reference = params.find((item): item is string => typeof item === "string" && (item.startsWith("monthly:") || item.startsWith("tx-") || item.startsWith("top-") || item.startsWith("cs_")));
+  const reference = params.find((item): item is string => typeof item === "string" && (item.startsWith("monthly:") || item.startsWith("period:") || item.startsWith("tx-") || item.startsWith("top-") || item.startsWith("cs_")));
   const amount = params.find((item): item is number => typeof item === "number");
   const userId = params.includes(USER) ? USER : null;
   const companyId = params.includes(COMPANY) ? COMPANY : null;
@@ -286,8 +286,8 @@ test("apple webhook inserts one ledger row and ignores the same transaction id",
     if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     const taken = capture(sql, params);
     if (taken) {return taken;}
-    if (sql.includes("SELECT original_transaction_id FROM iap_subscriptions WHERE user_id")) {
-      return { rows: [{ original_transaction_id: "tx-1" }], rowCount: 1 };
+    if (sql.includes("SELECT original_transaction_id, expires_at, (expires_at IS NULL")) {
+      return { rows: [{ original_transaction_id: "tx-1", live: true }], rowCount: 1 };
     }
     if (sql.includes("iap_subscriptions") && sql.toLowerCase().includes("select")) {
       return { rows: [{ user_id: USER }], rowCount: 1 };
@@ -313,7 +313,7 @@ test("apple webhook inserts one ledger row and ignores the same transaction id",
   assert.equal(decoded, 2);
   assert.equal(ledger.length, 1);
   assert.equal(ledger[0]?.amount, 27_000_000);
-  assert.equal(ledger[0]?.reference, "tx-1");
+  assert.equal(ledger[0]?.reference, "period:tx-1:" + Date.parse("2026-11-21T00:00:00.000Z") / 1000);
   assert.equal(ledger[0]?.userId, USER);
   assert.equal(ledger[0]?.companyId, null);
   assert.equal(oneOwner(ledger[0]), true);
@@ -516,6 +516,9 @@ test("personal status keeps the pro monthly amount and prefers an active store",
   const query = authed(seen, false, null, async (sql, params = []) => {
     const taken = capture(sql, params);
     if (taken) {return taken;}
+    if (sql.includes("SELECT original_transaction_id, expires_at, (expires_at IS NULL")) {
+      return { rows: [{ original_transaction_id: "tx-1", expires_at: "2026-12-10T00:00:00.000Z", live: true, plan: "PRO" }], rowCount: 1 };
+    }
     if (sql.includes("iap_subscriptions")) {return { rows: [{ platform: "APP_STORE" }], rowCount: 1 };}
     if (sql.includes("balance_after")) {return { rows: [{ balance_after: 30_000_000 }], rowCount: 1 };}
     return empty;
@@ -529,7 +532,7 @@ test("personal status keeps the pro monthly amount and prefers an active store",
   assert.equal(body.data.balanceMicroCredits, 30_000_000);
   assert.equal(ledger.length, 1);
   assert.equal(ledger[0]?.amount, 27_000_000);
-  assert.equal(ledger[0]?.reference, MONTH);
+  assert.equal(ledger[0]?.reference, "period:tx-1:" + Date.parse("2026-12-10T00:00:00.000Z") / 1000);
   assert.equal(ledger[0]?.userId, USER);
   assert.equal(ledger[0]?.companyId, null);
 });
@@ -1447,7 +1450,7 @@ test("an active in-app plan can change without a second grant for the same trans
   assert.deepEqual(await first.json(), { data: { plan: "ULTRA", periodEndsAt: "2026-11-21T00:00:00Z" } });
   const second = await handle(post("/api/v1/billing/iap/verify", body, "99999999-9999-4999-8999-9999999999b2"), envOf(), { query, now: () => NOW, stores });
   assert.equal(second.status, 200);
-  assert.equal(ledger.filter((row) => row.reference === "tx-up").length, 1);
+  assert.equal(ledger.filter((row) => row.reference.startsWith("period:tx-up:")).length, 1);
 });
 
 const storeReq = () => storeHook("/api/v1/billing/webhook/app-store", "signed");
@@ -1458,9 +1461,9 @@ test("a store expiration drops the personal plan", async () => {
   const query: Deps["query"] = async (sql, params = []) => {
     seen.push({ sql, params });
     if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
-    if (sql.includes("SELECT user_id, status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions")) {return { rows: [{ user_id: USER, topup: false }], rowCount: 1 };}
-    if (sql.includes("SELECT original_transaction_id FROM iap_subscriptions WHERE user_id")) {
-      return { rows: [{ original_transaction_id: "tx-1" }], rowCount: 1 };
+    if (sql.includes("status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions")) {return { rows: [{ user_id: USER, topup: false }], rowCount: 1 };}
+    if (sql.includes("SELECT original_transaction_id, expires_at, (expires_at IS NULL")) {
+      return { rows: [{ original_transaction_id: "tx-1", live: true }], rowCount: 1 };
     }
     if (sql.includes("UPDATE")) {return { rows: [{ id: USER }], rowCount: 1 };}
     return empty;
@@ -1491,8 +1494,8 @@ test("a google pubsub renewal updates the plan once", async () => {
     if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
     const taken = capture(sql, params);
     if (taken) {return taken;}
-    if (sql.includes("SELECT original_transaction_id FROM iap_subscriptions WHERE user_id")) {
-      return { rows: [{ original_transaction_id: "tx-renew" }], rowCount: 1 };
+    if (sql.includes("SELECT original_transaction_id, expires_at, (expires_at IS NULL")) {
+      return { rows: [{ original_transaction_id: "tx-renew", live: true }], rowCount: 1 };
     }
     if (sql.includes("iap_subscriptions") && sql.toLowerCase().includes("select")) {return { rows: [{ user_id: USER }], rowCount: 1 };}
     if (sql.includes("UPDATE")) {return { rows: [{ id: USER }], rowCount: 1 };}
@@ -1528,7 +1531,7 @@ test("a google pubsub renewal updates the plan once", async () => {
   assert.equal(first.status, 200);
   const second = await handle(req(), playEnv, { query, now: () => NOW, fetch: certs, stores });
   assert.equal(second.status, 200);
-  assert.equal(ledger.filter((row) => row.reference === "tx-renew").length, 1);
+  assert.equal(ledger.filter((row) => row.reference === "period:tx-renew:" + Date.parse(renewedAt) / 1000).length, 1);
   const update = seen.find((call) => call.sql.includes("UPDATE users") && call.params.includes("PRO"));
   assert.equal(update?.params[1], "PRO");
   assert.equal(update?.params[2], renewedAt);
@@ -1552,11 +1555,11 @@ test("a stale store expiration does not downgrade a newer subscription", async (
   const query: Deps["query"] = async (sql, params = []) => {
     seen.push({ sql, params });
     if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
-    if (sql.includes("SELECT user_id, status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions")) {
+    if (sql.includes("status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions")) {
       return { rows: [{ user_id: USER, topup: false }], rowCount: 1 };
     }
-    if (sql.includes("SELECT original_transaction_id FROM iap_subscriptions WHERE user_id")) {
-      return { rows: [{ original_transaction_id: "tx-new" }], rowCount: 1 };
+    if (sql.includes("SELECT original_transaction_id, expires_at, (expires_at IS NULL")) {
+      return { rows: [{ original_transaction_id: "tx-new", live: true }], rowCount: 1 };
     }
     if (sql.includes("UPDATE")) {return { rows: [{ id: USER }], rowCount: 1 };}
     return empty;
@@ -1588,8 +1591,8 @@ test("a stale store renewal does not overwrite the current plan", async () => {
     if (sql.includes("SELECT user_id FROM iap_subscriptions WHERE original_transaction_id")) {
       return { rows: [{ user_id: USER }], rowCount: 1 };
     }
-    if (sql.includes("SELECT original_transaction_id FROM iap_subscriptions WHERE user_id")) {
-      return { rows: [{ original_transaction_id: "tx-new" }], rowCount: 1 };
+    if (sql.includes("SELECT original_transaction_id, expires_at, (expires_at IS NULL")) {
+      return { rows: [{ original_transaction_id: "tx-new", live: true }], rowCount: 1 };
     }
     if (sql.includes("UPDATE")) {return { rows: [{ id: USER }], rowCount: 1 };}
     return empty;
@@ -1730,11 +1733,11 @@ test("a refunded credit top-up keeps the plan; a refunded subscription still end
     const query: Deps["query"] = async (sql, params = []) => {
       seen.push({ sql, params });
       if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
-      if (sql.includes("SELECT user_id, status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions")) {
+      if (sql.includes("status IN ('CONSUMED', 'REFUNDED') AS topup FROM iap_subscriptions")) {
         return { rows: [{ user_id: USER, topup: productId === "ios.topup" }], rowCount: 1 };
       }
-      if (downgrades && sql.includes("SELECT original_transaction_id FROM iap_subscriptions WHERE user_id")) {
-        return { rows: [{ original_transaction_id: id }], rowCount: 1 };
+      if (downgrades && sql.includes("SELECT original_transaction_id, expires_at, (expires_at IS NULL")) {
+        return { rows: [{ original_transaction_id: id, live: true }], rowCount: 1 };
       }
       return empty;
     };
@@ -1772,4 +1775,49 @@ test("google play: a voided one-time purchase is a refund; a canceled pending pu
     assert.equal(seen.some((call) => call.sql.includes("INSERT INTO billing_ledger") && call.params.includes("REFUND")), refunds, name);
     assert.equal(seen.some((call) => call.sql.includes("plan = 'FREE'")), false, name);
   }
+});
+
+test("google verify keeps a deferred replacement on the line item in effect, in either line order", async () => {
+  const key = await serviceAccount("play-deferred@push.iam.gserviceaccount.com");
+  const env = envOf({ GOOGLE_PLAY_KEY: key, GOOGLE_PLAY_PACKAGE: "com.push.app" });
+  const current = { productId: "ultra", expiryTime: "2026-12-02T09:00:00Z", deferredItemReplacement: { productId: "pro" } };
+  const next = { productId: "pro", expiryTime: "2027-01-02T09:00:00Z" };
+  for (const lineItems of [[current, next], [next, current]]) {
+    const fetchImpl = (async (input: RequestInfo | URL) => String(input) === OAUTH_TOKEN
+      ? Response.json({ access_token: "ya29.deferred", expires_in: 3600 })
+      : Response.json({ subscriptionState: "SUBSCRIPTION_STATE_ACTIVE", linkedPurchaseToken: "tok-old", lineItems })) as typeof fetch;
+    for (const asked of ["ultra", "pro"]) {
+      const receipt = await createStoreReceipts(env, fetchImpl, NOW).verifyGoogle("tok-new", asked, true);
+      assert.equal(receipt.productId, "ultra");
+      assert.equal(receipt.expiresAt, "2026-12-02T09:00:00Z");
+      assert.equal(receipt.deferredProductId, "pro");
+      assert.equal(receipt.linkedPurchaseToken, "tok-old");
+    }
+  }
+});
+
+test("google verify finds the line in effect when the deferred replacement keeps its product, and flags a grace period", async () => {
+  const key = await serviceAccount("play-same@push.iam.gserviceaccount.com");
+  const env = envOf({ GOOGLE_PLAY_KEY: key, GOOGLE_PLAY_PACKAGE: "com.push.app" });
+  const lineItems = [{ productId: "pro", expiryTime: "2026-12-02T09:00:00Z", deferredItemReplacement: { productId: "pro" } }];
+  for (const [state, grace] of [["SUBSCRIPTION_STATE_ACTIVE", false], ["SUBSCRIPTION_STATE_IN_GRACE_PERIOD", true]] as const) {
+    const fetchImpl = (async (input: RequestInfo | URL) => String(input) === OAUTH_TOKEN
+      ? Response.json({ access_token: "ya29.same", expires_in: 3600 })
+      : Response.json({ subscriptionState: state, lineItems })) as typeof fetch;
+    const receipt = await createStoreReceipts(env, fetchImpl, NOW).verifyGoogle("tok-same", "pro", true);
+    assert.equal(receipt.productId, "pro");
+    assert.equal(receipt.expiresAt, "2026-12-02T09:00:00Z");
+    assert.equal(receipt.deferredProductId, "pro");
+    assert.equal(receipt.grace, grace);
+  }
+});
+
+test("a thrown fetch while walking Play links ends the walk instead of failing", async () => {
+  const key = await serviceAccount("play-walk@push.iam.gserviceaccount.com");
+  const env = envOf({ GOOGLE_PLAY_KEY: key, GOOGLE_PLAY_PACKAGE: "com.push.app" });
+  const fetchImpl = (async (input: RequestInfo | URL) => {
+    if (String(input) === OAUTH_TOKEN) {return Response.json({ access_token: "ya29.walk", expires_in: 3600 });}
+    throw new TypeError("network down");
+  }) as typeof fetch;
+  assert.equal(await createStoreReceipts(env, fetchImpl, NOW).googleLinkedToken("tok-mid"), undefined);
 });
