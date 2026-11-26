@@ -137,16 +137,18 @@ async def test_fit_quick_start_skips_the_analyze_card(monkeypatch):
     assert _choice(items)["title"] == "점수를 한 번 더 올릴까요?"
 
 
-async def test_gaps_without_analysis_enters_intake():
-    source = _bag("analysis")
-    _runtime, rows, items = await _open("gaps", source)
-    saved = _saved(rows)
-    assert _choice(items)["gate"] == "output_targets"
-    assert saved["phase"] == "intake"
-    assert saved["scenario"] == "A"
-    assert saved["strategy"]["focus"] == "bottleneck"
-    assert saved["strategy"]["steps"] == [1, 2, 3]
-    _assert_kept(saved, source)
+async def test_gaps_without_analysis_lists_the_gaps_in_the_chat():
+    for source in (None, _bag("analysis")):
+        _runtime, rows, items = await _open("gaps", source)
+        choices = [
+            chunk for mode, chunk in items
+            if mode == "custom" and isinstance(chunk, dict) and chunk.get("type") == "choice"
+        ]
+        assert choices == [], "no intake wizard on the first run"
+        saved = rows.conversation["resume_state"]
+        saved = json.loads(saved) if isinstance(saved, str) else saved
+        assert (saved or {}).get("status") != "active"
+        assert any(mode == "custom" and isinstance(chunk, dict) and chunk.get("token") for mode, chunk in items)
 
 
 async def test_gaps_with_analysis_enters_strategy():

@@ -29,6 +29,13 @@ def test_tool_quick_starts_do_not_enter_the_resume_flow():
         assert quick_start_resume(intent, {}) is None
 
 
+def test_gaps_enters_the_resume_flow_only_once_an_analysis_exists():
+    assert quick_start_resume("gaps", {}) is None
+    assert quick_start_resume("gaps", {"analysis": {}}) is None
+    seeded = quick_start_resume("gaps", {"analysis": {"role": "backend"}})
+    assert seeded is not None and seeded["phase"] == "strategy"
+
+
 _APPLIED_DIRECTLY = {"calendar", "hub_profile"}
 
 

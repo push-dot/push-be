@@ -130,9 +130,12 @@ def quick_start_resume(intent: object, current: dict | None = None) -> dict | No
         if draft_text(drafts):
             seed["drafts"] = drafts
     elif intent == "gaps":
+        # A first run lists the gaps in the chat; the resume flow takes over once an analysis exists.
+        if not _present(current.get("analysis")):
+            return None
         seed = {
             "status": "active",
-            "phase": "strategy" if _present(current.get("analysis")) else "intake",
+            "phase": "strategy",
             "work_mode": "resume_based", "scenario": "A",
             "strategy": {"focus": "bottleneck", "steps": [1, 2, 3]},
         }
