@@ -15,6 +15,7 @@ const OPENED = 40;
 let db: BotsPg | undefined;
 let users: Array<string> = [];
 let company = "";
+let ownBaseline = false;
 before(async () => { if (URL_) {db = await botsPg(URL_);} });
 after(async () => {
   if (db && users.length) {
@@ -22,6 +23,7 @@ after(async () => {
     await db.pg.query("DELETE FROM users WHERE id = ANY($1::uuid[])", [users]);
     await db.pg.query("DELETE FROM job_postings WHERE company_id = $1::uuid", [company]);
   }
+  if (db && ownBaseline) {await db.pg.query("DELETE FROM notification_dedupes WHERE dedupe_key = 'watch:baseline'");}
   await db?.close();
 });
 
@@ -40,8 +42,10 @@ test("600 followers of a company that opens 40 postings each hear once, at most 
   if (!db) {return t.skip(SKIP);}
   const source = await db.posting("와치컴퍼니");
   company = String((await db.pg.query("SELECT company_id FROM job_postings WHERE id = $1::uuid", [source])).rows[0]?.company_id);
-  await db.pg.query("INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ('watch:baseline', now() - interval '1 day') "
-    + "ON CONFLICT (dedupe_key) DO UPDATE SET created_at = LEAST(notification_dedupes.created_at, EXCLUDED.created_at)");
+  ownBaseline = (await db.pg.query(
+    "INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ('watch:baseline', now() - interval '1 day') "
+    + "ON CONFLICT (dedupe_key) DO NOTHING RETURNING dedupe_key")).rows.length === 1;
+  await db.pg.query("UPDATE notification_dedupes SET created_at = LEAST(created_at, now() - interval '1 day') WHERE dedupe_key = 'watch:baseline'");
   users = (await db.pg.query(
     "INSERT INTO users (id, provider, provider_subject, display_name, plan) "
     + "SELECT g, 'test', g::text, 'watch', 'FREE' FROM (SELECT gen_random_uuid() AS g FROM generate_series(1, $1::int)) x RETURNING id",

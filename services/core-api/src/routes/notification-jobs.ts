@@ -86,7 +86,8 @@ const DUE_REMINDERS = claimed(`SELECT e.user_id, e.id, e.title, 'remind:' || e.i
 // `watch:baseline`, claimed on the first run, is when watching began, so the first run announces nothing older.
 // A close is claimed once per user and posting. New postings are one row per user and company: the key
 // `watch:new:<user>:<company>` holds the newest posting announced, and a run claims it only by moving it forward,
-// so each run reads and writes at most 500 small rows and every user hears once per company per run.
+// so each run reads and writes at most 500 small rows and every user hears once per company per run. Closes go
+// first: they look back only 2 days, so a backlog of new postings must not push them out of that window.
 export const DUE_WATCH = `WITH mark AS (
     INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ('watch:baseline', $1::timestamptz) ON CONFLICT (dedupe_key) DO NOTHING
   ), base AS (
@@ -108,6 +109,7 @@ export const DUE_WATCH = `WITH mark AS (
     LEFT JOIN notification_dedupes w ON w.dedupe_key = 'watch:new:' || b.user_id || ':' || src.company_id
     WHERE b.kind = 'company' AND b.deleted_at IS NULL AND NOT b.notifications_muted
       AND COALESCE(p.status, 'OPEN') = 'OPEN' AND p.closed_at IS NULL
+      AND p.created_at > $3::timestamptz AND p.created_at > base.at
       AND p.created_at > GREATEST(b.created_at, base.at, $3::timestamptz, COALESCE(w.created_at, '-infinity'))
       AND NOT EXISTS (SELECT 1 FROM bots own WHERE own.user_id = b.user_id AND own.posting_id = p.id AND own.deleted_at IS NULL)
     GROUP BY b.user_id, src.company_id
@@ -116,7 +118,7 @@ export const DUE_WATCH = `WITH mark AS (
     JOIN users u ON u.id = c.user_id AND u.deletion_requested_at IS NULL
     LEFT JOIN user_settings s ON s.user_id = c.user_id
     WHERE COALESCE(s.notify_ai_done, true)
-    ORDER BY c.at, c.dedupe_key LIMIT 500
+    ORDER BY c.change = 'closed' DESC, c.at, c.dedupe_key LIMIT 500
   ), claimed AS (
     INSERT INTO notification_dedupes (dedupe_key, created_at)
     SELECT dedupe_key, CASE WHEN change = 'new' THEN at ELSE $1::timestamptz END FROM batch
@@ -196,10 +198,9 @@ export const runNotificationJobs = async (ctx: Ctx): Promise<Response> => {
   const nowIso = ctx.now.toISOString();
   const deadlineDay = utcDay(ctx.now, 3);
   const lookback = new Date(ctx.now.getTime() - 2 * DAY_MS).toISOString();
-  const [due, reminders, watched] = await Promise.all([
+  const [due, reminders] = await Promise.all([
     query(ctx.deps.query, DUE_DEADLINES, [deadlineDay, nowIso]),
     query(ctx.deps.query, DUE_REMINDERS, [nowIso, nowIso, lookback]),
-    query(ctx.deps.query, DUE_WATCH, [nowIso, lookback, new Date(ctx.now.getTime() - 30 * DAY_MS).toISOString()]),
   ]);
   for (const row of due.rows) {
     const title = String(row.title ?? "");
@@ -208,7 +209,14 @@ export const runNotificationJobs = async (ctx: Ctx): Promise<Response> => {
   for (const row of reminders.rows) {
     await sendNotification(ctx, { userId: String(row.user_id), type: "DEADLINE", title: String(row.title ?? ""), body: "", target: { kind: "calendar", id: String(row.id) } });
   }
-  const notices = watchNotices(watched.rows);
+  // Deadlines and reminders are claimed and sent before the watch runs, so a failing watch cannot drop them.
+  let notices: Array<Notice> = [];
+  try {
+    const watched = await query(ctx.deps.query, DUE_WATCH, [nowIso, lookback, new Date(ctx.now.getTime() - 30 * DAY_MS).toISOString()]);
+    notices = watchNotices(watched.rows);
+  } catch (error) {
+    console.error(JSON.stringify({ postingWatchError: String(error instanceof Error ? error.message : error) }));
+  }
   for (const notice of notices) {
     await sendNotification(ctx, notice);
   }

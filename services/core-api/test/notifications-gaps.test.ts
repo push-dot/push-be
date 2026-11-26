@@ -349,6 +349,8 @@ test("a company bot pushes once when its posting closes or its company opens a n
       assert.match(sql, /GROUP BY b\.user_id, src\.company_id[\s\S]*LIMIT 500/, "a run reads at most 500 grouped rows");
       assert.match(sql, /notification_dedupes\.created_at < EXCLUDED\.created_at/, "a company key is claimed only by moving it forward");
       assert.doesNotMatch(sql, /company_name/, "no match by company name: names are not unique");
+      assert.match(sql, /ORDER BY c\.change = 'closed' DESC/, "closes go before a backlog of new postings");
+      assert.match(sql, /AND p\.created_at > \$3::timestamptz AND p\.created_at > base\.at/, "old postings leave before the join grows");
       assert.match(sql, /'watch:baseline'/, "the first run sets a baseline and announces nothing older");
       assert.match(sql, /NOT EXISTS \(SELECT 1 FROM bots own WHERE own\.user_id = b\.user_id AND own\.posting_id = p\.id/, "no news about a posting the user already has a bot for");
       return { rows: watched, rowCount: 2 };
@@ -377,4 +379,22 @@ test("a company that opens many postings sends each user one push with the count
     pushBody: "모아페이에 새 공고 40개가 올라왔어요", target: { kind: "bot", id: "b-1" },
   });
   assert.equal(notices[1]?.target.id, "p-0", "a single new posting still opens the posting");
+});
+
+test("a failing posting watch still sends the deadline and reminder pushes", async () => {
+  resetLimits();
+  const sent: Array<string> = [];
+  const res = await handle(new Request("https://core.example/api/v1/internal/notifications/run", {
+    method: "POST",
+    headers: { authorization: "Bearer job-secret" },
+  }), env({ INTERNAL_JOB_TOKEN: "job-secret" }), deps(async (sql, params = []) => {
+    if (sql.includes("FROM bots b JOIN job_postings")) {throw new Error("canceling statement due to statement timeout");}
+    if (sql.includes("FROM bookmarks")) {return { rows: [{ user_id: OTHER, id: POST, title: "Backend" }], rowCount: 1 };}
+    if (sql.includes("FROM calendar_events")) {return { rows: [{ id: "ffffffff-ffff-4fff-8fff-ffffffffffff", user_id: OTHER, title: "커피챗" }], rowCount: 1 };}
+    if (sql.startsWith("INSERT INTO notifications ")) {sent.push(String(params[3]));}
+    return empty;
+  }));
+  assert.equal(res.status, 200);
+  assert.deepEqual((await readJson<{ data: unknown }>(res)).data, { deadlines: 1, reminders: 1, watched: 0 });
+  assert.deepEqual(sent, ["Backend", "커피챗"]);
 });
