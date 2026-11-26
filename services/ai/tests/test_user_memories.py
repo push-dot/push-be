@@ -49,6 +49,20 @@ async def test_remember_keeps_one_copy_newest_first_and_caps_the_list():
 
 
 @pytest.mark.asyncio
+async def test_memory_lines_fit_the_summary_budget_newest_first():
+    from app.harness.memory import estimate_tokens
+
+    db = Rows()
+    db.texts = [f"{i:02d}" + "가" * (memories.TEXT_MAX - 2) for i in range(memories.PROMPT_LIMIT)]
+    lines = await memories.memory_lines(db, USER)
+    assert sum(len(line) for line in db.texts) >= 9_000
+    assert lines == db.texts[: len(lines)] and 0 < len(lines) < memories.PROMPT_LIMIT
+    assert sum(estimate_tokens(line) + 1 for line in lines) <= memories.PROMPT_TOKENS
+    db.texts = ["짧은 사실"] * memories.PROMPT_LIMIT
+    assert len(await memories.memory_lines(db, USER)) == memories.PROMPT_LIMIT
+
+
+@pytest.mark.asyncio
 async def test_remember_saves_nothing_without_a_user_or_text():
     assert await memories.remember(Rows(), "not-a-uuid", "x") == {"saved": False}
     assert await memories.remember(Rows(), USER, "   ") == {"saved": False}
