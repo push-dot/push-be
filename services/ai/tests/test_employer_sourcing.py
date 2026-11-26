@@ -9,7 +9,7 @@ from push_agent.harness.flows import Person, Shortlist, build_flows
 from push_agent.harness.schemas import OfferDraft
 
 
-def _graph(calls, messages, drafted: list | None = None):
+def _graph(calls, messages, drafted: list | None = None, claim_gate=None):
     async def generate(schema, system, user):
         if schema is Shortlist:
             return Shortlist(
@@ -25,10 +25,10 @@ def _graph(calls, messages, drafted: list | None = None):
             return OfferDraft(message=messages.pop(0) if len(messages) > 1 else messages[0], reasons=["a", "b"])
         raise AssertionError(schema)
 
-    async def call_tool(state, name, args, *, approved=False):
+    async def call_tool(state, name, args, *, gate=None):
         calls.append((name, args))
         if name == "send_offer":
-            assert approved, "a send carries the gate answer as its card"
+            assert gate is not None and gate[1] == "send", "a send carries the gate as its card"
         if name == "search_profiles":
             return {
                 "data": {
@@ -46,6 +46,7 @@ def _graph(calls, messages, drafted: list | None = None):
         research_text=None,
         plan_of=lambda _s: "PRO",
         call_tool=call_tool,
+        claim_gate=claim_gate,
     )
     parent = StateGraph(state_type)
     parent.add_node("sourcing", flows["sourcing"])
@@ -230,3 +231,22 @@ async def test_the_shortlist_card_lets_the_employer_pick_several_people():
     stream = graph.astream(dict(STATE), config, stream_mode="custom", subgraphs=True)
     cards = [event async for _ns, event in stream if event.get("type") == "choice"]
     assert [(card["gate"], card.get("multiple")) for card in cards] == [("sc_shortlist", True)]
+
+
+async def test_a_send_gate_whose_answer_cannot_be_claimed_sends_nothing():
+    calls: list = []
+    claims: list = []
+
+    async def claim_gate(state, card, option, shown):
+        claims.append((option, shown))
+        return False
+
+    graph = _graph(calls, ["결제 승인 API 경험을 보고 연락드려요."], claim_gate=claim_gate)
+    config = {"configurable": {"thread_id": "s-claim"}}
+    await graph.ainvoke(dict(STATE), config)
+    await graph.ainvoke(Command(resume={"option_ids": ["p1"]}), config)
+    out = await graph.ainvoke(Command(resume={"option_id": "send"}), config)
+    assert claims == [("send", {"offers": [
+        {"profile_id": "p1", "message": "결제 승인 API 경험을 보고 연락드려요."}]})]
+    assert not any(name == "send_offer" for name, _ in calls)
+    assert out["flow"]["status"] == "cancelled"

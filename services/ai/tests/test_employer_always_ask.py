@@ -3,10 +3,10 @@ from __future__ import annotations
 import pytest
 
 from app.harness.approval import approval_id_for
-from push_agent.harness.tools import EMPLOYER_TOOLS
 from app.harness.policy import Tier
 from app.harness.runtime import _state
 from app.harness.tools import ToolContext
+from push_agent.harness.tools import EMPLOYER_TOOLS
 
 COMPANY = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 POSTING = "21212121-2121-4121-8121-212121212121"
@@ -110,3 +110,63 @@ async def test_a_flow_gate_answer_becomes_the_card_core_checks():
     assert params[5] == "send_offer"
     assert isinstance(params[6], dict), "tool_args goes in as an object, not a JSON string"
     assert {"profile_id": PROFILE, "message": "커피챗 해요"}.items() <= params[6].items()
+
+
+
+async def test_a_flow_write_needs_the_claimed_gate_that_showed_it():
+    from push_agent.harness.graph import claim_gate_for, gate_answered
+
+    class Db:
+        def __init__(self, row):
+            self.row, self.asked = row, []
+
+        def q(self):
+            return self
+
+        async def fetchrow(self, sql, *params):
+            self.asked.append((sql, params))
+            return self.row
+
+    ctx = ToolContext(user_id=COMPANY, company_id=COMPANY, conversation_id=POSTING, job_id=JOB,
+                      tool_call_id="flow:send_offer:x", db=None, core=Core())
+    card = "41414141-4141-4141-8141-414141414141"
+    offer = {"profile_id": PROFILE, "message": "커피챗 해요"}
+
+    claimed = Db({"id": card})
+    assert await claim_gate_for(claimed, ctx, card, "send", {"offers": [offer]})
+    sql, params = claimed.asked[0]
+    assert "consumed_at IS NULL OR consumed_key = $4" in sql, "spent once, by this job"
+    assert "tool_args->'offers' = $5::jsonb" in sql, "on exactly the offers it showed"
+    assert [str(p) for p in params[:4]] == [card, POSTING, "send", JOB] and params[4] == [offer]
+    assert not await claim_gate_for(Db(None), ctx, card, "send", {"offers": [offer]})
+
+    answered = Db({"?column?": 1})
+    assert await gate_answered(answered, ctx, card, "send", offer)
+    sql, params = answered.asked[0]
+    assert "kind = 'EMPLOYER_GATE'" in sql and "consumed_key = $4" in sql
+    assert "tool_args->'offers' @> $5::jsonb" in sql and params[4] == [offer]
+    assert not await gate_answered(Db(None), ctx, card, "send", offer)
+
+    for broken in ({"conversation_id": ""}, {"job_id": ""}):
+        bad = ToolContext(**{**ctx.__dict__, **broken})
+        assert not await gate_answered(answered, bad, card, "send", offer), broken
+        assert not await claim_gate_for(claimed, bad, card, "send", {"offers": [offer]}), broken
+
+
+def test_only_the_sourcing_send_gate_turns_an_answer_into_a_card():
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).parents[1] / "src/push_agent"
+    found = []
+    for path in root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        parent = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "call_tool"
+                    and any(k.arg == "gate" for k in node.keywords)):
+                fn = parent.get(node)
+                while fn is not None and not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    fn = parent.get(fn)
+                found.append((path.name, getattr(fn, "name", "")))
+    assert set(found) == {("flows.py", "sc_send")}, found

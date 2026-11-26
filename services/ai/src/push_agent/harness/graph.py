@@ -16,6 +16,45 @@ from app.harness.status import acting_user, job_of
 from app.harness.tools import ToolContext, call_structured, emit
 
 
+_GATE = ("SELECT 1 FROM approvals WHERE id = $1 AND conversation_id = $2 "
+         "AND kind = 'EMPLOYER_GATE' AND status = 'APPROVED' AND option_id = $3 "
+         "AND consumed_key = $4 "
+         "AND tool_args->'offers' @> $5::jsonb")
+
+_CLAIM = ("UPDATE approvals SET consumed_at = COALESCE(consumed_at, now()), consumed_key = $4 "
+          "WHERE id = $1 AND conversation_id = $2 AND kind = 'EMPLOYER_GATE' "
+          "AND status = 'APPROVED' AND option_id = $3 "
+          "AND (consumed_at IS NULL OR consumed_key = $4) "
+          "AND tool_args->'offers' = $5::jsonb RETURNING id")
+
+
+def _ids(ctx) -> tuple[UUID, UUID] | None:
+    try:
+        return UUID(ctx.conversation_id), UUID(ctx.job_id)
+    except (TypeError, ValueError):
+        return None
+
+
+async def claim_gate_for(db, ctx, card_id: str, option: str, shown: dict) -> bool:
+    """Spend the gate once, for this job: the stored answer a person gave with that option, on
+    exactly the offers it showed. A retry of the same job may claim it again; another may not."""
+    ids = _ids(ctx)
+    if ids is None:
+        return False
+    row = await db.q().fetchrow(_CLAIM, UUID(card_id), ids[0], option, ids[1],
+                                shown.get("offers") or [])
+    return row is not None
+
+
+async def gate_answered(db, ctx, card_id: str, option: str, offer: dict) -> bool:
+    """The AI service records an approval only for a write the person's claimed gate showed."""
+    ids = _ids(ctx)
+    if ids is None:
+        return False
+    row = await db.q().fetchrow(_GATE, UUID(card_id), ids[0], option, ids[1], [offer])
+    return row is not None
+
+
 async def record_gate_approval(db, ctx, tool, args) -> None:
     approval_id = UUID(approval_id_for(ctx.job_id, ctx.tool_call_id))
     await db.q().execute(
@@ -56,9 +95,9 @@ def build_employer_graph(agent, tools, after_agent, checkpointer, *, db, core=No
     def generate_for(_state):
         return gate_generate(turn_model.get())
 
-    async def call_tool(state, name, args, *, approved: bool = False):
-        """approved: the employer answered a flow gate that showed this exact write, so it counts
-        as the card core asks for."""
+    async def call_tool(state, name, args, *, gate: tuple[str, str] | None = None):
+        """gate: (card id, option) of the flow gate that showed this exact write. Once the employer
+        picked that option, the write counts as the card core asks for."""
         tool = (tools_by_name or {}).get(name)
         if tool is None:
             return {"error": "UNKNOWN_TOOL"}
@@ -74,15 +113,26 @@ def build_employer_graph(agent, tools, after_agent, checkpointer, *, db, core=No
             access_mode=str(state.get("access_mode") or "AUTO"),
         )
         parsed = tool.args_model.model_validate(args)
-        if approved:
+        if gate is not None:
+            offer = {"profile_id": str(args.get("profileId") or args.get("profile_id") or ""),
+                     "message": args.get("message") or ""}
+            if not await gate_answered(db, ctx, *gate, offer):
+                return {"error": "APPROVAL_REQUIRED"}
             await record_gate_approval(db, ctx, tool, parsed)
         result, _ok = await call_structured(tool, parsed, ctx)
         return result
 
+    async def claim_gate(state, card_id, option, shown):
+        ctx = ToolContext(
+            user_id=acting_user(state), company_id=state.get("company_id"),
+            conversation_id=str(state.get("conversation_id") or ""),
+            job_id=str(state.get("job_id") or ""), tool_call_id="", db=db, core=core)
+        return await claim_gate_for(db, ctx, card_id, option, shown)
+
     state_type, flows = build_flows(
         db=db, generate_for=generate_for, research_text=research_text,
         plan_of=lambda _state: current_employer_plan() or "", call_tool=call_tool,
-        model_for=lambda _state: turn_model.get())
+        model_for=lambda _state: turn_model.get(), claim_gate=claim_gate)
     flow_nodes = {f"{name}_flow": f"{name}_flow" for name in FLOWS}
 
     def _target(state) -> str:

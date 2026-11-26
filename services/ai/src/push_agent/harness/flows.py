@@ -215,6 +215,17 @@ def plan_allows(plan: str | None, need: str) -> bool:
     return _PLAN_RANK.get((plan or "").upper(), 0) >= _PLAN_RANK[need]
 
 
+def sent_offers(drafts: list) -> dict:
+    """What the send gate shows: each person and the exact message they will get."""
+    return {"offers": [{"profile_id": str(d["profile_id"]), "message": d["message"]}
+                       for d in drafts]}
+
+
+def gate_card_id(state: dict, gate_id: str) -> str:
+    seed = f"push:employer-gate:{state.get('conversation_id')}:{state.get('job_id')}:{gate_id}"
+    return str(uuid5(NAMESPACE_URL, seed))
+
+
 async def gate(
     state: dict,
     db,
@@ -224,12 +235,14 @@ async def gate(
     *,
     recommended: str | None = None,
     multiple: bool = False,
+    shown: dict | None = None,
 ) -> dict:
-    """Ask one EMPLOYER_GATE question and wait. Returns {"option_id"} or {"text"}."""
-    seed = f"push:employer-gate:{state.get('conversation_id')}:{state.get('job_id')}:{gate_id}"
+    """Ask one EMPLOYER_GATE question and wait. Returns {"option_id"} or {"text"}.
+    shown: the exact writes this card asks about, stored with it so a write can be checked
+    against what the employer saw."""
     event = {
         "type": "choice",
-        "id": str(uuid5(NAMESPACE_URL, seed)),
+        "id": gate_card_id(state, gate_id),
         "kind": "EMPLOYER_GATE",
         "gate": gate_id,
         "title": title,
@@ -247,6 +260,10 @@ async def gate(
             await insert_chat_approval(
                 db, state.get("user_id"), state.get("conversation_id"), event, None
             )
+            if shown is not None:
+                await db.q().execute(
+                    "UPDATE approvals SET tool_args = $2::jsonb WHERE id = $1",
+                    UUID(event["id"]), shown)
         emit(event)
     answer = (
         interrupt(
@@ -272,7 +289,8 @@ def _done(state: dict, status: str, **data) -> dict:
 
 
 def build_flows(
-    *, db, generate_for, research_text, plan_of, store=None, read_pdf=None, call_tool=None, model_for=None
+    *, db, generate_for, research_text, plan_of, store=None, read_pdf=None, call_tool=None,
+    model_for=None, claim_gate=None,
 ):
     """``call_tool(state, name, args)`` runs an employer tool through core (sourcing flow).
     ``model_for(state)`` returns the turn's chat model for subagents and reviewers, or None.
@@ -986,15 +1004,22 @@ def build_flows(
     async def sc_send(state):
         flow = flow_of(state)
         drafts = flow.get("drafts") or []
+        shown = sent_offers(drafts)
+        card = gate_card_id(state, "sc_send")
         answer = await gate(
             state,
             db,
             "sc_send",
             f"이 메시지로 {len(drafts)}명에게 보낼까요?",
             [{"id": "send", "label": "보내기"}],
+            shown=shown,
         )
         if answer.get("option_id") != "send":
             return _done(state, "cancelled", reply=None)
+        if claim_gate is not None and not await claim_gate(state, card, "send", shown):
+            reply = "보내기 확인이 이미 쓰였거나 메시지가 바뀌었어요. 다시 확인해 주세요."
+            emit({"token": reply})
+            return _done(state, "cancelled", reply=reply)
         sent, failed = 0, []
         for draft in drafts:
             result = await call_tool(
@@ -1005,7 +1030,7 @@ def build_flows(
                     "message": draft["message"],
                     "postingId": flow_of(state).get("posting_id"),
                 },
-                approved=True,
+                gate=(card, "send"),
             )
             if isinstance(result, dict) and not result.get("error"):
                 sent += 1
