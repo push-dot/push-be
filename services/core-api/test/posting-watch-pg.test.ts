@@ -27,6 +27,14 @@ after(async () => {
   await db?.close();
 });
 
+// The 600-follower test may have claimed the baseline already; only the test that inserts it removes it afterwards.
+const claimBaseline = async (): Promise<void> => {
+  const created = (await db!.pg.query(
+    "INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ('watch:baseline', now() - interval '90 days') "
+    + "ON CONFLICT (dedupe_key) DO NOTHING RETURNING dedupe_key")).rows.length === 1;
+  ownBaseline ||= created;
+};
+
 const run = async (): Promise<Array<string>> => {
   const now = Date.now();
   const at = (days: number) => new Date(now - days * 86_400_000).toISOString();
@@ -76,9 +84,8 @@ test("a cleanup of one user's watch keys restarts only that user's keys from now
     closed: `watch:closed:${mine}:${crypto.randomUUID()}`, stale: `watch:closed:${mine}:${crypto.randomUUID()}`,
     deadline: `deadline:${crypto.randomUUID()}`,
   };
-  const baselineBefore = (await db.pg.query(
-    "INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ('watch:baseline', now() - interval '90 days') "
-    + "ON CONFLICT (dedupe_key) DO UPDATE SET created_at = notification_dedupes.created_at RETURNING created_at")).rows[0]?.created_at;
+  await claimBaseline();
+  const baselineBefore = (await db.pg.query("SELECT created_at FROM notification_dedupes WHERE dedupe_key = 'watch:baseline'")).rows[0]?.created_at;
   await db.pg.query(
     "INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ($1, now() - interval '60 days'), ($2, now() - interval '60 days'), "
     + "($3, now() - interval '1 day'), ($4, now() - interval '10 days'), ($5, now() - interval '60 days')",
@@ -95,5 +102,33 @@ test("a cleanup of one user's watch keys restarts only that user's keys from now
   assert.equal(left.get(keys.other), false, "another follower's watermark is unchanged");
   const baselineAfter = (await db.pg.query("SELECT created_at FROM notification_dedupes WHERE dedupe_key = 'watch:baseline'")).rows[0]?.created_at;
   assert.equal(String(baselineAfter), String(baselineBefore), "the shared baseline is unchanged");
-  ownBaseline = true;
+});
+
+test("after a cleanup removes a follower's watermark, the next run announces nothing old to that follower only", async (t) => {
+  if (!db) {return t.skip(SKIP);}
+  await claimBaseline();
+  const source = await db.posting("클린업컴퍼니");
+  const companyId = String((await db.pg.query("SELECT company_id FROM job_postings WHERE id = $1::uuid", [source])).rows[0]?.company_id);
+  const [cleaned, kept] = [await db.person("FREE"), await db.person("FREE")];
+  await db.pg.query(
+    "INSERT INTO bots (id, user_id, kind, company_name, posting_id, display_name, created_at, updated_at) "
+    + "SELECT gen_random_uuid(), u, 'company', '클린업컴퍼니', $2::uuid, '클린업컴퍼니', now() - interval '2 days', now() - interval '2 days' FROM unnest($1::uuid[]) u",
+    [[cleaned.id, kept.id], source]);
+  await db.pg.query(
+    "INSERT INTO job_postings (id, company_id, company, title, job_category, career_min, location, employment_type, description, status, created_at) "
+    + "SELECT gen_random_uuid(), company_id, company, 'older opening', job_category, career_min, location, employment_type, description, 'OPEN', now() - interval '12 hours' "
+    + "FROM job_postings WHERE id = $1::uuid", [source]);
+  const key = (user: string) => `watch:new:${user}:${companyId}`;
+  await db.pg.query("INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ($1, now() - interval '60 days'), ($2, now() - interval '60 days')",
+    [key(cleaned.id), key(kept.id)]);
+  await db.pg.query("DELETE FROM notification_dedupes WHERE dedupe_key = $1", [key(cleaned.id)]);
+
+  const now = Date.now();
+  const at = (days: number) => new Date(now - days * 86_400_000).toISOString();
+  const rows = (await db.pg.query(DUE_WATCH, [new Date(now).toISOString(), at(2), at(30)])).rows;
+  const heard = new Set(rows.filter((row) => row.change === "new").map((row) => String(row.user_id)));
+  assert.equal(heard.has(cleaned.id), false, "the cleaned follower restarts from now");
+  assert.equal(heard.has(kept.id), true, "the other follower still hears the posting");
+  await db.pg.query("DELETE FROM bots WHERE user_id = ANY($1::uuid[])", [[cleaned.id, kept.id]]);
+  await db.pg.query("DELETE FROM job_postings WHERE company_id = $1::uuid", [companyId]);
 });

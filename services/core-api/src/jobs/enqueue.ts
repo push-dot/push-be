@@ -141,6 +141,8 @@ export const enqueueJob = async (db: Query, input: EnqueueInput, transaction?: T
     input.conversationId ?? null,
   ];
   if (hold) {params.push(amount.toString());}
+  // In autocommit the FOR SHARE lock would end before the job is written, so the check needs a real transaction.
+  if (input.liveOwner && !transaction) {throw new HttpError(500, "INTERNAL", "a live-owner enqueue needs a transaction");}
   const inTransaction: Transaction = transaction ?? ((work) => work(db));
   try {
     const row = !hold && !input.liveOwner ? await one(db, INSERT_OPEN, params) : await inTransaction(async (tx) => {

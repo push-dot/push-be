@@ -101,7 +101,7 @@ const fake = (world: World) => {
   return { ...db, jobs };
 };
 
-const deps = (query: Deps["query"]): Deps => ({ query, now: () => NOW, fetch: async () => new Response("{}", { status: 200 }) });
+const deps = (query: Deps["query"]): Deps => ({ query, transaction: (work) => work(query), now: () => NOW, fetch: async () => new Response("{}", { status: 200 }) });
 
 const call = async (query: Deps["query"], method: string, path: string, body?: unknown): Promise<Response> => {
   resetLimits();
