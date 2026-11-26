@@ -80,79 +80,75 @@ const DUE_REMINDERS = claimed(`SELECT e.user_id, e.id, e.title, 'remind:' || e.i
     FROM calendar_events e LEFT JOIN user_settings s ON s.user_id = e.user_id
     WHERE e.remind_at IS NOT NULL AND e.remind_at <= $1::timestamptz AND e.remind_at > $3::timestamptz AND COALESCE(s.notify_deadline, true)`);
 
-// A company bot watches its posting and its company: a close after the bot was made, and an open posting of the
+// A company bot watches its posting and its company: a close after the bot was made, and open postings of the
 // same company made after the bot (a draft counts once it is published) that the user has no bot for yet. A bot
-// without a posting knows its company only by name (bots.company_id is unused since 0053).
+// without a posting has no known company (bots.company_id is unused since 0053) and gets no new-posting alerts.
 // `watch:baseline`, claimed on the first run, is when watching began, so the first run announces nothing older.
-// The dedupe key per user and posting is the only other state. Rows already claimed or for opted-out users are
-// dropped before the limit, and the limit counts groups: a close is its own group, and every new posting of one
-// company for one user is one group that becomes one push, so a company opening 40 postings sends one push each.
-const DUE_WATCH = `WITH mark AS (
+// A close is claimed once per user and posting. New postings are one row per user and company: the key
+// `watch:new:<user>:<company>` holds the newest posting announced, and a run claims it only by moving it forward,
+// so each run reads and writes at most 500 small rows and every user hears once per company per run.
+export const DUE_WATCH = `WITH mark AS (
     INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ('watch:baseline', $1::timestamptz) ON CONFLICT (dedupe_key) DO NOTHING
   ), base AS (
     SELECT COALESCE((SELECT created_at FROM notification_dedupes WHERE dedupe_key = 'watch:baseline'), $1::timestamptz) AS at
-  ), changes AS (
-    SELECT b.user_id, b.id AS bot_id, b.display_name, p.id, p.title, 'closed' AS change, p.closed_at AS at,
-      p.id::text AS grp, 'watch:closed:' || b.user_id || ':' || p.id AS dedupe_key
+  ), closes AS (
+    SELECT b.user_id, min(b.id::text) AS bot_id, min(b.display_name) AS display_name, p.id, p.title, p.closed_at AS at, 1 AS n,
+      'closed' AS change, 'watch:closed:' || b.user_id || ':' || p.id AS dedupe_key
     FROM bots b JOIN job_postings p ON p.id = b.posting_id CROSS JOIN base
     WHERE b.kind = 'company' AND b.deleted_at IS NULL AND NOT b.notifications_muted
       AND p.closed_at > GREATEST(b.created_at, base.at, $2::timestamptz)
-    UNION ALL
-    SELECT b.user_id, b.id, b.display_name, p.id, p.title, 'new', p.created_at,
-      p.company_id::text, 'watch:new:' || b.user_id || ':' || p.id
-    FROM bots b LEFT JOIN job_postings src ON src.id = b.posting_id CROSS JOIN base
-    JOIN job_postings p ON p.company_id IS NOT NULL
-      AND (p.company_id = src.company_id OR (b.posting_id IS NULL AND p.company = b.company_name))
+      AND NOT EXISTS (SELECT 1 FROM notification_dedupes d WHERE d.dedupe_key = 'watch:closed:' || b.user_id || ':' || p.id)
+    GROUP BY b.user_id, p.id, p.title, p.closed_at
+  ), news AS (
+    SELECT b.user_id, min(b.id::text) AS bot_id, min(b.display_name) AS display_name,
+      (array_agg(p.id ORDER BY p.created_at DESC))[1] AS id, (array_agg(p.title ORDER BY p.created_at DESC))[1] AS title,
+      max(p.created_at) AS at, count(DISTINCT p.id)::int AS n, 'new' AS change, 'watch:new:' || b.user_id || ':' || src.company_id AS dedupe_key
+    FROM bots b JOIN job_postings src ON src.id = b.posting_id AND src.company_id IS NOT NULL CROSS JOIN base
+    JOIN job_postings p ON p.company_id = src.company_id
+    LEFT JOIN notification_dedupes w ON w.dedupe_key = 'watch:new:' || b.user_id || ':' || src.company_id
     WHERE b.kind = 'company' AND b.deleted_at IS NULL AND NOT b.notifications_muted
       AND COALESCE(p.status, 'OPEN') = 'OPEN' AND p.closed_at IS NULL
-      AND p.created_at > GREATEST(b.created_at, base.at, $3::timestamptz)
+      AND p.created_at > GREATEST(b.created_at, base.at, $3::timestamptz, COALESCE(w.created_at, '-infinity'))
       AND NOT EXISTS (SELECT 1 FROM bots own WHERE own.user_id = b.user_id AND own.posting_id = p.id AND own.deleted_at IS NULL)
-  ), due AS (
-    SELECT DISTINCT ON (c.dedupe_key) c.* FROM changes c
+    GROUP BY b.user_id, src.company_id
+  ), batch AS (
+    SELECT c.* FROM (SELECT * FROM closes UNION ALL SELECT * FROM news) c
     JOIN users u ON u.id = c.user_id AND u.deletion_requested_at IS NULL
     LEFT JOIN user_settings s ON s.user_id = c.user_id
     WHERE COALESCE(s.notify_ai_done, true)
-      AND NOT EXISTS (SELECT 1 FROM notification_dedupes d WHERE d.dedupe_key = c.dedupe_key)
-    ORDER BY c.dedupe_key, c.at
-  ), groups AS (
-    SELECT user_id, change, grp, min(at) AS at FROM due GROUP BY user_id, change, grp ORDER BY min(at), user_id, grp LIMIT 500
-  ), batch AS (
-    SELECT due.* FROM due JOIN groups USING (user_id, change, grp)
+    ORDER BY c.at, c.dedupe_key LIMIT 500
   ), claimed AS (
-    INSERT INTO notification_dedupes (dedupe_key, created_at) SELECT dedupe_key, $1::timestamptz FROM batch ON CONFLICT (dedupe_key) DO NOTHING RETURNING dedupe_key
-  ) SELECT batch.user_id, batch.bot_id, batch.display_name, batch.id, batch.title, batch.change, batch.grp, batch.at
-    FROM batch JOIN claimed USING (dedupe_key) ORDER BY batch.user_id, batch.grp, batch.at DESC`;
+    INSERT INTO notification_dedupes (dedupe_key, created_at)
+    SELECT dedupe_key, CASE WHEN change = 'new' THEN at ELSE $1::timestamptz END FROM batch
+    ON CONFLICT (dedupe_key) DO UPDATE SET created_at = EXCLUDED.created_at
+      WHERE notification_dedupes.dedupe_key LIKE 'watch:new:%' AND notification_dedupes.created_at < EXCLUDED.created_at
+    RETURNING dedupe_key
+  ) SELECT batch.user_id, batch.bot_id, batch.display_name, batch.id, batch.title, batch.change, batch.n
+    FROM batch JOIN claimed USING (dedupe_key)`;
 
-/** One notice per user and group: a close, or every new posting of one company. Rows come newest first per group. */
-export const watchNotices = (rows: ReadonlyArray<Row>): Array<Notice> => {
-  const groups = new Map<string, Array<Row>>();
-  for (const row of rows) {
-    const key = `${String(row.user_id)}|${String(row.change)}|${String(row.grp)}`;
-    groups.set(key, [...(groups.get(key) ?? []), row]);
-  }
-  return [...groups.values()].map((group) => {
-    const [row] = group;
-    const title = String(row?.title ?? "");
-    const name = String(row?.display_name ?? "").trim();
-    if (row?.change === "closed") {
-      return {
-        userId: String(row.user_id), type: "AI_DONE", title: "공고가 마감됐어요", body: title,
-        pushBody: `${title} 공고가 마감됐어요`, target: { kind: "posting", id: String(row.id) },
-      };
-    }
-    if (group.length === 1) {
-      return {
-        userId: String(row?.user_id), type: "AI_DONE", title: "새 공고가 올라왔어요", body: title,
-        pushBody: `${name}에 새 공고가 올라왔어요: ${title}`, target: { kind: "posting", id: String(row?.id) },
-      };
-    }
-    const line = `${name}에 새 공고 ${group.length}개가 올라왔어요`;
+/** One notice per row: a close, or the new postings of one company for one user (newest first). */
+export const watchNotices = (rows: ReadonlyArray<Row>): Array<Notice> => rows.map((row) => {
+  const title = String(row.title ?? "");
+  const name = String(row.display_name ?? "").trim();
+  const count = Number(row.n ?? 1);
+  if (row.change === "closed") {
     return {
-      userId: String(row?.user_id), type: "AI_DONE", title: "새 공고가 올라왔어요", body: line,
-      pushBody: line, target: { kind: "bot", id: String(row?.bot_id) },
+      userId: String(row.user_id), type: "AI_DONE", title: "공고가 마감됐어요", body: title,
+      pushBody: `${title} 공고가 마감됐어요`, target: { kind: "posting", id: String(row.id) },
     };
-  });
-};
+  }
+  if (count <= 1) {
+    return {
+      userId: String(row.user_id), type: "AI_DONE", title: "새 공고가 올라왔어요", body: title,
+      pushBody: `${name}에 새 공고가 올라왔어요: ${title}`, target: { kind: "posting", id: String(row.id) },
+    };
+  }
+  const line = `${name}에 새 공고 ${count}개가 올라왔어요`;
+  return {
+    userId: String(row.user_id), type: "AI_DONE", title: "새 공고가 올라왔어요", body: line,
+    pushBody: line, target: { kind: "bot", id: String(row.bot_id) },
+  };
+});
 
 const utcDay = (moment: Date, shiftDays: number): string => {
   const day = new Date(Date.UTC(moment.getUTCFullYear(), moment.getUTCMonth(), moment.getUTCDate() + shiftDays));
