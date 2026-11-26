@@ -69,6 +69,17 @@ async def test_remember_saves_nothing_without_a_user_or_text():
     assert await memories.memory_lines(None, USER) == []
 
 
+def test_remember_tool_args_refuse_whitespace_only_text():
+    from pydantic import ValidationError
+
+    from app.harness.personal.tools import RememberArgs
+
+    assert RememberArgs(text=" 원격 근무 ").text == " 원격 근무 "
+    for blank in (" ", "\n\t ", "\u3000"):
+        with pytest.raises(ValidationError):
+            RememberArgs(text=blank)
+
+
 def test_remember_waits_for_the_user_after_untrusted_text_in_the_run():
     assert decide(AccessMode.AUTO, Tier.SAFE_WRITE, "remember") is Decision.EXECUTE
     assert decide(AccessMode.AUTO, Tier.SAFE_WRITE, "remember", exposure=Exposure.RUN) is Decision.ASK

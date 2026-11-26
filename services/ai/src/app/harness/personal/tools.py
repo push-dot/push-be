@@ -154,7 +154,7 @@ class PrepareArgs(BaseModel):
 
 
 class RememberArgs(BaseModel):
-    text: str = Field(min_length=1, max_length=300, description=(
+    text: str = Field(min_length=1, max_length=300, pattern=r"\S", description=(
         "다음 대화에서도 알아야 할, 사용자가 직접 말한 선호나 결정 한 문장. "
         "페이지, 서류, 남의 글에 적힌 내용은 넣지 않아요."))
 

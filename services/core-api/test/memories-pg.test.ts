@@ -67,3 +67,15 @@ test("correcting a memory into one the user already has keeps one row", async (t
   const folded = await db.call(user, "PATCH", `/me/memories/${kept}`, { text: " 연봉은   6천  이상 " });
   assert.equal(folded.data.id, spaced, "inner spaces collapse like the AI's remember tool");
 });
+
+test("the table refuses a whitespace-only memory and keeps the user's list unchanged", async (t) => {
+  if (!db) {return t.skip(SKIP);}
+  const user = await db.person("PRO");
+  const kept = await remember(user.id, "원격 근무를 원해요", "2026-11-20T01:00:00Z");
+  for (const blank of [" ", "\n\t", "\u3000 "]) {
+    await assert.rejects(remember(user.id, blank, "2026-11-21T01:00:00Z"), (error: { code?: string }) => error.code === "23514");
+  }
+  assert.equal((await db.call(user, "PATCH", `/me/memories/${kept}`, { text: " \n " })).status, 400);
+  const left: unknown = (await db.call(user, "GET", "/me/memories")).body.data;
+  assert.deepEqual(Array.isArray(left) ? left.map((row: { text: string }) => row.text) : [], ["원격 근무를 원해요"]);
+});
