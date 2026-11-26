@@ -132,8 +132,14 @@ async function route(request: Request, env: CoreEnv, deps: Deps): Promise<Respon
         return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
       }
       const ctx = base(request, env, deps, rid, url, now, user);
-      const res = request.method !== "POST" || path.endsWith("/stream") ? await dispatch(ctx, path) : await idempotent(ctx, path);
-      if (res.status >= 400 && res.status < 500) {await releaseApproval(deps.query, acted);}
+      let routed = false;
+      const route = (c: Ctx, p: string): Promise<Response> => {
+        routed = true;
+        return dispatch(c, p);
+      };
+      const res = request.method !== "POST" || path.endsWith("/stream") ? await route(ctx, path) : await idempotent(ctx, path, route);
+      // A 5xx before the route ran (the idempotency record failed) wrote nothing either.
+      if ((res.status >= 400 && res.status < 500) || (res.status >= 500 && !routed)) {await releaseApproval(deps.query, acted);}
       return res;
     }
     if (isPublic(request.method, path, authz)) {
@@ -315,7 +321,7 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   return errorResponse(404, "NOT_FOUND", "resource not found", ctx.rid);
 }
 
-async function idempotent(ctx: Ctx, path: string): Promise<Response> {
+async function idempotent(ctx: Ctx, path: string, route: (ctx: Ctx, path: string) => Promise<Response> = dispatch): Promise<Response> {
   const key = parseUuid(ctx.request.headers.get("idempotency-key") || "");
   if (!key) {
     return errorResponse(400, "VALIDATION_ERROR", "must be a UUID", ctx.rid, { field: "Idempotency-Key" });
@@ -354,7 +360,7 @@ async function idempotent(ctx: Ctx, path: string): Promise<Response> {
     const stale = pending && ctx.now.getTime() - Date.parse(String(existing.created_at)) > PENDING_MS;
     if (stale) {
       await query(ctx.deps.query, "DELETE FROM idempotency_keys WHERE id = $1 AND response_status IS NULL", [String(existing.id)]);
-      return idempotent(live, path);
+      return idempotent(live, path, route);
     }
     if (String(existing.request_hash) !== requestHash || pending) {
       return errorResponse(409, "IDEMPOTENCY_CONFLICT", "idempotency key conflict", ctx.rid);
@@ -375,7 +381,7 @@ async function idempotent(ctx: Ctx, path: string): Promise<Response> {
   }
   let response: Response;
   try {
-    response = await dispatch(live, path);
+    response = await route(live, path);
   } catch (error) {
     await query(ctx.deps.query, "DELETE FROM idempotency_keys WHERE id = $1 AND response_status IS NULL", [id]);
     if (error instanceof HttpError) {return errorOf(error, ctx.rid);}

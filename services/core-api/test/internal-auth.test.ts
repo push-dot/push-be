@@ -408,3 +408,54 @@ test("a card goes back only when its write surely did not happen", async () => {
   assert.deepEqual(replay.released, [], "a retry of an already spent card gives nothing back");
 });
 
+
+test("a failure before the route ran gives the card back, and a replay never re-runs the write", async () => {
+  const posting = "21212121-2121-4121-8121-212121212121";
+  const approval = "51515151-5151-4151-8151-515151515151";
+  const key = "61616161-6161-4161-8161-616161616161";
+  type Stored = { insertFails?: boolean; cached?: number | null };
+  const sent = new TextEncoder().encode(JSON.stringify({ expectedRevision: 1 }));
+  const bodyHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", sent))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const run = async (c: Stored) => {
+    const released: Array<Array<unknown>> = [];
+    let wrote = 0;
+    resetLimits();
+    const res = await handle(new Request(`https://core.example/api/v1/postings/${posting}/close`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json", "idempotency-key": key,
+        "x-push-internal-secret": SECRET, "x-push-act-as": USER, "x-push-company": COMPANY, "x-push-approval": approval,
+      },
+      body: JSON.stringify({ expectedRevision: 1 }),
+    }), env(), deps(async (sql, params = []) => {
+      if (sql.includes("SET consumed_at = NULL")) {released.push(params); return empty;}
+      if (sql.includes("UPDATE approvals")) {return { rows: [{ id: approval, fresh: true }], rowCount: 1 };}
+      if (sql.includes("SELECT status FROM job_postings")) {return { rows: [{ status: "OPEN" }], rowCount: 1 };}
+      if (sql.includes("INSERT INTO idempotency_keys")) {
+        if (c.insertFails) {throw new Error("db down before the route");}
+        return c.cached === undefined ? { rows: [{ id: "idem" }], rowCount: 1 } : empty;
+      }
+      if (sql.includes("FROM idempotency_keys WHERE user_id")) {
+        return { rows: [{ id: "idem", request_hash: bodyHash, response_status: c.cached ?? null, response_body: "{\"data\":{\"replayed\":true}}",
+          response_headers: "[]", created_at: new Date().toISOString() }], rowCount: 1 };
+      }
+      if (sql.includes("UPDATE job_postings")) {wrote += 1;}
+      return queryFor(COMPANY)(sql, params);
+    }));
+    return { status: res.status, released, wrote };
+  };
+
+  const early = await run({ insertFails: true });
+  assert.equal(early.status, 500);
+  assert.equal(early.wrote, 0);
+  assert.deepEqual(early.released, [[approval, key]], "the idempotency record failed before the route: card back");
+
+  const pending = await run({ cached: null });
+  assert.equal(pending.status, 409, "the same key while the first call runs is refused");
+  assert.equal(pending.wrote, 0, "and never runs the write a second time");
+
+  const replay = await run({ cached: 200 });
+  assert.equal(replay.status, 200, "a finished call under the same key answers from its record");
+  assert.equal(replay.wrote, 0, "without running the write again");
+  assert.deepEqual(replay.released, [], "and keeps the card spent");
+});

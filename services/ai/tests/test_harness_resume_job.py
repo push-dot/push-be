@@ -143,8 +143,11 @@ async def test_a_new_message_still_answers_the_waiting_text_gate():
     rows = Rows({"company_id": None, "resume_state": {"status": "active", "phase": "mode_select"}})
     seen: list = []
     runtime, _svc = _runtime(rows, seen)
-    await run(runtime, _payload(JOB_A, "서류 만들어줘", ai=None))
+    first = await run(runtime, _payload(JOB_A, "서류 만들어줘", ai=None))
+    gate_id = next(chunk["id"] for mode, chunk in first
+                   if mode == "custom" and chunk.get("type") == "choice")
     rows.executed.clear()
     await run(runtime, _payload(JOB_B, "이력서를 바탕으로 해 주세요", ai=None))
-    answered = [sql for sql, _args in rows.executed if "SET status = 'APPROVED'" in sql]
-    assert answered, "a person's new message answers the gate the earlier turn opened"
+    answered = [args for sql, args in rows.executed if "SET status = 'APPROVED'" in sql]
+    assert [str(args[0]) for args in answered] == [gate_id], (
+        "a person's new message answers the gate the earlier turn opened")

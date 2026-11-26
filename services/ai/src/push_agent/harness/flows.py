@@ -257,13 +257,11 @@ async def gate(
         "SELECT id FROM approvals WHERE id = $1", UUID(event["id"])) is None
     if new:
         if db is not None:
+            # One statement: the card never exists without what it showed.
             await insert_chat_approval(
-                db, state.get("user_id"), state.get("conversation_id"), event, None
+                db, state.get("user_id"), state.get("conversation_id"), event, None,
+                tool_args=shown,
             )
-            if shown is not None:
-                await db.q().execute(
-                    "UPDATE approvals SET tool_args = $2::jsonb WHERE id = $1",
-                    UUID(event["id"]), shown)
         emit(event)
     answer = (
         interrupt(
@@ -1016,7 +1014,8 @@ def build_flows(
         )
         if answer.get("option_id") != "send":
             return _done(state, "cancelled", reply=None)
-        if claim_gate is not None and not await claim_gate(state, card, "send", shown):
+        # No claim function means no proof a person answered: send nothing.
+        if claim_gate is None or not await claim_gate(state, card, "send", shown):
             reply = "보내기 확인이 이미 쓰였거나 메시지가 바뀌었어요. 다시 확인해 주세요."
             emit({"token": reply})
             return _done(state, "cancelled", reply=reply)
