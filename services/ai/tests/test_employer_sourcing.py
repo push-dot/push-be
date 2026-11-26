@@ -25,10 +25,10 @@ def _graph(calls, messages, drafted: list | None = None):
             return OfferDraft(message=messages.pop(0) if len(messages) > 1 else messages[0], reasons=["a", "b"])
         raise AssertionError(schema)
 
-    async def call_tool(state, name, args, *, approved=False):
+    async def call_tool(state, name, args, *, gate=None):
         calls.append((name, args))
         if name == "send_offer":
-            assert approved, "a send carries the gate answer as its card"
+            assert gate is not None and gate[1] == "send", "a send carries the gate answer as its card"
         if name == "search_profiles":
             return {
                 "data": {

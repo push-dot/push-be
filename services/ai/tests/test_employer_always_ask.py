@@ -3,10 +3,10 @@ from __future__ import annotations
 import pytest
 
 from app.harness.approval import approval_id_for
-from push_agent.harness.tools import EMPLOYER_TOOLS
 from app.harness.policy import Tier
 from app.harness.runtime import _state
 from app.harness.tools import ToolContext
+from push_agent.harness.tools import EMPLOYER_TOOLS
 
 COMPANY = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 POSTING = "21212121-2121-4121-8121-212121212121"
@@ -110,3 +110,38 @@ async def test_a_flow_gate_answer_becomes_the_card_core_checks():
     assert params[5] == "send_offer"
     assert isinstance(params[6], dict), "tool_args goes in as an object, not a JSON string"
     assert {"profile_id": PROFILE, "message": "커피챗 해요"}.items() <= params[6].items()
+
+
+
+async def test_a_flow_write_needs_a_gate_a_person_answered_with_that_option():
+    import ast
+    from pathlib import Path
+
+    from push_agent.harness.graph import gate_answered
+
+    class Db:
+        def __init__(self, row):
+            self.row, self.asked = row, []
+
+        def q(self):
+            return self
+
+        async def fetchrow(self, sql, *params):
+            self.asked.append((sql, params))
+            return self.row
+
+    ctx = ToolContext(user_id=COMPANY, company_id=COMPANY, conversation_id=POSTING, job_id=JOB,
+                      tool_call_id="flow:send_offer:x", db=None, core=Core())
+    card = "41414141-4141-4141-8141-414141414141"
+    answered = Db({"?column?": 1})
+    assert await gate_answered(answered, ctx, card, "send")
+    sql, params = answered.asked[0]
+    assert "kind = 'EMPLOYER_GATE'" in sql and "status = 'APPROVED'" in sql
+    assert [str(p) for p in params] == [card, POSTING, "send"]
+    assert not await gate_answered(Db(None), ctx, card, "send")
+
+    flows = Path(__file__).parents[1] / "src/push_agent/harness/flows.py"
+    callers = [n for n in ast.walk(ast.parse(flows.read_text(encoding="utf-8")))
+               if isinstance(n, ast.Call) and any(k.arg == "gate" for k in n.keywords)
+               and getattr(n.func, "id", "") == "call_tool"]
+    assert len(callers) == 1, "only the sourcing send gate turns an answer into a card"

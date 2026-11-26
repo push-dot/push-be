@@ -215,6 +215,11 @@ def plan_allows(plan: str | None, need: str) -> bool:
     return _PLAN_RANK.get((plan or "").upper(), 0) >= _PLAN_RANK[need]
 
 
+def gate_card_id(state: dict, gate_id: str) -> str:
+    seed = f"push:employer-gate:{state.get('conversation_id')}:{state.get('job_id')}:{gate_id}"
+    return str(uuid5(NAMESPACE_URL, seed))
+
+
 async def gate(
     state: dict,
     db,
@@ -226,10 +231,9 @@ async def gate(
     multiple: bool = False,
 ) -> dict:
     """Ask one EMPLOYER_GATE question and wait. Returns {"option_id"} or {"text"}."""
-    seed = f"push:employer-gate:{state.get('conversation_id')}:{state.get('job_id')}:{gate_id}"
     event = {
         "type": "choice",
-        "id": str(uuid5(NAMESPACE_URL, seed)),
+        "id": gate_card_id(state, gate_id),
         "kind": "EMPLOYER_GATE",
         "gate": gate_id,
         "title": title,
@@ -1000,7 +1004,7 @@ def build_flows(
                     "message": draft["message"],
                     "postingId": flow_of(state).get("posting_id"),
                 },
-                approved=True,
+                gate=(gate_card_id(state, "sc_send"), "send"),
             )
             if isinstance(result, dict) and not result.get("error"):
                 sent += 1

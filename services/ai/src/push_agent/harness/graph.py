@@ -16,6 +16,16 @@ from app.harness.status import acting_user, job_of
 from app.harness.tools import ToolContext, call_structured, emit
 
 
+async def gate_answered(db, ctx, card_id: str, option: str) -> bool:
+    """The AI service records an approval only behind a gate a person answered with that option,
+    in this conversation: the stored answer, not the flow's word for it."""
+    row = await db.q().fetchrow(
+        "SELECT 1 FROM approvals WHERE id = $1 AND conversation_id = $2 AND kind = 'EMPLOYER_GATE' "
+        "AND status = 'APPROVED' AND option_id = $3",
+        UUID(card_id), UUID(ctx.conversation_id), option)
+    return row is not None
+
+
 async def record_gate_approval(db, ctx, tool, args) -> None:
     approval_id = UUID(approval_id_for(ctx.job_id, ctx.tool_call_id))
     await db.q().execute(
@@ -56,9 +66,9 @@ def build_employer_graph(agent, tools, after_agent, checkpointer, *, db, core=No
     def generate_for(_state):
         return gate_generate(turn_model.get())
 
-    async def call_tool(state, name, args, *, approved: bool = False):
-        """approved: the employer answered a flow gate that showed this exact write, so it counts
-        as the card core asks for."""
+    async def call_tool(state, name, args, *, gate: tuple[str, str] | None = None):
+        """gate: (card id, option) of the flow gate that showed this exact write. Once the employer
+        picked that option, the write counts as the card core asks for."""
         tool = (tools_by_name or {}).get(name)
         if tool is None:
             return {"error": "UNKNOWN_TOOL"}
@@ -74,7 +84,9 @@ def build_employer_graph(agent, tools, after_agent, checkpointer, *, db, core=No
             access_mode=str(state.get("access_mode") or "AUTO"),
         )
         parsed = tool.args_model.model_validate(args)
-        if approved:
+        if gate is not None:
+            if not await gate_answered(db, ctx, *gate):
+                return {"error": "APPROVAL_REQUIRED"}
             await record_gate_approval(db, ctx, tool, parsed)
         result, _ok = await call_structured(tool, parsed, ctx)
         return result
