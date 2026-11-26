@@ -133,6 +133,17 @@ const RELEASE_APPROVAL = `UPDATE approvals SET consumed_at = NULL, consumed_key 
 
 const requireApproval = async (request: Request, path: string, userId: string, companyId: string | null, query: Query): Promise<ActAs["claimed"]> => {
   const claimed: ActAs["claimed"] = [];
+  try {
+    await claimEach(request, path, userId, companyId, query, claimed);
+  } catch (error) {
+    // A refusal or a failed read after an earlier claim gives that claim back.
+    for (const card of claimed) {await run(query, RELEASE_APPROVAL, [card.id, card.key]);}
+    throw error;
+  }
+  return claimed;
+};
+
+const claimEach = async (request: Request, path: string, userId: string, companyId: string | null, query: Query, claimed: ActAs["claimed"]): Promise<void> => {
   for (const route of APPROVAL_ROUTES) {
     const match = request.method === route.method ? route.pattern.exec(path) : null;
     if (!match) {continue;}
@@ -141,14 +152,10 @@ const requireApproval = async (request: Request, path: string, userId: string, c
     const approvalId = parseUuid(request.headers.get("x-push-approval") || "");
     const retryKey = parseUuid(request.headers.get("idempotency-key") || "");
     const row = approvalId ? await one(query, CONSUME_APPROVAL, [approvalId, userId, need.tool, JSON.stringify(need.target), retryKey]) : null;
-    if (!row || !approvalId) {
-      for (const card of claimed) {await run(query, RELEASE_APPROVAL, [card.id, card.key]);}
-      refuse();
-    }
+    if (!row || !approvalId) {refuse();}
     // A retry of a call that already spent the card holds nothing new to give back.
     else if (row.fresh === true || row.fresh === "t") {claimed.push({ id: approvalId, key: retryKey });}
   }
-  return claimed;
 };
 
 export const releaseApproval = async (query: Query, acted: ActAs): Promise<void> => {

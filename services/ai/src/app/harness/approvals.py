@@ -38,7 +38,8 @@ def card_options(event: dict) -> list[dict]:
     return stored
 
 
-async def insert_chat_approval(db, user_id, conversation_id, event: dict, document_id) -> None:
+async def insert_chat_approval(db, user_id, conversation_id, event: dict, document_id,
+                               tool_args: dict | None = None) -> None:
     options = json.dumps(card_options(event), ensure_ascii=False)
     try:
         target_id = UUID(str(document_id))
@@ -46,8 +47,8 @@ async def insert_chat_approval(db, user_id, conversation_id, event: dict, docume
         target_id = UUID(str(event["id"]))
     await db.q().execute(
         "INSERT INTO approvals (id, user_id, kind, target_id, payload_hash, status, "
-        "conversation_id, title, options) "
-        "VALUES ($1,$2,$3,$4,$5,'PENDING',$6,$7,$8::jsonb) "
+        "conversation_id, title, options, tool_args) "
+        "VALUES ($1,$2,$3,$4,$5,'PENDING',$6,$7,$8::jsonb,$9::jsonb) "
         "ON CONFLICT (id) DO NOTHING",
         UUID(str(event["id"])),
         user_id,
@@ -57,4 +58,5 @@ async def insert_chat_approval(db, user_id, conversation_id, event: dict, docume
         conversation_id,
         event["title"],
         options,
+        tool_args,
     )

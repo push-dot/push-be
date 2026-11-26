@@ -9,7 +9,11 @@ from push_agent.harness.flows import Person, Shortlist, build_flows
 from push_agent.harness.schemas import OfferDraft
 
 
-def _graph(calls, messages, drafted: list | None = None, claim_gate=None):
+async def _claimed(state, card, option, shown):
+    return True
+
+
+def _graph(calls, messages, drafted: list | None = None, claim_gate=_claimed):
     async def generate(schema, system, user):
         if schema is Shortlist:
             return Shortlist(
@@ -167,7 +171,8 @@ async def test_offers_are_drafted_concurrently():
         return {"data": {"items": [{"userId": "p1"}, {"userId": "p2"}]}}
 
     state_type, flows = build_flows(db=None, generate_for=lambda _s: generate, research_text=None,
-                                    plan_of=lambda _s: "PRO", call_tool=call_tool)
+                                    plan_of=lambda _s: "PRO", call_tool=call_tool,
+                                    claim_gate=_claimed)
     parent = StateGraph(state_type)
     parent.add_node("sourcing", flows["sourcing"])
     parent.add_edge(START, "sourcing")
@@ -194,7 +199,8 @@ async def test_one_failing_offer_draft_leaves_the_other_and_names_the_skipped_pe
         return {"data": {"items": [{"userId": "p1"}, {"userId": "p2"}]}}
 
     state_type, flows = build_flows(db=None, generate_for=lambda _s: generate, research_text=None,
-                                    plan_of=lambda _s: "PRO", call_tool=call_tool)
+                                    plan_of=lambda _s: "PRO", call_tool=call_tool,
+                                    claim_gate=_claimed)
     parent = StateGraph(state_type)
     parent.add_node("sourcing", flows["sourcing"])
     parent.add_edge(START, "sourcing")
@@ -231,6 +237,17 @@ async def test_the_shortlist_card_lets_the_employer_pick_several_people():
     stream = graph.astream(dict(STATE), config, stream_mode="custom", subgraphs=True)
     cards = [event async for _ns, event in stream if event.get("type") == "choice"]
     assert [(card["gate"], card.get("multiple")) for card in cards] == [("sc_shortlist", True)]
+
+
+async def test_without_a_claim_function_the_send_gate_sends_nothing():
+    calls: list = []
+    graph = _graph(calls, ["결제 승인 API 경험을 보고 연락드려요."], claim_gate=None)
+    config = {"configurable": {"thread_id": "s-noclaim"}}
+    await graph.ainvoke(dict(STATE), config)
+    await graph.ainvoke(Command(resume={"option_ids": ["p1"]}), config)
+    out = await graph.ainvoke(Command(resume={"option_id": "send"}), config)
+    assert not any(name == "send_offer" for name, _ in calls)
+    assert out["flow"]["status"] == "cancelled"
 
 
 async def test_a_send_gate_whose_answer_cannot_be_claimed_sends_nothing():

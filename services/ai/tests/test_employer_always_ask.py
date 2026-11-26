@@ -113,44 +113,66 @@ async def test_a_flow_gate_answer_becomes_the_card_core_checks():
 
 
 
+class _Approvals:
+    """One approvals row and the two statements the gate helpers send, applied the way Postgres
+    would: a behaviour fake, not a SQL-text check."""
+
+    def __init__(self, row):
+        self.row = row
+
+    def q(self):
+        return self
+
+    async def fetchrow(self, sql, card, conversation, option, job, offers):
+        r = self.row
+        same = (str(r["id"]) == str(card) and str(r["conversation_id"]) == str(conversation)
+                and r["kind"] == "EMPLOYER_GATE" and r["option_id"] == option)
+        if sql.startswith("UPDATE"):
+            if same and r["status"] == "APPROVED" and r["consumed_at"] is None \
+                    and r["tool_args"]["offers"] == offers:
+                r.update(status="CONSUMED", consumed_at="now", consumed_key=str(job))
+                return {"id": card}
+            return None
+        held = r["tool_args"]["offers"]
+        ok = (same and r["status"] == "CONSUMED" and r["consumed_key"] == str(job)
+              and all(o in held for o in offers))
+        return {"?column?": 1} if ok else None
+
+
 async def test_a_flow_write_needs_the_claimed_gate_that_showed_it():
     from push_agent.harness.graph import claim_gate_for, gate_answered
 
-    class Db:
-        def __init__(self, row):
-            self.row, self.asked = row, []
-
-        def q(self):
-            return self
-
-        async def fetchrow(self, sql, *params):
-            self.asked.append((sql, params))
-            return self.row
-
-    ctx = ToolContext(user_id=COMPANY, company_id=COMPANY, conversation_id=POSTING, job_id=JOB,
-                      tool_call_id="flow:send_offer:x", db=None, core=Core())
     card = "41414141-4141-4141-8141-414141414141"
     offer = {"profile_id": PROFILE, "message": "커피챗 해요"}
+    other = {"profile_id": PROFILE, "message": "몰래 바꾼 메시지"}
 
-    claimed = Db({"id": card})
-    assert await claim_gate_for(claimed, ctx, card, "send", {"offers": [offer]})
-    sql, params = claimed.asked[0]
-    assert "consumed_at IS NULL OR consumed_key = $4" in sql, "spent once, by this job"
-    assert "tool_args->'offers' = $5::jsonb" in sql, "on exactly the offers it showed"
-    assert [str(p) for p in params[:4]] == [card, POSTING, "send", JOB] and params[4] == [offer]
-    assert not await claim_gate_for(Db(None), ctx, card, "send", {"offers": [offer]})
+    def fresh(status="APPROVED"):
+        return _Approvals({"id": card, "conversation_id": POSTING, "kind": "EMPLOYER_GATE",
+                           "option_id": "send", "status": status, "consumed_at": None,
+                           "consumed_key": None, "tool_args": {"offers": [offer]}})
 
-    answered = Db({"?column?": 1})
-    assert await gate_answered(answered, ctx, card, "send", offer)
-    sql, params = answered.asked[0]
-    assert "kind = 'EMPLOYER_GATE'" in sql and "consumed_key = $4" in sql
-    assert "tool_args->'offers' @> $5::jsonb" in sql and params[4] == [offer]
-    assert not await gate_answered(Db(None), ctx, card, "send", offer)
+    def ctx(**over):
+        base = {"user_id": COMPANY, "company_id": COMPANY, "conversation_id": POSTING,
+                "job_id": JOB, "tool_call_id": "flow:send_offer:x", "db": None, "core": Core()}
+        return ToolContext(**{**base, **over})
+
+    db = fresh()
+    assert not await gate_answered(db, ctx(), card, "send", offer), "unclaimed: nothing sent"
+    assert not await claim_gate_for(db, ctx(), card, "send", {"offers": [other]}), "offers changed"
+    assert await claim_gate_for(db, ctx(), card, "send", {"offers": [offer]})
+    assert not await claim_gate_for(db, ctx(), card, "send", {"offers": [offer]}), (
+        "a second run of the same job cannot claim it again")
+    assert await gate_answered(db, ctx(), card, "send", offer)
+    assert not await gate_answered(db, ctx(), card, "send", other), "only what the card showed"
+    other_job = "51515151-5151-4151-8151-515151515151"
+    assert not await gate_answered(db, ctx(job_id=other_job), card, "send", offer)
+    assert not await claim_gate_for(fresh("PENDING"), ctx(), card, "send", {"offers": [offer]})
 
     for broken in ({"conversation_id": ""}, {"job_id": ""}):
-        bad = ToolContext(**{**ctx.__dict__, **broken})
-        assert not await gate_answered(answered, bad, card, "send", offer), broken
-        assert not await claim_gate_for(claimed, bad, card, "send", {"offers": [offer]}), broken
+        assert not await gate_answered(db, ctx(**broken), card, "send", offer), broken
+        assert not await claim_gate_for(fresh(), ctx(**broken), card, "send",
+                                        {"offers": [offer]}), broken
+
 
 
 def test_only_the_sourcing_send_gate_turns_an_answer_into_a_card():
@@ -166,7 +188,8 @@ def test_only_the_sourcing_send_gate_turns_an_answer_into_a_card():
             if (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "call_tool"
                     and any(k.arg == "gate" for k in node.keywords)):
                 fn = parent.get(node)
-                while fn is not None and not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                funcs = (ast.FunctionDef, ast.AsyncFunctionDef)
+                while fn is not None and not isinstance(fn, funcs):
                     fn = parent.get(fn)
                 found.append((path.name, getattr(fn, "name", "")))
     assert set(found) == {("flows.py", "sc_send")}, found

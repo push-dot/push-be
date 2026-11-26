@@ -17,14 +17,14 @@ from app.harness.tools import ToolContext, call_structured, emit
 
 
 _GATE = ("SELECT 1 FROM approvals WHERE id = $1 AND conversation_id = $2 "
-         "AND kind = 'EMPLOYER_GATE' AND status = 'APPROVED' AND option_id = $3 "
+         "AND kind = 'EMPLOYER_GATE' AND status = 'CONSUMED' AND option_id = $3 "
          "AND consumed_key = $4 "
          "AND tool_args->'offers' @> $5::jsonb")
 
-_CLAIM = ("UPDATE approvals SET consumed_at = COALESCE(consumed_at, now()), consumed_key = $4 "
+# APPROVED flips to CONSUMED in one statement, so of two runs of the same job only one sends.
+_CLAIM = ("UPDATE approvals SET status = 'CONSUMED', consumed_at = now(), consumed_key = $4 "
           "WHERE id = $1 AND conversation_id = $2 AND kind = 'EMPLOYER_GATE' "
-          "AND status = 'APPROVED' AND option_id = $3 "
-          "AND (consumed_at IS NULL OR consumed_key = $4) "
+          "AND status = 'APPROVED' AND option_id = $3 AND consumed_at IS NULL "
           "AND tool_args->'offers' = $5::jsonb RETURNING id")
 
 
@@ -36,8 +36,9 @@ def _ids(ctx) -> tuple[UUID, UUID] | None:
 
 
 async def claim_gate_for(db, ctx, card_id: str, option: str, shown: dict) -> bool:
-    """Spend the gate once, for this job: the stored answer a person gave with that option, on
-    exactly the offers it showed. A retry of the same job may claim it again; another may not."""
+    """Spend the gate once: the stored answer a person gave with that option, on exactly the
+    offers it showed. A second claim fails, the same job's retry included: each offer it already
+    sent kept its own idempotency key, and the rest wait for a new answer."""
     ids = _ids(ctx)
     if ids is None:
         return False
