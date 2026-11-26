@@ -5,6 +5,7 @@ import contextvars
 import json
 import logging
 import re
+import unicodedata
 from functools import partial
 from typing import Annotated, Any, Final
 from urllib.parse import unquote, urlsplit
@@ -54,7 +55,9 @@ _OVER_NOTE = (
 # text makes the user answer twice. Such a reply gets one more, silent try to call the tool instead.
 _TEXT_CONFIRM = re.compile(
     r"(바꿀|고칠|저장할|추가할|넣을|지울|삭제할|등록할|수정할|반영할|적용할|보낼|지원할|수락할|거절할|올릴|남길|"
-    r"팔로우할|업데이트할|진행할|드릴|이대로 할|그대로 할|이렇게 할)까요\s*\??\s*$")
+    r"팔로우할|업데이트할|진행할|드릴|이대로 할|그대로 할|이렇게 할)까요\s*[?？]?\s*$")
+_MARKUP = re.compile(r"[*_`~#>|]+")
+_SENTENCE_END = re.compile(r"(?<=[.?!？。])\s+|\n+")
 _CARD_NOTE = (
     "바꾸는 일은 글로 묻지 말고 그 도구를 바로 불러요. 앱이 바꿀 내용을 담은 승인 카드로 사용자에게 물어요. "
     "무엇을 바꿀지 아직 모르면 도구를 부르지 말고 그대로 끝내요."
@@ -438,7 +441,21 @@ def _asks_in_text(state: dict, reply) -> bool:
         return False
     if (state.get("access_mode") or AccessMode.AUTO) != AccessMode.ALWAYS_ASK.value:
         return False
-    return bool(_TEXT_CONFIRM.search(_content(reply).strip()))
+    return bool(_TEXT_CONFIRM.search(_final_sentence(_content(reply))))
+
+
+def _final_sentence(text: str) -> str:
+    """The last sentence of a reply, without markdown and emoji or symbols, so "**넣을까요?** 🙂" ends in the
+    question. Only the final one counts: "넣을까요? 넣었어요." already did the work."""
+    plain = _MARKUP.sub("", text)
+    for part in reversed(_SENTENCE_END.split(plain)):
+        kept = "".join(
+            ch for ch in part
+            if ch == " " or not (unicodedata.category(ch).startswith(("S", "C")) or ch in "\ufe0e\ufe0f"))
+        kept = kept.strip()
+        if kept:
+            return kept
+    return ""
 
 
 def bot_prompt(prompt: str, bot: dict[str, Any] | None) -> str:

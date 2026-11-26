@@ -804,3 +804,35 @@ async def test_no_retry_outside_always_ask_or_for_other_questions(mode, text):
     graph, _db = _graph(model, [])
     await _events(graph, _input(mode))
     assert len(model.seen) == 1
+
+
+@pytest.mark.parametrize("text", [
+    "**이력서에 넣을까요?**",
+    "이력서에 넣을까요? 🙂",
+    "이력서에 넣을까요?👍️",
+    "이력서에 넣을까요? ✅",
+    "이 내용으로 `헤드라인`을 바꿀까요？",
+    "정리했어요.\n\n> 이대로 저장할까요",
+])
+def test_a_confirm_question_is_found_through_markdown_emoji_and_a_closing_line(text):
+    from app.harness.graph import _asks_in_text
+    from langchain_core.messages import AIMessage
+
+    assert _asks_in_text({"access_mode": "ALWAYS_ASK"}, AIMessage(content=text))
+
+
+@pytest.mark.parametrize("text", [
+    "이력서에 넣었어요. 🙂",
+    "어떤 회사 공고를 찾을까요?",
+    "넣을까요? 라고 물었던 건 지난번이에요. 이번엔 바로 넣었어요. 확인해 보세요.",
+    "이력서에 넣을까요? 넣었어요.",
+    "**이력서에 넣을까요?** 넣었어요 🙂",
+    "헤드라인을 바꿀까요?\n바꿨어요.",
+    "이력서에 넣을까요? 확인해 주세요.",
+    "",
+])
+def test_no_confirm_question_unless_it_is_the_final_sentence(text):
+    from app.harness.graph import _asks_in_text
+    from langchain_core.messages import AIMessage
+
+    assert not _asks_in_text({"access_mode": "ALWAYS_ASK"}, AIMessage(content=text))
