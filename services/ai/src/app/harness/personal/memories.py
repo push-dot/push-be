@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
+from app.harness.memory import SUMMARY_MAX, estimate_tokens
+
 # What every personal turn reads, newest change first. The app shows up to 200 (core GET /me/memories).
 PROMPT_LIMIT = 30
 # A user keeps at most this many; the oldest change goes first.
 KEEP_LIMIT = 100
 TEXT_MAX = 300
+# 30 full lines are about 9,000 characters; the block gets no more room than the thread summary.
+PROMPT_TOKENS = SUMMARY_MAX
 
 _LIST = "SELECT text FROM user_memories WHERE user_id = $1 ORDER BY updated_at DESC, id LIMIT $2"
 # Saying the same thing again moves it to the top instead of adding a copy (unique on user_id, text).
@@ -32,7 +36,14 @@ async def memory_lines(db, user_id) -> list[str]:
     if db is None or uid is None:
         return []
     rows = await db.q().fetch(_LIST, uid, PROMPT_LIMIT)
-    return [str(row["text"]) for row in rows or []]
+    kept, used = [], 0
+    for row in rows or []:
+        text = str(row["text"])
+        used += estimate_tokens(text) + 1
+        if used > PROMPT_TOKENS:
+            break
+        kept.append(text)
+    return kept
 
 
 async def remember(db, user_id, text: str) -> dict:
