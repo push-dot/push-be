@@ -1796,6 +1796,22 @@ test("google verify keeps a deferred replacement on the line item in effect, in 
   }
 });
 
+test("google verify finds the line in effect when the deferred replacement keeps its product, and flags a grace period", async () => {
+  const key = await serviceAccount("play-same@push.iam.gserviceaccount.com");
+  const env = envOf({ GOOGLE_PLAY_KEY: key, GOOGLE_PLAY_PACKAGE: "com.push.app" });
+  const lineItems = [{ productId: "pro", expiryTime: "2026-12-02T09:00:00Z", deferredItemReplacement: { productId: "pro" } }];
+  for (const [state, grace] of [["SUBSCRIPTION_STATE_ACTIVE", false], ["SUBSCRIPTION_STATE_IN_GRACE_PERIOD", true]] as const) {
+    const fetchImpl = (async (input: RequestInfo | URL) => String(input) === OAUTH_TOKEN
+      ? Response.json({ access_token: "ya29.same", expires_in: 3600 })
+      : Response.json({ subscriptionState: state, lineItems })) as typeof fetch;
+    const receipt = await createStoreReceipts(env, fetchImpl, NOW).verifyGoogle("tok-same", "pro", true);
+    assert.equal(receipt.productId, "pro");
+    assert.equal(receipt.expiresAt, "2026-12-02T09:00:00Z");
+    assert.equal(receipt.deferredProductId, "pro");
+    assert.equal(receipt.grace, grace);
+  }
+});
+
 test("a thrown fetch while walking Play links ends the walk instead of failing", async () => {
   const key = await serviceAccount("play-walk@push.iam.gserviceaccount.com");
   const env = envOf({ GOOGLE_PLAY_KEY: key, GOOGLE_PLAY_PACKAGE: "com.push.app" });

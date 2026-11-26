@@ -6,7 +6,7 @@ import { APPLE_ROOT_G3_PEM } from "./apple-root-g3.ts";
 
 export interface StoreReceipts {
   verifyApple(signedTransaction: string): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean; sandbox?: boolean; superseded?: boolean }>;
-  verifyGoogle(purchaseToken: string, productId: string, subscription: boolean): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean; sandbox?: boolean; linkedPurchaseToken?: string; deferredProductId?: string }>;
+  verifyGoogle(purchaseToken: string, productId: string, subscription: boolean): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean; sandbox?: boolean; linkedPurchaseToken?: string; deferredProductId?: string; grace?: boolean }>;
   googleLinkedToken(purchaseToken: string): Promise<string | undefined>;
   decodeAppleNotification(body: string): Promise<{ notificationType: string; originalTransactionId: string; productId: string; expiresAt: string | null; sandbox?: boolean }>;
   decodeGoogleNotification(body: unknown, authorization: string | null): Promise<{ notificationType: string; purchaseToken: string; productId: string; expiresAt: string | null }>;
@@ -552,8 +552,8 @@ export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch, now: 
     const lines = (Array.isArray(body.lineItems) ? body.lineItems : []).filter(isJsonObject);
     const deferredOf = (item: JsonObject): string => isJsonObject(item.deferredItemReplacement) ? String(item.deferredItemReplacement.productId ?? "") : "";
     const deferred = lines.map(deferredOf).find(Boolean);
-    const inEffect = lines.filter((item) => !deferred || String(item.productId ?? "") !== deferred);
-    const line = inEffect.find((item) => String(item.productId ?? "") === productId) ?? inEffect[0];
+    const line = lines.find((item) => isJsonObject(item.deferredItemReplacement))
+      ?? lines.find((item) => String(item.productId ?? "") === productId) ?? lines[0];
     return {
       productId: String(line?.productId ?? ""),
       originalTransactionId: purchaseToken,
@@ -562,6 +562,7 @@ export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch, now: 
       sandbox: body.testPurchase !== null && body.testPurchase !== undefined,
       linkedPurchaseToken: linkedOf(body),
       deferredProductId: deferred,
+      grace: body.subscriptionState === "SUBSCRIPTION_STATE_IN_GRACE_PERIOD",
     };
   },
   googleLinkedToken: async (purchaseToken) => {

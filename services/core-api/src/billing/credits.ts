@@ -75,12 +75,12 @@ export const ensureMonthlyGrant = async (
     if (store?.live === true) {
       await grantStorePeriod(q, {
         userId: input.ownerId, token: String(store.original_transaction_id), expiresAt: storeExpiry(store.expires_at),
-        amount: grantMicro("PERSONAL", String(store.plan || "FREE")), now: input.now, fresh: false,
+        amount: grantMicro("PERSONAL", String(store.plan || "FREE")), now: input.now, fresh: false, sandbox: store.sandbox === true,
       });
       return;
     }
-    if (store) {await q(RETIRE_STALE_STORE, [input.ownerId]);}
-    await q(USER_GRANT, [crypto.randomUUID(), input.ownerId, store ? grantMicro("PERSONAL", "FREE") : amount, month, input.now.toISOString()]);
+    const dropped = store ? await one(q, RETIRE_STALE_STORE, [input.ownerId, storeCutoff(input.now)]) : null;
+    await q(USER_GRANT, [crypto.randomUUID(), input.ownerId, dropped ? grantMicro("PERSONAL", "FREE") : amount, month, input.now.toISOString()]);
     return;
   }
   let below = 0;
@@ -93,12 +93,16 @@ export const ensureMonthlyGrant = async (
 
 export const STORE_GRACE_MS = 16 * 86_400_000;
 
-const CURRENT_STORE = "SELECT original_transaction_id, expires_at, (expires_at IS NULL OR expires_at > $2::timestamptz) AS live, (SELECT plan FROM users WHERE id = $1) AS plan FROM iap_subscriptions WHERE user_id = $1 AND status = 'ACTIVE' ORDER BY live DESC, expires_at DESC NULLS FIRST, (SELECT max(l.seq) FROM billing_ledger l WHERE l.user_id = $1 AND l.type = 'PURCHASE' AND (l.reference_id = iap_subscriptions.original_transaction_id OR l.reference_id LIKE 'period:' || iap_subscriptions.original_transaction_id || ':%')) DESC NULLS LAST LIMIT 1";
-const RETIRE_STALE_STORE = "WITH stale AS (UPDATE iap_subscriptions SET status = 'CANCELED' WHERE user_id = $1 AND status = 'ACTIVE') UPDATE users SET plan = 'FREE', subscription_status = 'CANCELED' WHERE id = $1";
+const CURRENT_STORE = "SELECT original_transaction_id, expires_at, (expires_at IS NULL OR expires_at > $2::timestamptz) AS live, platform, product_id, sandbox, (SELECT plan FROM users WHERE id = $1) AS plan FROM iap_subscriptions WHERE user_id = $1 AND status = 'ACTIVE' ORDER BY live DESC, expires_at DESC NULLS FIRST, (SELECT max(l.seq) FROM billing_ledger l WHERE l.user_id = $1 AND l.type = 'PURCHASE' AND (l.reference_id = iap_subscriptions.original_transaction_id OR l.reference_id LIKE 'period:' || iap_subscriptions.original_transaction_id || ':%')) DESC NULLS LAST LIMIT 1";
+export const STRIPE_LAPSED = "(stripe_customer_id IS NULL OR period_ends_at IS NULL OR period_ends_at <= $2::timestamptz)";
+const RETIRE_STALE_STORE = "WITH stale AS (UPDATE iap_subscriptions SET status = 'CANCELED' WHERE user_id = $1 AND status = 'ACTIVE') UPDATE users SET plan = 'FREE', subscription_status = 'CANCELED' WHERE id = $1 AND " + STRIPE_LAPSED + " RETURNING id";
+const TOKEN_GRANTED = "SELECT 1 FROM billing_ledger WHERE user_id = $1 AND type = 'PURCHASE' AND (reference_id = $2 OR reference_id LIKE $3) LIMIT 1";
 const STORE_COVERED = "SELECT 1 FROM billing_ledger WHERE user_id = $1 AND type = 'PURCHASE' AND (reference_id = $2 OR (reference_id = $3 AND created_at >= $4::timestamptz AND created_at < $5::timestamptz) OR (reference_id = $6 AND amount_micro_credits > $7::bigint)) LIMIT 1";
 
+export const storeCutoff = (now: Date): string => new Date(now.getTime() - STORE_GRACE_MS).toISOString();
+
 export const currentStore = (q: Query, userId: string, now: Date): ReturnType<typeof one> =>
-  one(q, CURRENT_STORE, [userId, new Date(now.getTime() - STORE_GRACE_MS).toISOString()]);
+  one(q, CURRENT_STORE, [userId, storeCutoff(now)]);
 
 export const storeExpiry = (value: unknown): string | null => {
   if (value === null || value === undefined || value === "") {return null;}
@@ -114,11 +118,12 @@ const coverOf = (userId: string, token: string, expiresAt: string | null): Array
 
 export const grantStorePeriod = async (
   q: Query,
-  input: { userId: string; token: string; expiresAt: string | null; amount: number; now: Date; fresh: boolean },
+  input: { userId: string; token: string; expiresAt: string | null; amount: number; now: Date; fresh: boolean; sandbox?: boolean },
 ): Promise<void> => {
   const cover = coverOf(input.userId, input.token, input.expiresAt);
   if (!input.fresh && await one(q, STORE_COVERED, cover)) {return;}
-  await q(USER_GRANT, [crypto.randomUUID(), input.userId, input.amount, cover[1], input.now.toISOString()]);
+  const repeat = input.sandbox === true && !input.fresh && await one(q, TOKEN_GRANTED, [input.userId, input.token, `period:${input.token}:%`]);
+  await q(USER_GRANT, [crypto.randomUUID(), input.userId, repeat ? 0 : input.amount, cover[1], input.now.toISOString()]);
 };
 
 const USER_MONTH_GRANTED = "SELECT 1 FROM billing_ledger WHERE user_id = $1 AND type = 'PURCHASE' AND reference_id = $2";

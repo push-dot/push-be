@@ -1,4 +1,4 @@
-import { DISPLAY_MICRO, boundTransaction, currentStore, ensureMonthlyGrant, grantMicro, grantPeriod, grantStorePeriod, iapTopupMicro, keyLevel, lockOwner, monthGranted, monthKey, periodKey, storeExpiry, subscriptionLevel } from "../billing/credits.ts";
+import { DISPLAY_MICRO, STRIPE_LAPSED, boundTransaction, currentStore, ensureMonthlyGrant, grantMicro, grantPeriod, grantStorePeriod, iapTopupMicro, keyLevel, lockOwner, monthGranted, monthKey, periodKey, storeCutoff, storeExpiry, subscriptionLevel } from "../billing/credits.ts";
 import { availableMicro, reservedMicro } from "../jobs/credits.ts";
 import { createStoreReceipts, googlePlayPubsub } from '../billing/stores.ts';
 import type { StoreReceipts } from '../billing/stores.ts';
@@ -8,6 +8,7 @@ import type { Transaction } from '../db.ts';
 import { HttpError, data, pageBody } from "../http.ts";
 import { pageOf, pageResult, ts } from "../page.ts";
 import type { CoreEnv, Ctx } from "../types.ts";
+import { allow } from "../ratelimit.ts";
 import { readObject } from "./recruiting-shared.ts";
 import { TOSS_PRICES } from "../billing/toss.ts";
 
@@ -225,6 +226,37 @@ const tossStatus = async (ctx: Ctx, companyId: string): Promise<TossStatus | nul
   }
 };
 
+const STORE_REFRESH_MINUTES = 360;
+const STORE_REFRESH_MS = 2500;
+
+const within = <T>(work: Promise<T>, ms: number): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { reject(new Error("store timeout")); }, ms); });
+  work.catch(() => undefined);
+  return Promise.race([work, late]).finally(() => { clearTimeout(timer); });
+};
+
+const refreshStore = async (ctx: Ctx): Promise<string | undefined> => {
+  const store = await currentStore(ctx.deps.query, ctx.user.id, ctx.now);
+  const expiry = store?.live === true ? storeExpiry(store.expires_at) : null;
+  if (!store || !expiry) {return undefined;}
+  if (Date.parse(expiry) > ctx.now.getTime() || store.platform !== "GOOGLE_PLAY") {return expiry;}
+  const token = String(store.original_transaction_id);
+  if (!await allow(ctx.deps.query, "store-refresh", token, 1, ctx.now.getTime(), 1, STORE_REFRESH_MINUTES)) {return expiry;}
+  try {
+    const receipt = await within(storePort(ctx).verifyGoogle(token, String(store.product_id ?? ""), true), STORE_REFRESH_MS);
+    if (!receipt.expiresAt || Date.parse(receipt.expiresAt) <= ctx.now.getTime()) {return expiry;}
+    await inTransactionOf(ctx)(async (q) => {
+      await boundTransaction(q, "3s");
+      await storeNote({ ...ctx, deps: { ...ctx.deps, query: q } }, "RENEWAL", token, receipt.productId, receipt.expiresAt, receipt.sandbox === true, receipt.grace === true);
+    });
+    return storeExpiry((await currentStore(ctx.deps.query, ctx.user.id, ctx.now))?.expires_at) ?? expiry;
+  } catch (error) {
+    console.error(JSON.stringify({ billing: "store refresh failed", error: String(error) }));
+    return expiry;
+  }
+};
+
 export async function billingStatus(ctx: Ctx): Promise<Response> {
   if (ctx.user.accountType === "EMPLOYER") {
     if (!ctx.user.companyId) {throw new HttpError(404, "NOT_FOUND", "resource not found");}
@@ -261,6 +293,7 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
     }, ctx.rid);
   }
   const plan = ctx.user.plan || null;
+  const storeEnd = await refreshStore(ctx);
   await grantMonthly(ctx, "PERSONAL", plan, ctx.user.id);
   const { monthStart, monthEnd } = utcMonth(ctx.now);
   const [spentMicroCredits, available, reserved, iap, byBot] = await Promise.all([
@@ -286,7 +319,7 @@ export async function billingStatus(ctx: Ctx): Promise<Response> {
     audience: "PERSONAL",
     source,
     paymentsEnabled: paymentsEnabled(ctx),
-    ...creditsRefill(ctx.now),
+    ...(storeEnd === undefined ? creditsRefill(ctx.now) : Date.parse(storeEnd) > ctx.now.getTime() ? { creditsRefillAt: storeEnd } : {}),
   }, ctx.rid);
 }
 
@@ -981,7 +1014,7 @@ export const verifyIap = async (ctx: Ctx): Promise<Response> => {
     const replacement = Boolean(receipt.linkedPurchaseToken) && !lapsed && !known;
     await grantStorePeriod(q, {
       userId: ctx.user.id, token: receipt.originalTransactionId, expiresAt: receipt.expiresAt,
-      amount: replacement ? 0 : grantMicro("PERSONAL", current), now: ctx.now, fresh: !known,
+      amount: replacement || receipt.grace === true ? 0 : grantMicro("PERSONAL", current), now: ctx.now, fresh: !known, sandbox: receipt.sandbox === true,
     });
   });
   if (kind === "TOPUP") {return data(200, { plan: ctx.user.plan || null, periodEndsAt: ts(ctx.user.periodEndsAt) }, ctx.rid);}
@@ -997,8 +1030,9 @@ const grantNote = (
   productId: string,
   expiresAt: string | null,
   sandbox = false,
+  grace = false,
 ): Promise<void> => {
-  return inTransactionOf(ctx)((q) => storeNote({ ...ctx, deps: { ...ctx.deps, query: q } }, notificationType, transactionId, productId, expiresAt, sandbox));
+  return inTransactionOf(ctx)((q) => storeNote({ ...ctx, deps: { ...ctx.deps, query: q } }, notificationType, transactionId, productId, expiresAt, sandbox, grace));
 };
 
 const lockUser = (ctx: Ctx, userId: unknown) => lockOwner(ctx.deps.query, "PERSONAL", String(userId));
@@ -1015,6 +1049,7 @@ const storeNote = async (
   productId: string,
   expiresAt: string | null,
   sandbox: boolean,
+  grace: boolean,
 ): Promise<void> => {
   const upper = notificationType.toUpperCase();
   if (upper === "REFUND" || upper === "EXPIRED" || upper === "REVOKE" || upper === "GRACE_PERIOD_EXPIRED") {
@@ -1024,9 +1059,11 @@ const storeNote = async (
       [transactionId]);
     if (row?.user_id) {await lockUser(ctx, row.user_id);}
     let drivesPlan = false;
+    let orphan = false;
     if (row?.user_id && row.topup !== true && row.replaced !== true) {
       const current = await currentStoreSubscription(ctx, String(row.user_id));
       drivesPlan = current === transactionId || current === null;
+      orphan = current === null;
     }
     await query(ctx.deps.query,
       "UPDATE iap_subscriptions SET status = CASE WHEN status IN ('CONSUMED', 'REFUNDED') THEN 'REFUNDED' WHEN status = 'REPLACED' THEN status ELSE 'CANCELED' END, expires_at = COALESCE($2::timestamptz, expires_at), sandbox = $3 WHERE original_transaction_id = $1",
@@ -1039,8 +1076,8 @@ const storeNote = async (
     }
     if (drivesPlan) {
       await query(ctx.deps.query,
-        "UPDATE users SET plan = 'FREE', subscription_status = 'CANCELED', period_ends_at = COALESCE($2::timestamptz, period_ends_at) WHERE id = $1",
-        [String(row.user_id), expiresAt]);
+        "UPDATE users SET plan = 'FREE', subscription_status = 'CANCELED', period_ends_at = COALESCE($3::timestamptz, period_ends_at) WHERE id = $1 AND (NOT $4::boolean OR " + STRIPE_LAPSED + ")",
+        [String(row.user_id), storeCutoff(ctx.now), expiresAt, orphan]);
     }
     return;
   }
@@ -1068,7 +1105,7 @@ const storeNote = async (
     const end = updated?.expires_at;
     await grantStorePeriod(ctx.deps.query, {
       userId, token: transactionId, expiresAt: storeExpiry(end) ?? expiresAt,
-      amount: grantMicro("PERSONAL", kind), now: ctx.now, fresh: false,
+      amount: grace ? 0 : grantMicro("PERSONAL", kind), now: ctx.now, fresh: false, sandbox,
     });
   }
 };
@@ -1093,6 +1130,7 @@ export const googleWebhook = async (ctx: Ctx): Promise<Response> => {
   const note = await storePort(ctx).decodeGoogleNotification(body, ctx.request.headers.get("authorization"));
   let expiresAt = note.expiresAt;
   let sandbox = false;
+  let grace = false;
   let productId = note.productId;
   const pushed = googlePlayPubsub(body);
   const hasSubscriptionNotification = Boolean(pushed?.subscriptionNotification) && typeof pushed?.subscriptionNotification === "object";
@@ -1103,9 +1141,10 @@ export const googleWebhook = async (ctx: Ctx): Promise<Response> => {
       const verified = await storePort(ctx).verifyGoogle(note.purchaseToken, note.productId, true);
       expiresAt = verified.expiresAt;
       sandbox = verified.sandbox === true;
+      grace = verified.grace === true;
       productId = verified.productId || productId;
     }
   }
-  await grantNote(ctx, note.notificationType, note.purchaseToken, productId, expiresAt, sandbox);
+  await grantNote(ctx, note.notificationType, note.purchaseToken, productId, expiresAt, sandbox, grace);
   return data(200, { received: true }, ctx.rid);
 };

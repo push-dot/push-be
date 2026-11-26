@@ -20,20 +20,24 @@ type Shop = Record<string, Purchase>;
 
 const shop = (entries: Shop): Shop => entries;
 
-type Purchase = { productId: "play.pro" | "play.ultra"; linked?: string; expiresAt?: string; deferred?: "play.pro" | "play.ultra"; asks?: "play.pro" | "play.ultra" };
+type Purchase = {
+  productId: "play.pro" | "play.ultra"; linked?: string; expiresAt?: string; deferred?: "play.pro" | "play.ultra"; asks?: "play.pro" | "play.ultra";
+  grace?: boolean; sandbox?: boolean; hang?: boolean;
+};
 
 let pg: LivePg | undefined;
 before(async () => { if (URL_) {pg = await livePg(URL_);} });
 after(async () => { await pg?.close(); });
 
 const authed = (userId: string): Query => async (sql, params = []) => {
-  if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+  if (sql.includes("rate_limits") && !String(params[0]).startsWith("store-refresh:")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
   if (sql.includes("idempotency_keys")) {return sql.includes("INSERT") ? { rows: [{ id: "idem" }], rowCount: 1 } : { rows: [], rowCount: 0 };}
   if (sql.includes("access_tokens")) {
+    const user = (await pg!.query("SELECT plan, subscription_status, stripe_customer_id, period_ends_at FROM users WHERE id = $1", [userId])).rows[0];
     return { rows: [{
-      id: userId, display_name: "fixture", locale: "ko", plan: "FREE", subscription_status: "NONE", stripe_customer_id: null,
-      period_ends_at: null, created_at: new Date(NOW).toISOString(), token_expires_at: "2099-01-01T00:00:00Z", is_employer: false,
-      company_id: null, company_role: null,
+      id: userId, display_name: "fixture", locale: "ko", plan: user.plan ?? "FREE", subscription_status: user.subscription_status ?? "NONE",
+      stripe_customer_id: user.stripe_customer_id, period_ends_at: user.period_ends_at, created_at: new Date(NOW).toISOString(),
+      token_expires_at: "2099-01-01T00:00:00Z", is_employer: false, company_id: null, company_role: null,
     }], rowCount: 1 };
   }
   return pg!.query(sql, params);
@@ -48,6 +52,8 @@ const playWorld = async (t: TestContext, purchases: Record<string, Purchase>, sh
   await pg.query("INSERT INTO users (id, provider, provider_subject, display_name) VALUES ($1, 'google', $2, 'fixture')", [userId, userId]);
   const tag = shared ?? userId.slice(0, 8);
   const hops: Array<string> = [];
+  const checks: Array<string> = [];
+  const worldEnv: CoreEnv = { ...env, STORE_SANDBOX_USER_IDS: userId };
   const tokenOf = (name: string): string => `${name}-${tag}`;
   let note = { type: "", token: "", productId: "" };
   let clock = NOW;
@@ -59,7 +65,10 @@ const playWorld = async (t: TestContext, purchases: Record<string, Purchase>, sh
       verifyGoogle: async (purchaseToken) => {
         const name = Object.keys(purchases).find((key) => tokenOf(key) === purchaseToken) ?? "";
         const purchase = purchases[name];
+        checks.push(name);
+        if (purchase.hang) {return new Promise(() => {});}
         return {
+          grace: purchase.grace, sandbox: purchase.sandbox,
           productId: purchase.productId, originalTransactionId: purchaseToken, expiresAt: purchase.expiresAt ?? "2026-12-02T09:00:00.000Z", consumable: false,
           linkedPurchaseToken: purchase.linked ? tokenOf(purchase.linked) : undefined, deferredProductId: purchase.deferred,
         };
@@ -80,7 +89,7 @@ const playWorld = async (t: TestContext, purchases: Record<string, Purchase>, sh
       method: "POST",
       headers: { authorization: "Bearer t", "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
       body: JSON.stringify({ platform: "GOOGLE_PLAY", productId: purchases[name].asks ?? purchases[name].productId, purchaseToken: tokenOf(name) }),
-    }), env, deps);
+    }), worldEnv, deps);
     return res.status;
   };
   const notify = async (type: string, name: string): Promise<number> => {
@@ -88,7 +97,7 @@ const playWorld = async (t: TestContext, purchases: Record<string, Purchase>, sh
     note = { type, token: tokenOf(name), productId: purchases[name].asks ?? purchases[name].productId };
     const res = await handle(new Request("https://core.example/api/v1/billing/webhook/google-play", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: { data: btoa(JSON.stringify({ subscriptionNotification: {} })) } }),
-    }), env, deps);
+    }), worldEnv, deps);
     return res.status;
   };
   const ledger = async () => (await pg!.query("SELECT reference_id, amount_micro_credits FROM billing_ledger WHERE user_id = $1 ORDER BY seq", [userId])).rows
@@ -98,10 +107,16 @@ const playWorld = async (t: TestContext, purchases: Record<string, Purchase>, sh
   const plan = async () => (await pg!.query("SELECT plan, subscription_status FROM users WHERE id = $1", [userId])).rows[0];
   const read = async (): Promise<number> => {
     resetLimits();
-    return (await handle(new Request("https://core.example/api/v1/billing", { headers: { authorization: "Bearer t" } }), env, deps)).status;
+    return (await handle(new Request("https://core.example/api/v1/billing", { headers: { authorization: "Bearer t" } }), worldEnv, deps)).status;
+  };
+  const refillAt = async (): Promise<string | undefined> => {
+    resetLimits();
+    const res = await handle(new Request("https://core.example/api/v1/billing", { headers: { authorization: "Bearer t" } }), worldEnv, deps);
+    const body: { data: { creditsRefillAt?: string } } = await res.json();
+    return body.data.creditsRefillAt;
   };
   const at = (iso: string) => { clock = Date.parse(iso); };
-  return { userId, tag, hops, verify, notify, ledger, statuses, plan, read, at };
+  return { userId, tag, hops, checks, verify, notify, ledger, statuses, plan, read, refillAt, at };
 };
 
 const chainOf = (length: number) => {
@@ -324,4 +339,107 @@ test("deploy month: a store subscriber's current period is paid once, by the old
   assert.equal(await bought.verify("a"), 200);
   assert.equal(await bought.read(), 200);
   assert.deepEqual(await bought.ledger(), [["a", PRO], ["monthly:2026-11", PRO]]);
+});
+
+test("a Play grace period moves the expiry without a payment, so it grants nothing until a paid recovery", async (t) => {
+  const purchases = shop({ a: { productId: "play.pro" } });
+  const world = await playWorld(t, purchases);
+  if (!world) {return;}
+  assert.equal(await world.verify("a"), 200);
+  world.at("2026-12-03T09:00:00.000Z");
+  purchases.a = { productId: "play.pro", expiresAt: "2026-12-09T09:00:00.000Z", grace: true };
+  assert.equal(await world.verify("a"), 200);
+  assert.equal(await world.notify("PURCHASE", "a"), 200);
+  purchases.a.expiresAt = "2026-12-10T09:00:00.000Z";
+  assert.equal(await world.notify("RENEWAL", "a"), 200);
+  assert.equal(await world.read(), 200);
+  assert.deepEqual(await world.ledger(), [["period:a", PRO], ["period:a", 0], ["period:a", 0]]);
+  purchases.a = { productId: "play.pro", expiresAt: "2027-01-02T09:00:00.000Z" };
+  assert.equal(await world.notify("PURCHASE", "a"), 200);
+  assert.equal(await world.verify("a"), 200);
+  assert.deepEqual(await world.ledger(), [["period:a", PRO], ["period:a", 0], ["period:a", 0], ["period:a", PRO]]);
+  assert.deepEqual(await world.plan(), { plan: "PRO", subscription_status: "ACTIVE" });
+});
+
+const stripePaying = async (world: NonNullable<Awaited<ReturnType<typeof playWorld>>>, customer: string | null) => {
+  await pg!.query("UPDATE users SET plan = 'PRO', subscription_status = 'ACTIVE', stripe_customer_id = $2, period_ends_at = '2026-11-20T00:00:00Z' WHERE id = $1", [world.userId, customer]);
+  await pg!.query("INSERT INTO iap_subscriptions (id, user_id, platform, original_transaction_id, product_id, expires_at, status) VALUES ($1, $2, 'GOOGLE_PLAY', $3, 'play.pro', '2026-10-01T09:00:00Z', 'ACTIVE')",
+    [crypto.randomUUID(), world.userId, `a-${world.tag}`]);
+};
+
+test("retiring a dead store row keeps the plan and the month's credits of a user paying by Stripe", async (t) => {
+  const paying = await playWorld(t, shop({ a: { productId: "play.pro" } }));
+  if (!paying) {return;}
+  await stripePaying(paying, `cus_${paying.tag}`);
+  assert.equal(await paying.read(), 200);
+  assert.equal(await paying.read(), 200);
+  assert.deepEqual(await paying.statuses(), { a: "CANCELED" });
+  assert.deepEqual(await paying.plan(), { plan: "PRO", subscription_status: "ACTIVE" });
+  assert.deepEqual(await paying.ledger(), [["monthly:2026-11", PRO]]);
+  const storeOnly = await playWorld(t, shop({ a: { productId: "play.pro" } }));
+  if (!storeOnly) {return;}
+  await stripePaying(storeOnly, null);
+  assert.equal(await storeOnly.read(), 200);
+  assert.deepEqual(await storeOnly.plan(), { plan: "FREE", subscription_status: "CANCELED" });
+  assert.deepEqual(await storeOnly.ledger(), [["monthly:2026-11", 1_800_000]]);
+});
+
+test("a late EXPIRED for a dead store row leaves the plan of a user paying by Stripe", async (t) => {
+  const paying = await playWorld(t, shop({ a: { productId: "play.pro" } }));
+  if (!paying) {return;}
+  await stripePaying(paying, `cus_${paying.tag}`);
+  assert.equal(await paying.notify("EXPIRED", "a"), 200);
+  assert.deepEqual(await paying.plan(), { plan: "PRO", subscription_status: "ACTIVE" });
+  const storeOnly = await playWorld(t, shop({ a: { productId: "play.pro" } }));
+  if (!storeOnly) {return;}
+  await stripePaying(storeOnly, null);
+  assert.equal(await storeOnly.notify("EXPIRED", "a"), 200);
+  assert.deepEqual(await storeOnly.plan(), { plan: "FREE", subscription_status: "CANCELED" });
+});
+
+test("a read after a lost Play renewal notice refreshes the lapsed row once per window and grants the renewed period", async (t) => {
+  const purchases = shop({ a: { productId: "play.pro" } });
+  const world = await playWorld(t, purchases);
+  if (!world) {return;}
+  assert.equal(await world.verify("a"), 200);
+  assert.equal(await world.refillAt(), "2026-12-02T09:00:00.000Z");
+  world.at("2026-12-05T07:00:00.000Z");
+  assert.equal(await world.read(), 200);
+  assert.equal(await world.read(), 200);
+  assert.deepEqual(world.checks, ["a", "a"]);
+  assert.deepEqual(await world.ledger(), [["period:a", PRO]]);
+  world.at("2026-12-05T13:00:00.000Z");
+  purchases.a.expiresAt = "2027-01-02T09:00:00.000Z";
+  assert.equal(await world.refillAt(), "2027-01-02T09:00:00.000Z");
+  assert.equal(await world.read(), 200);
+  assert.deepEqual(world.checks, ["a", "a", "a"]);
+  assert.deepEqual(await world.ledger(), [["period:a", PRO], ["period:a", PRO]]);
+  assert.deepEqual(await world.plan(), { plan: "PRO", subscription_status: "ACTIVE" });
+});
+
+test("a hung Play refresh does not hold the read", async (t) => {
+  const purchases = shop({ a: { productId: "play.pro" } });
+  const world = await playWorld(t, purchases);
+  if (!world) {return;}
+  assert.equal(await world.verify("a"), 200);
+  world.at("2026-12-05T09:00:00.000Z");
+  purchases.a.hang = true;
+  const started = Date.now();
+  assert.equal(await world.refillAt(), undefined);
+  assert.ok(Date.now() - started < 5000);
+  assert.deepEqual(await world.ledger(), [["period:a", PRO]]);
+});
+
+test("an allowlisted sandbox token pays its first period only, not each accelerated renewal", async (t) => {
+  const purchases = shop({ a: { productId: "play.pro", sandbox: true, expiresAt: "2026-11-02T09:05:00.000Z" } });
+  const world = await playWorld(t, purchases);
+  if (!world) {return;}
+  assert.equal(await world.verify("a"), 200);
+  for (const [now, end] of [["09:06", "09:10"], ["09:11", "09:15"]]) {
+    world.at(`2026-11-02T${now}:00.000Z`);
+    purchases.a.expiresAt = `2026-11-02T${end}:00.000Z`;
+    assert.equal(await world.notify("RENEWAL", "a"), 200);
+  }
+  assert.equal(await world.verify("a"), 200);
+  assert.deepEqual(await world.ledger(), [["period:a", PRO], ["period:a", 0], ["period:a", 0]]);
 });
