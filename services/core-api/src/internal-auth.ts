@@ -141,7 +141,10 @@ const requireApproval = async (request: Request, path: string, userId: string, c
     const approvalId = parseUuid(request.headers.get("x-push-approval") || "");
     const retryKey = parseUuid(request.headers.get("idempotency-key") || "");
     const row = approvalId ? await one(query, CONSUME_APPROVAL, [approvalId, userId, need.tool, JSON.stringify(need.target), retryKey]) : null;
-    if (!row || !approvalId) {refuse();}
+    if (!row || !approvalId) {
+      for (const card of claimed) {await run(query, RELEASE_APPROVAL, [card.id, card.key]);}
+      refuse();
+    }
     // A retry of a call that already spent the card holds nothing new to give back.
     else if (row.fresh === true || row.fresh === "t") {claimed.push({ id: approvalId, key: retryKey });}
   }

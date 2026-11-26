@@ -117,19 +117,23 @@ async function route(request: Request, env: CoreEnv, deps: Deps): Promise<Respon
     }
     const acted = await actAs(request, env, deps.query);
     if (acted) {
-      const user = await userForActAs(deps.query, acted);
-      if (!(await allow(deps.query, "user", user.id, 600, now.getTime(), USER_LEASE))) {
-        return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
-      }
-      const ctx = base(request, env, deps, rid, url, now, user);
-      let res: Response;
+      // A card goes back only when the write it approved surely did not happen: a refusal before the
+      // route ran, or a 4xx the route answered (it validates before writing, and its transaction
+      // rolls back). A 5xx or a crash may come after a commit, so the card stays spent.
+      let user: UserRow;
       try {
-        res = request.method !== "POST" || path.endsWith("/stream") ? await dispatch(ctx, path) : await idempotent(ctx, path);
+        user = await userForActAs(deps.query, acted);
       } catch (error) {
         await releaseApproval(deps.query, acted);
         throw error;
       }
-      if (res.status >= 400) {await releaseApproval(deps.query, acted);}
+      if (!(await allow(deps.query, "user", user.id, 600, now.getTime(), USER_LEASE))) {
+        await releaseApproval(deps.query, acted);
+        return errorResponse(429, "RATE_LIMITED", "too many requests", rid);
+      }
+      const ctx = base(request, env, deps, rid, url, now, user);
+      const res = request.method !== "POST" || path.endsWith("/stream") ? await dispatch(ctx, path) : await idempotent(ctx, path);
+      if (res.status >= 400 && res.status < 500) {await releaseApproval(deps.query, acted);}
       return res;
     }
     if (isPublic(request.method, path, authz)) {
