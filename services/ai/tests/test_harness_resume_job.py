@@ -119,3 +119,21 @@ async def test_a_retried_gate_answer_finishes_the_run_the_failed_attempt_left():
         pass
     await run(runtime, _payload(JOB_B, **resume))
     assert svc.messages[-1].text == "지원했어요"
+
+
+async def test_a_retried_job_leaves_the_gate_it_opened_for_the_person():
+    rows = Rows({"company_id": None, "resume_state": {"status": "active", "phase": "mode_select"}})
+    seen: list = []
+    runtime, _svc = _runtime(rows, seen)
+    first = await run(runtime, _payload(JOB_A, "서류 만들어줘", ai=None))
+    assert any(mode == "custom" and chunk.get("type") == "choice" for mode, chunk in first)
+    graph = runtime._graph(runtime_spec())
+    config = {"configurable": {"thread_id": str(CONV)}}
+    before = await graph.aget_state(config)
+    # A worker restart runs the same job again: its own text must not answer its own gate.
+    rows.executed.clear()
+    await run(runtime, _payload(JOB_A, "서류 만들어줘", ai=None))
+    after = await graph.aget_state(config)
+    assert after.next == before.next and after.next, "the gate is still waiting for the person"
+    answered = [sql for sql, _args in rows.executed if "SET status = 'APPROVED'" in sql]
+    assert answered == [], "the retry did not answer the gate with its own question"

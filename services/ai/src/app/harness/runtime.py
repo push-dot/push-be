@@ -212,6 +212,14 @@ def _pending(snapshot) -> dict | None:
     return None
 
 
+def _already_ran(snapshot, job_id) -> bool:
+    """This job's own message is in the thread: a retry of a turn that already ran (a worker
+    restart). Its text is the question that opened the waiting gate, never an answer to it."""
+    mine = _user_message_id(job_id)
+    messages = (getattr(snapshot, "values", None) or {}).get("messages") or []
+    return mine is not None and any(getattr(m, "id", None) == mine for m in messages)
+
+
 def _rejections(values: dict, result: dict | None = None) -> list:
     content = json.dumps(result or {"rejected": True})
     return [ToolMessage(content=content, tool_call_id=call["id"]) for call in _open_calls(values)]
@@ -432,6 +440,9 @@ class HarnessRuntime:
                 state = None
             else:
                 state = Command(resume=_gate_answer(resume))
+        elif (waiting is not None and waiting.get("kind") in _TEXT_GATES
+              and _already_ran(snapshot, payload.get("job_id"))):
+            return
         elif waiting is not None and waiting.get("kind") in _TEXT_GATES and text:
             await self._answer_gate(waiting.get("approval_id"))
             state = Command(resume={"text": text, **await self._inputs(payload)})
