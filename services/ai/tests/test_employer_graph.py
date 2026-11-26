@@ -549,3 +549,28 @@ async def test_a_number_only_in_the_reference_posting_is_cut():
     out = await graph.ainvoke({**BASE, "flow": flow}, config)
     assert _interrupt(out)["gate"] == "pf_confirm_1"
     assert (await _sub_flow(graph, config))["removed"] == ["팀 40명과 일해요"]
+
+
+async def test_the_role_choices_start_from_what_the_employer_asked_for():
+    from langchain_core.messages import HumanMessage
+
+    from push_agent.harness.flows import RoleOptions
+
+    seen = {}
+
+    async def generate(schema, system, user):
+        if schema is RoleOptions:
+            seen["user"] = user
+            return RoleOptions(options=[{"id": "data", "label": "데이터 엔지니어"}])
+        raise AssertionError(schema)
+
+    state_type, flows = build_flows(
+        db=None, generate_for=lambda _s: generate, research_text=None, plan_of=lambda _s: "PRO")
+    graph = _sub("posting", flows, state_type)
+    asked = HumanMessage(content="데이터 엔지니어 공고 만들어 줘. 3년 이상, 서울")
+    state = {**BASE, "messages": [asked],
+             "flow": {"name": "posting", "step": "role_options",
+                      "profile": {"name": "에이전트테스트"}}}
+    out = await graph.ainvoke(state, {"configurable": {"thread_id": "asked-1"}})
+    assert "[담당자 요청]\n데이터 엔지니어 공고 만들어 줘. 3년 이상, 서울" in seen["user"]
+    assert _interrupt(out)["gate"] == "pf_role"
