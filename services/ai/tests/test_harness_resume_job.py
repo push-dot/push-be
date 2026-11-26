@@ -137,3 +137,14 @@ async def test_a_retried_job_leaves_the_gate_it_opened_for_the_person():
     assert after.next == before.next and after.next, "the gate is still waiting for the person"
     answered = [sql for sql, _args in rows.executed if "SET status = 'APPROVED'" in sql]
     assert answered == [], "the retry did not answer the gate with its own question"
+
+
+async def test_a_new_message_still_answers_the_waiting_text_gate():
+    rows = Rows({"company_id": None, "resume_state": {"status": "active", "phase": "mode_select"}})
+    seen: list = []
+    runtime, _svc = _runtime(rows, seen)
+    await run(runtime, _payload(JOB_A, "서류 만들어줘", ai=None))
+    rows.executed.clear()
+    await run(runtime, _payload(JOB_B, "이력서를 바탕으로 해 주세요", ai=None))
+    answered = [sql for sql, _args in rows.executed if "SET status = 'APPROVED'" in sql]
+    assert answered, "a person's new message answers the gate the earlier turn opened"
