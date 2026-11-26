@@ -8,7 +8,7 @@ data/
 .venv-workers/
 .wrangler/
 python_modules/
-node_modules/
+node_modules
 pylock.toml
 *.egg-info/
 

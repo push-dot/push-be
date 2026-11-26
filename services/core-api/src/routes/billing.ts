@@ -34,7 +34,7 @@ type StripeObject = {
   id?: string; type?: string; url?: string; expires_at?: number; status?: string; created?: number; currency?: string;
   customer?: string; subscription?: string; invoice?: string; payment_intent?: string; client_reference_id?: string;
   payment_status?: string; amount_total?: number; total?: number; billing_reason?: string; hosted_invoice_url?: string; refunded?: boolean;
-  metadata?: Record<string, string>;
+  metadata?: Record<string, string>; current_period_end?: number;
   items?: { data?: Array<Item> };
   lines?: { data?: Array<Line> };
   data?: Array<StripeObject>;
@@ -780,7 +780,8 @@ async function checkoutCompleted(ctx: Ctx, obj: StripeObject): Promise<void> {
   if (!UUID.test(userId)) {throw new HttpError(400, "VALIDATION_ERROR", "invalid session reference");}
   const planId = String(meta.planId || "");
   if (!PLANS.has(planId) || planId === "FREE") {throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan");}
-  const end = obj.subscription ? itemOf(await stripe(ctx, "GET", "/v1/subscriptions/" + encodeURIComponent(obj.subscription)))?.current_period_end : undefined;
+  const sub = obj.subscription ? await stripe(ctx, "GET", "/v1/subscriptions/" + encodeURIComponent(obj.subscription)).catch(() => null) : null;
+  const end = sub ? itemOf(sub)?.current_period_end ?? sub.current_period_end : undefined;
   // The lock is its own statement: a lock taken inside the INSERT would read the balance from the snapshot before the wait.
   if (!await lockOwner(ctx.deps.query, "PERSONAL", userId)) {return;}
   await query(ctx.deps.query,
