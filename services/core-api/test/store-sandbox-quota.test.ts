@@ -42,6 +42,7 @@ const verify = (env: CoreEnv, sandbox: boolean, seen: Array<Call>, key: string) 
     query: queryOf(seen), now: () => NOW,
     stores: {
       verifyApple: async () => ({ productId: "ios.pro", originalTransactionId: "tx-1", expiresAt: "2026-11-21T00:00:00.000Z", consumable: false, sandbox }),
+      googleLinkedToken: async () => undefined,
       verifyGoogle: async () => { throw new Error("unused"); },
       decodeAppleNotification: async () => { throw new Error("unused"); },
       decodeGoogleNotification: async () => { throw new Error("unused"); },
