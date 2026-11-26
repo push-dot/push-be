@@ -20,7 +20,7 @@ from app.harness.approval import (
     approval_conversation_id, approval_id_for, site_granted, site_host, user_supplied)
 from app.harness.approvals import insert_chat_approval
 from app.harness.binding import bound_services, current_ai_gate
-from app.harness.core_client import idempotency_key
+from app.harness.core_client import CoreError, idempotency_key
 from app.harness.document_edits import apply_edit
 from app.harness.graph import _dictated, drop_flow_notes, enter_flow, turn_model
 from app.harness.kstyle.ledger import add_evidence, empty_notes
@@ -83,13 +83,13 @@ class EventId(BaseModel):
 
 class PostBody(BaseModel):
     category: Literal["work", "dev", "daily", "career", "talk", "coffeechat", "marketing"]
-    title: str
-    body: str
+    title: str = Field(min_length=1, max_length=100)
+    body: str = Field(min_length=1, max_length=5000)
 
 
 class CommentBody(BaseModel):
     post_id: UUID
-    body: str = ""
+    body: str = Field(min_length=1, max_length=1000)
 
 
 class FollowUser(BaseModel):
@@ -169,9 +169,25 @@ class PageArgs(BaseModel):
         return value
 
 
-def _core(name, tier, model, summary, method, path_of, *, write=False, drop=(), display=None):
-    async def run(ctx: ToolContext, args):
+# Core PATCH and DELETE ignore Idempotency-Key. Each run sends the current revision: a replayed update
+# writes the same values again, and a replayed delete finds the event gone.
+_EVENT_REVISION = "SELECT revision FROM calendar_events WHERE id = $1 AND user_id = $2"
+
+
+async def _event_revision(ctx: ToolContext, event_id: UUID) -> int:
+    if ctx.db is None:
+        raise CoreError(503, "UNAVAILABLE", "no database")
+    row = await ctx.db.q().fetchrow(_EVENT_REVISION, event_id, ctx.user_id)
+    if row is None:
+        raise CoreError(404, "NOT_FOUND", "resource not found")
+    return int(row["revision"])
+
+
+def _core(name, tier, model, summary, method, path_of, *, write=False, drop=(), display=None, revision=False):
+    async def send(ctx: ToolContext, args):
         body = args.model_dump(mode="json", exclude_none=True, by_alias=True, exclude=set(drop))
+        if revision:
+            body["expectedRevision"] = await _event_revision(ctx, args.event_id)
         return await ctx.core.call(
             method,
             path_of(args),
@@ -182,6 +198,14 @@ def _core(name, tier, model, summary, method, path_of, *, write=False, drop=(), 
             idempotency_key=idempotency_key(ctx.job_id, ctx.tool_call_id) if write else None,
             approval_id=approval_id_for(ctx.job_id, ctx.tool_call_id) if name in ALWAYS_ASK_TOOLS else None,
         )
+
+    async def run(ctx: ToolContext, args):
+        try:
+            return await send(ctx, args)
+        except CoreError as err:
+            if revision and method == "DELETE" and err.code == "NOT_FOUND":
+                return {}
+            raise
 
     return ToolSpec(name, tier, model, run, lambda _args: summary, display=display)
 
@@ -754,7 +778,7 @@ PERSONAL_TOOLS = [
           lambda _args: "/api/v1/calendar/events", write=True),
     _core("update_calendar_event", Tier.SAFE_WRITE, CalendarUpdate, "일정을 수정해요", "PATCH",
           lambda args: f"/api/v1/calendar/events/{args.event_id}",
-          write=True, drop=("event_id",)),
+          write=True, drop=("event_id",), revision=True),
     _spec("edit_document", Tier.SAFE_WRITE, EditDocumentArgs, _edit_document,
           "서류에서 이 부분을 고쳐요", "DOCUMENT_EDIT"),
     _spec("start_document", Tier.SAFE_WRITE, EmptyArgs, _start_document, "새 서류 작성을 시작해요"),
@@ -787,5 +811,5 @@ PERSONAL_TOOLS = [
           lambda _args: "/api/v1/me/profile", write=True, display=_profile_rows),
     _core("delete_calendar_event", Tier.RISKY_WRITE, EventId, "일정을 삭제해요", "DELETE",
           lambda args: f"/api/v1/calendar/events/{args.event_id}",
-          write=True, drop=("event_id",)),
+          write=True, drop=("event_id",), revision=True),
 ]
