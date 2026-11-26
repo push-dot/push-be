@@ -471,7 +471,7 @@ async def _start_document(ctx: ToolContext, _args: EmptyArgs) -> dict:
         await ctx.db.q().execute(
             "UPDATE approvals SET tool_args = $2::jsonb WHERE id = $1",
             UUID(choice["id"]),
-            json.dumps({"gate": choice["gate"]}, ensure_ascii=False),
+            {"gate": choice["gate"]},
         )
         waiting(choice["id"], "answer")
         emit(choice)
