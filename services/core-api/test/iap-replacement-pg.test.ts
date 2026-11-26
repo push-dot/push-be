@@ -353,11 +353,30 @@ test("a Play grace period moves the expiry without a payment, so it grants nothi
   purchases.a.expiresAt = "2026-12-10T09:00:00.000Z";
   assert.equal(await world.notify("RENEWAL", "a"), 200);
   assert.equal(await world.read(), 200);
-  assert.deepEqual(await world.ledger(), [["period:a", PRO], ["period:a", 0], ["period:a", 0]]);
+  assert.deepEqual(await world.ledger(), [["period:a", PRO], ["grace:a", 0], ["grace:a", 0]]);
   purchases.a = { productId: "play.pro", expiresAt: "2027-01-02T09:00:00.000Z" };
   assert.equal(await world.notify("PURCHASE", "a"), 200);
   assert.equal(await world.verify("a"), 200);
-  assert.deepEqual(await world.ledger(), [["period:a", PRO], ["period:a", 0], ["period:a", 0], ["period:a", PRO]]);
+  assert.deepEqual(await world.ledger(), [["period:a", PRO], ["grace:a", 0], ["grace:a", 0], ["period:a", PRO]]);
+  assert.deepEqual(await world.plan(), { plan: "PRO", subscription_status: "ACTIVE" });
+});
+
+test("a Play recovery whose paid expiry equals the grace expiry pays that period once", async (t) => {
+  const purchases = shop({ a: { productId: "play.pro" } });
+  const world = await playWorld(t, purchases);
+  if (!world) {return;}
+  assert.equal(await world.verify("a"), 200);
+  world.at("2026-12-03T09:00:00.000Z");
+  purchases.a = { productId: "play.pro", expiresAt: "2027-01-02T09:00:00.000Z", grace: true };
+  assert.equal(await world.notify("RENEWAL", "a"), 200);
+  assert.equal(await world.read(), 200);
+  assert.deepEqual(await world.ledger(), [["period:a", PRO], ["grace:a", 0]]);
+  purchases.a.grace = false;
+  assert.equal(await world.notify("RENEWAL", "a"), 200);
+  assert.equal(await world.verify("a"), 200);
+  assert.equal(await world.notify("RENEWAL", "a"), 200);
+  assert.equal(await world.read(), 200);
+  assert.deepEqual(await world.ledger(), [["period:a", PRO], ["grace:a", 0], ["period:a", PRO]]);
   assert.deepEqual(await world.plan(), { plan: "PRO", subscription_status: "ACTIVE" });
 });
 

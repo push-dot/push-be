@@ -244,7 +244,7 @@ const refreshStore = async (ctx: Ctx): Promise<string | undefined> => {
   const token = String(store.original_transaction_id);
   if (!await allow(ctx.deps.query, "store-refresh", token, 1, ctx.now.getTime(), 1, STORE_REFRESH_MINUTES)) {return expiry;}
   try {
-    const receipt = await within(storePort(ctx).verifyGoogle(token, String(store.product_id ?? ""), true), STORE_REFRESH_MS);
+    const receipt = await within(storePort(ctx).verifyGoogle(token, String(store.product_id ?? ""), true, AbortSignal.timeout(STORE_REFRESH_MS)), STORE_REFRESH_MS);
     if (!receipt.expiresAt || Date.parse(receipt.expiresAt) <= ctx.now.getTime()) {return expiry;}
     await inTransactionOf(ctx)(async (q) => {
       await boundTransaction(q, "3s");
@@ -780,11 +780,12 @@ async function checkoutCompleted(ctx: Ctx, obj: StripeObject): Promise<void> {
   if (!UUID.test(userId)) {throw new HttpError(400, "VALIDATION_ERROR", "invalid session reference");}
   const planId = String(meta.planId || "");
   if (!PLANS.has(planId) || planId === "FREE") {throw new HttpError(400, "VALIDATION_ERROR", "unsupported plan");}
+  const end = obj.subscription ? itemOf(await stripe(ctx, "GET", "/v1/subscriptions/" + encodeURIComponent(obj.subscription)))?.current_period_end : undefined;
   // The lock is its own statement: a lock taken inside the INSERT would read the balance from the snapshot before the wait.
   if (!await lockOwner(ctx.deps.query, "PERSONAL", userId)) {return;}
   await query(ctx.deps.query,
-    "UPDATE users SET plan = $2, subscription_status = 'ACTIVE', stripe_customer_id = COALESCE(NULLIF($3, ''), stripe_customer_id) WHERE id = $1",
-    [userId, planId, String(obj.customer || "")]);
+    "UPDATE users SET plan = $2, subscription_status = 'ACTIVE', stripe_customer_id = COALESCE(NULLIF($3, ''), stripe_customer_id), period_ends_at = COALESCE($4::timestamptz, period_ends_at) WHERE id = $1",
+    [userId, planId, String(obj.customer || ""), end ? new Date(end * 1000).toISOString() : null]);
   await userLedger(ctx, userId, grantMicro("PERSONAL", planId), String(obj.id || ""));
 }
 
@@ -1015,6 +1016,7 @@ export const verifyIap = async (ctx: Ctx): Promise<Response> => {
     await grantStorePeriod(q, {
       userId: ctx.user.id, token: receipt.originalTransactionId, expiresAt: receipt.expiresAt,
       amount: replacement || receipt.grace === true ? 0 : grantMicro("PERSONAL", current), now: ctx.now, fresh: !known, sandbox: receipt.sandbox === true,
+      receipt: receipt.grace === true ? "grace" : "paid",
     });
   });
   if (kind === "TOPUP") {return data(200, { plan: ctx.user.plan || null, periodEndsAt: ts(ctx.user.periodEndsAt) }, ctx.rid);}
@@ -1105,7 +1107,7 @@ const storeNote = async (
     const end = updated?.expires_at;
     await grantStorePeriod(ctx.deps.query, {
       userId, token: transactionId, expiresAt: storeExpiry(end) ?? expiresAt,
-      amount: grace ? 0 : grantMicro("PERSONAL", kind), now: ctx.now, fresh: false, sandbox,
+      amount: grace ? 0 : grantMicro("PERSONAL", kind), now: ctx.now, fresh: false, sandbox, receipt: grace ? "grace" : "paid",
     });
   }
 };

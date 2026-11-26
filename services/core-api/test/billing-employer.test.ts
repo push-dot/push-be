@@ -401,6 +401,40 @@ test("top-up completion inserts micro credits and does not change the plan", asy
   assert.equal(seen.length, 0);
 });
 
+test("a personal plan checkout sets the period end from its subscription", async () => {
+  resetLimits();
+  const ledger: Array<LedgerRow> = [];
+  const capture = takeLedger(ledger);
+  const seen: Array<Call> = [];
+  const urls: Array<string> = [];
+  const query: Deps["query"] = async (sql, params = []) => {
+    if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.includes("INSERT INTO stripe_events")) {return { rows: [{ event_id: "evt_plan" }], rowCount: 1 };}
+    if (sql.startsWith("SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE")) {return { rows: [{ id: USER }], rowCount: 1 };}
+    const taken = capture(sql, params);
+    if (taken) {return taken;}
+    seen.push({ sql, params });
+    return empty;
+  };
+  const end = Math.floor(NOW.getTime() / 1000) + 30 * 86_400;
+  const fetchSub: typeof fetch = async (input) => {
+    urls.push(String(input));
+    return new Response(JSON.stringify({ id: "sub_p", status: "active", items: { data: [{ price: { id: "price_pro" }, current_period_end: end }] } }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const payload = JSON.stringify({
+    id: "evt_plan",
+    type: "checkout.session.completed",
+    data: { object: { id: "cs_plan", customer: "cus_p", subscription: "sub_p", client_reference_id: USER, metadata: { planId: "PRO" } } },
+  });
+  const res = await handle(await signedStripe(payload), envOf(), { query, now: () => NOW, fetch: fetchSub });
+  assert.equal(res.status, 200);
+  assert.deepEqual(urls, ["https://api.stripe.com/v1/subscriptions/sub_p"]);
+  const update = seen.find((call) => call.sql.startsWith("UPDATE users"));
+  assert.deepEqual(update?.params, [USER, "PRO", "cus_p", new Date(end * 1000).toISOString()]);
+  assert.equal(ledger[0]?.reference, "cs_plan");
+  assert.equal(ledger[0]?.amount, 27_000_000);
+});
+
 test("a company stripe customer cancel does not 500 when no user matches", async () => {
   resetLimits();
   let companySql = "";
