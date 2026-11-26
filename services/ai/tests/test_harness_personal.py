@@ -106,6 +106,17 @@ _CORE = {
 _WRITES = {"POST", "PATCH", "DELETE"}
 
 
+class _RevisionDb:
+    def q(self):
+        return self
+
+    async def execute(self, *_args):
+        return None
+
+    async def fetchrow(self, *_args):
+        return {"body": "1"}
+
+
 def test_personal_tool_tiers():
     tools = {tool.name: tool.tier for tool in REGISTRY["personal"].tools}
     assert tools == _TIERS
@@ -128,7 +139,7 @@ async def test_core_tool_paths(name):
         conversation_id="conv-1",
         job_id="job-1",
         tool_call_id="call-1",
-        db=None,
+        db=_RevisionDb(),
         core=core,
     )
     await tool.run(ctx, tool.args_model.model_validate(args))
@@ -141,7 +152,8 @@ async def test_core_tool_paths(name):
         assert set(json.loads(seen[0].content)) <= _CORE_FIELDS
 
 
-_CORE_FIELDS = {"type", "title", "startsAt", "endsAt", "body", "category", "displayName", "headline", "message"}
+_CORE_FIELDS = {
+    "type", "title", "startsAt", "endsAt", "expectedRevision", "body", "category", "displayName", "headline", "message"}
 
 
 async def test_calendar_and_profile_bodies_use_core_names():
@@ -153,13 +165,13 @@ async def test_calendar_and_profile_bodies_use_core_names():
 
     core = CoreClient("http://core.test", "secret", httpx.MockTransport(handler))
     ctx = ToolContext(user_id="user-1", company_id=None, conversation_id="conv-1",
-                      job_id="job-1", tool_call_id="call-1", db=None, core=core)
+                      job_id="job-1", tool_call_id="call-1", db=_RevisionDb(), core=core)
     tools = {tool.name: tool for tool in REGISTRY["personal"].tools}
     await tools["update_calendar_event"].run(ctx, tools["update_calendar_event"].args_model.model_validate(
         {"event_id": E, "starts_at": "2026-10-23T01:00:00Z"}))
     await tools["update_my_profile"].run(ctx, tools["update_my_profile"].args_model.model_validate(
         {"display_name": "김"}))
-    assert seen == [{"startsAt": "2026-10-23T01:00:00Z"}, {"displayName": "김"}]
+    assert seen == [{"startsAt": "2026-10-23T01:00:00Z", "expectedRevision": 1}, {"displayName": "김"}]
 
 
 async def test_core_ids_cannot_rewrite_the_path():
