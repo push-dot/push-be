@@ -844,7 +844,7 @@ const sandboxAllowed = (ctx: Ctx, userId: string): boolean => {
 const storePort = (ctx: Ctx): StoreReceipts => ctx.deps.stores ?? createStoreReceipts(ctx.env, ctx.deps.fetch ?? fetch, ctx.now);
 
 // A store transaction belongs to the first account that verifies it; replaying it from another account is refused.
-const CLAIM_PURCHASE = "INSERT INTO iap_subscriptions (id, user_id, platform, original_transaction_id, product_id, expires_at, status, sandbox) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (original_transaction_id) DO UPDATE SET product_id = EXCLUDED.product_id, expires_at = EXCLUDED.expires_at, status = EXCLUDED.status, platform = EXCLUDED.platform, sandbox = EXCLUDED.sandbox WHERE iap_subscriptions.user_id = EXCLUDED.user_id RETURNING user_id";
+const CLAIM_PURCHASE = "INSERT INTO iap_subscriptions (id, user_id, platform, original_transaction_id, product_id, expires_at, status, sandbox) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (original_transaction_id) DO UPDATE SET product_id = EXCLUDED.product_id, expires_at = EXCLUDED.expires_at, status = CASE WHEN iap_subscriptions.status = 'REPLACED' THEN iap_subscriptions.status ELSE EXCLUDED.status END, platform = EXCLUDED.platform, sandbox = EXCLUDED.sandbox WHERE iap_subscriptions.user_id = EXCLUDED.user_id RETURNING user_id, status";
 
 const claimPurchase = async (
   ctx: Ctx,
@@ -855,6 +855,7 @@ const claimPurchase = async (
   const row = await one(ctx.deps.query, CLAIM_PURCHASE,
     [crypto.randomUUID(), ctx.user.id, platform, receipt.originalTransactionId, receipt.productId, receipt.expiresAt, status, receipt.sandbox === true]);
   if (!row) {throw new HttpError(409, "CONFLICT", "purchase belongs to another account");}
+  if (row.status === "REPLACED") {throw new HttpError(400, "VALIDATION_ERROR", "purchase is not valid");}
 };
 
 const requireKind = (env: CoreEnv, productId: string): "PRO" | "ULTRA" | "TOPUP" => {
@@ -901,6 +902,17 @@ export const topup = async (ctx: Ctx): Promise<Response> => {
   }
 };
 
+const retireLinked = async (ctx: Ctx, linkedToken: string, token: string): Promise<number | null> => {
+  if (linkedToken === token) {return null;}
+  const old = await one(ctx.deps.query,
+    "UPDATE iap_subscriptions SET status = 'REPLACED' WHERE original_transaction_id = $1 AND user_id = $2 AND platform = 'GOOGLE_PLAY' AND status NOT IN ('CONSUMED', 'REFUNDED') RETURNING product_id, credit_level_micro",
+    [linkedToken, ctx.user.id]);
+  if (!old) {return null;}
+  if (old.credit_level_micro !== null && old.credit_level_micro !== undefined) {return Number(old.credit_level_micro);}
+  const kind = productKind(ctx.env, String(old.product_id));
+  return grantMicro("PERSONAL", kind === "PRO" || kind === "ULTRA" ? kind : "ULTRA");
+};
+
 export const verifyIap = async (ctx: Ctx): Promise<Response> => {
   const body = await readObject(ctx.request);
   const platform = body.platform;
@@ -921,7 +933,7 @@ export const verifyIap = async (ctx: Ctx): Promise<Response> => {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body", { field: "purchaseToken" });
   }
   const stores = storePort(ctx);
-  const receipt = platform === "APP_STORE"
+  const receipt: Awaited<ReturnType<StoreReceipts["verifyGoogle"]>> = platform === "APP_STORE"
     ? await stores.verifyApple(String(body.signedTransaction))
     : await stores.verifyGoogle(String(body.purchaseToken), body.productId, kind !== "TOPUP");
   if (receipt.sandbox === true && !sandboxAllowed(ctx, ctx.user.id)) {
@@ -944,7 +956,17 @@ export const verifyIap = async (ctx: Ctx): Promise<Response> => {
     await query(q,
       "UPDATE users SET plan = $2, subscription_status = 'ACTIVE', period_ends_at = COALESCE($3::timestamptz, period_ends_at) WHERE id = $1",
       [ctx.user.id, kind, receipt.expiresAt]);
-    await userLedger(tx, ctx.user.id, grantMicro("PERSONAL", kind), receipt.originalTransactionId);
+    const replaced = receipt.linkedPurchaseToken
+      ? await retireLinked(tx, receipt.linkedPurchaseToken, receipt.originalTransactionId)
+      : null;
+    const amount = grantMicro("PERSONAL", kind);
+    if (replaced === null) {
+      await userLedger(tx, ctx.user.id, amount, receipt.originalTransactionId);
+      return;
+    }
+    await query(q, "UPDATE iap_subscriptions SET credit_level_micro = $2 WHERE original_transaction_id = $1",
+      [receipt.originalTransactionId, Math.max(replaced, amount)]);
+    await userLedger(tx, ctx.user.id, Math.max(0, amount - replaced), receipt.originalTransactionId);
   });
   if (kind === "TOPUP") {return data(200, { plan: ctx.user.plan || null, periodEndsAt: ts(ctx.user.periodEndsAt) }, ctx.rid);}
   return data(200, { plan: kind, periodEndsAt: ts(receipt.expiresAt) }, ctx.rid);
@@ -992,7 +1014,7 @@ const storeNote = async (
       drivesPlan = (await currentStoreSubscription(ctx, String(row.user_id))) === transactionId;
     }
     await query(ctx.deps.query,
-      "UPDATE iap_subscriptions SET status = CASE WHEN status IN ('CONSUMED', 'REFUNDED') THEN 'REFUNDED' ELSE 'CANCELED' END, expires_at = COALESCE($2::timestamptz, expires_at), sandbox = $3 WHERE original_transaction_id = $1",
+      "UPDATE iap_subscriptions SET status = CASE WHEN status IN ('CONSUMED', 'REFUNDED') THEN 'REFUNDED' WHEN status = 'REPLACED' THEN status ELSE 'CANCELED' END, expires_at = COALESCE($2::timestamptz, expires_at), sandbox = $3 WHERE original_transaction_id = $1",
       [transactionId, expiresAt, sandbox]);
     if (!row?.user_id) {return;}
     // A refunded credit top-up is not the subscription: the plan stays and the pack's credits go.
@@ -1011,7 +1033,7 @@ const storeNote = async (
   if (!grants || !transactionId) {return;}
   const kind = requireKind(ctx.env, productId);
   const row = await one(ctx.deps.query,
-    "SELECT user_id FROM iap_subscriptions WHERE original_transaction_id = $1",
+    "SELECT user_id FROM iap_subscriptions WHERE original_transaction_id = $1 AND status <> 'REPLACED'",
     [transactionId]);
   if (!row) {return;}
   const userId = String(row.user_id);

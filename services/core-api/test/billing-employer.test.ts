@@ -1142,7 +1142,7 @@ test("device apple verify checks the x5c chain then the App Store Server API", a
   const signing = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
   const pkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", signing.privateKey));
   const apiKey = `-----BEGIN PRIVATE KEY-----\n${b64std(pkcs8)}\n-----END PRIVATE KEY-----`;
-  const signed = (bundleId: string, extra: { revocationDate?: number } = {}) => jws({
+  const signed = (bundleId: string, extra: { revocationDate?: number; isUpgraded?: boolean } = {}) => jws({
     bundleId, productId: "ios.pro", originalTransactionId: "tx-apple", transactionId: "tx-apple", expiresDate: Date.parse("2026-11-21T00:00:00Z"), type: "Auto-Renewable Subscription", ...extra,
   }, chain.privateKey, { x5c: chain.x5c });
   const env = envOf({
@@ -1190,6 +1190,12 @@ test("device apple verify checks the x5c chain then the App Store Server API", a
   const forged = await verify(flipSig(await signed("com.push.app")), "99999999-9999-4999-8999-999999999994");
   assert.equal(forged.status, 400);
   assert.equal(fetched, beforeRejects);
+  const upgradedSeen: Array<Call> = [];
+  echo = await signed("com.push.app", { isUpgraded: true });
+  const upgraded = await verify(echo, "99999999-9999-4999-8999-99999999999e", env, upgradedSeen);
+  assert.equal(upgraded.status, 400);
+  assert.equal(upgradedSeen.some((call) => call.sql.includes("INSERT INTO iap_subscriptions") || call.sql.includes("UPDATE users")), false);
+  echo = await signed("com.push.app");
   mode = "other";
   const mismatch = await verify(echo, "99999999-9999-4999-8999-999999999995");
   assert.equal(mismatch.status, 400);
@@ -1340,6 +1346,31 @@ test("google verify grants only a purchased product or a live subscription", asy
   assert.equal(live.status, 200);
   assert.match(urls[3] ?? "", /\/purchases\/subscriptionsv2\/tokens\/tok-1$/);
   assert.equal(urls.filter((url) => url === OAUTH_TOKEN).length, 1);
+});
+
+test("google verify retires the subscription its linkedPurchaseToken replaces", async () => {
+  resetLimits();
+  const fetchImpl = (async (input: RequestInfo | URL) => String(input) === OAUTH_TOKEN
+    ? Response.json({ access_token: "ya29.play", expires_in: 3600 })
+    : Response.json({
+      subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+      linkedPurchaseToken: "tok-old",
+      lineItems: [{ productId: "ultra", expiryTime: "2026-11-21T00:00:00Z" }],
+    })) as typeof fetch;
+  const seen: Array<Call> = [];
+  const res = await handle(
+    post("/api/v1/billing/iap/verify", { platform: "GOOGLE_PLAY", productId: "ultra", purchaseToken: "tok-new" }, "99999999-9999-4999-8999-99999999998a"),
+    envOf({
+      GOOGLE_PLAY_KEY: await serviceAccount("play-linked@push.iam.gserviceaccount.com"),
+      GOOGLE_PLAY_PACKAGE: "com.push.app",
+      IAP_PRODUCT_PRO: "pro",
+      IAP_PRODUCT_ULTRA: "ultra",
+    }),
+    { query: claimQuery(seen), now: () => NOW, fetch: fetchImpl },
+  );
+  assert.equal(res.status, 200);
+  const retire = seen.find((call) => call.sql.includes("SET status = 'REPLACED'"));
+  assert.deepEqual(retire?.params, ["tok-old", USER]);
 });
 
 test("google verify exchanges a service account for an access token", async () => {
