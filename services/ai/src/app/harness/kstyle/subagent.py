@@ -101,6 +101,22 @@ def _derived(chat, tier: str, update: dict):
     return derived
 
 
+_EFFORT_RANK = ("LOW", "MEDIUM", "HIGH", "MAX")
+
+
+def capped_model(chat, ceiling: str = "HIGH"):
+    """The turn's model with its reasoning effort no higher than ceiling, for one structured call
+    that must finish inside the call limit. Without the managed gate: chat itself."""
+    from app.harness.model import GateModel
+
+    if not isinstance(chat, GateModel):
+        return chat
+    effort = str(getattr(chat.ai, "effort", "") or "").upper()
+    if effort not in _EFFORT_RANK or _EFFORT_RANK.index(effort) <= _EFFORT_RANK.index(ceiling):
+        return chat
+    return _derived(chat, "main", {"effort": ceiling})
+
+
 def light_model(chat, model: str = ""):
     """The turn's model moved to the light tier, for reading and extraction. Without the managed gate there
     is no light tier: None, and the caller skips the subagent. model overrides LIGHT_MODEL."""

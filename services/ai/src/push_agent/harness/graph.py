@@ -55,6 +55,16 @@ async def gate_answered(db, ctx, card_id: str, option: str, offer: dict) -> bool
     return row is not None
 
 
+def flow_generate(chat):
+    """The flows' structured ``generate``: the turn's model, never above HIGH effort. Ultra's MAX
+    made one structured call (posting role step, review match) outrun the 180-second call limit
+    on staging, where HIGH answered the same call in 12 seconds. Lower plans keep their effort."""
+    from app.harness.kstyle.subagent import capped_model
+    from push_agent.harness.llm import gate_generate
+
+    return gate_generate(capped_model(chat))
+
+
 async def record_gate_approval(db, ctx, tool, args) -> None:
     approval_id = UUID(approval_id_for(ctx.job_id, ctx.tool_call_id))
     await db.q().execute(
@@ -81,7 +91,6 @@ def build_employer_graph(agent, tools, after_agent, checkpointer, *, db, core=No
 
     from app.domain.employer_chat import current_employer_plan
     from push_agent.harness.flows import FLOWS, build_flows, flow_of, flow_summary
-    from push_agent.harness.llm import gate_generate
 
     async def research_text(state, name):
         svc = bound_services.get()
@@ -93,7 +102,7 @@ def build_employer_graph(agent, tools, after_agent, checkpointer, *, db, core=No
             purpose="이 회사의 채용 공고를 쓰기 위해")
 
     def generate_for(_state):
-        return gate_generate(turn_model.get())
+        return flow_generate(turn_model.get())
 
     async def call_tool(state, name, args, *, gate: tuple[str, str] | None = None):
         """gate: (card id, option) of the flow gate that showed this exact write. Once the employer

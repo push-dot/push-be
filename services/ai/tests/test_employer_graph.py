@@ -582,3 +582,15 @@ async def test_the_role_choices_start_from_this_turns_request_only():
     assert "[담당자 요청]\n데이터 엔지니어 공고, 3년 이상, 서울" in seen[0]
     assert "[담당자 요청]\n없음" in seen[1]
     assert "프론트엔드" not in seen[1], "an older message is not this request"
+
+
+def test_flow_calls_run_at_the_plan_effort_but_never_above_high(monkeypatch):
+    from app.domain.entities import AiOptions
+    from app.harness.model import GateModel
+    from push_agent.harness import llm
+    from push_agent.harness.graph import flow_generate
+
+    monkeypatch.setattr(llm, "gate_generate", lambda model: model.ai.effort)
+    for plan_effort, used in (("MEDIUM", "MEDIUM"), ("HIGH", "HIGH"), ("MAX", "HIGH")):
+        ai = AiOptions(provider="OPENROUTER", model="m", effort=plan_effort)
+        assert flow_generate(GateModel(None, "u", ai, "j", {})) == used, plan_effort
