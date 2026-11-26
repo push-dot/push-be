@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from uuid import UUID
@@ -6,6 +8,12 @@ from uuid import UUID
 import httpx
 
 EXPO_PUSH = "https://exp.host/--/api/v2/push/send"
+EXPO_RECEIPTS = "https://exp.host/--/api/v2/push/getReceipts"
+RECEIPTS_KEY = "expo:receipts"
+# Expo has receipts about 15 minutes after the send and keeps them for a day.
+RECEIPT_AFTER = 15 * 60
+RECEIPT_KEEP = 24 * 60 * 60
+RECEIPT_BATCH = 1000
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +29,61 @@ def dead_tokens(messages: list[dict], tickets: object) -> list[str]:
         and (ticket.get("details") or {}).get("error") == "DeviceNotRegistered"]
 
 
+def ticket_ids(messages: list[dict], tickets: object) -> list[tuple[str, str]]:
+    if not isinstance(tickets, list):
+        return []
+    return [
+        (ticket["id"], message["to"]) for message, ticket in zip(messages, tickets, strict=False)
+        if isinstance(ticket, dict) and ticket.get("status") == "ok" and isinstance(ticket.get("id"), str)]
+
+
+def remember_tickets(redis):
+    async def remember(pairs: list[tuple[str, str]]) -> None:
+        now = time.time()
+        await redis.zadd(RECEIPTS_KEY, {ticket + "|" + to: now for ticket, to in pairs})
+    return remember
+
+
+async def check_receipts(token: str, client: httpx.AsyncClient, redis,
+                         prune: Callable[[list[str]], Awaitable[object]], now: float | None = None) -> int:
+    """A token can be gone only in the later receipt, not in the ticket. Returns the tokens pruned."""
+    now = time.time() if now is None else now
+    await redis.zremrangebyscore(RECEIPTS_KEY, "-inf", now - RECEIPT_KEEP)
+    members = await redis.zrangebyscore(RECEIPTS_KEY, "-inf", now - RECEIPT_AFTER, start=0, num=RECEIPT_BATCH)
+    if not members or not token:
+        return 0
+    tokens = dict(member.split("|", 1) for member in members)
+    try:
+        res = await client.post(EXPO_RECEIPTS, json={"ids": list(tokens)}, headers={
+            "authorization": "Bearer " + token, "accept": "application/json"})
+        receipts = res.json().get("data") if res.status_code == 200 else None
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return 0
+    if not isinstance(receipts, dict):
+        logger.warning("expo receipts rejected: %s", res.status_code)
+        return 0
+    dead = sorted({
+        tokens[ticket] for ticket, receipt in receipts.items()
+        if ticket in tokens and isinstance(receipt, dict) and receipt.get("status") == "error"
+        and (receipt.get("details") or {}).get("error") == "DeviceNotRegistered"})
+    if dead:
+        await prune(dead)
+    await redis.zrem(RECEIPTS_KEY, *members)
+    return len(dead)
+
+
+async def receipt_loop(token: str, client: httpx.AsyncClient, redis, prune, every: float = 300) -> None:
+    while True:
+        try:
+            await check_receipts(token, client, redis, prune)
+        except Exception:
+            logger.exception("expo receipt check failed")
+        await asyncio.sleep(every)
+
+
 def expo_push(token: str, client: httpx.AsyncClient,
-              prune: Callable[[list[str]], Awaitable[object]] | None = None):
+              prune: Callable[[list[str]], Awaitable[object]] | None = None,
+              remember: Callable[[list[tuple[str, str]]], Awaitable[object]] | None = None):
     async def push(messages: list[dict]) -> int:
         if not token:
             return 0
@@ -41,6 +102,12 @@ def expo_push(token: str, client: httpx.AsyncClient,
                 await prune(dead)
             except Exception:
                 logger.exception("dead push token cleanup failed")
+        pending = ticket_ids(messages, tickets)
+        if pending and remember is not None:
+            try:
+                await remember(pending)
+            except Exception:
+                logger.exception("expo ticket save failed")
         failed = sum(1 for t in tickets or [] if isinstance(t, dict) and t.get("status") == "error")
         if failed:
             logger.warning("expo push: %d of %d tickets failed", failed, len(messages))
