@@ -66,3 +66,24 @@ test("600 followers of a company that opens 40 postings each hear once, at most 
   assert.equal(new Set(heard).size, FOLLOWERS, "each follower heard once");
   assert.deepEqual(await run(), [], "a later run has nothing left");
 });
+
+test("a cleanup that drops the watch keys also drops the baseline, so the next run announces nothing old", async (t) => {
+  if (!db) {return t.skip(SKIP);}
+  const key = `watch:new:${crypto.randomUUID()}:${crypto.randomUUID()}`;
+  const other = `deadline:${crypto.randomUUID()}`;
+  await db.pg.query(
+    "INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ('watch:baseline', now() - interval '90 days') "
+    + "ON CONFLICT (dedupe_key) DO UPDATE SET created_at = EXCLUDED.created_at");
+  await db.pg.query("INSERT INTO notification_dedupes (dedupe_key, created_at) VALUES ($1, now() - interval '60 days'), ($2, now() - interval '60 days')", [key, other]);
+  const baseline = async () => (await db!.pg.query("SELECT 1 FROM notification_dedupes WHERE dedupe_key = 'watch:baseline'")).rows.length;
+
+  await db.pg.query("DELETE FROM notification_dedupes WHERE dedupe_key = $1", [other]);
+  assert.equal(await baseline(), 1, "removing other keys keeps the baseline");
+  await db.pg.query("DELETE FROM notification_dedupes WHERE dedupe_key = $1", [key]);
+  assert.equal(await baseline(), 0, "removing a watch key removes the baseline with it");
+
+  await db.pg.query(DUE_WATCH, [new Date().toISOString(), new Date(Date.now() - 2 * 86_400_000).toISOString(), new Date(Date.now() - 30 * 86_400_000).toISOString()]);
+  const fresh = (await db.pg.query("SELECT created_at FROM notification_dedupes WHERE dedupe_key = 'watch:baseline'")).rows[0];
+  assert.ok(fresh && Date.now() - new Date(String(fresh.created_at)).getTime() < 60_000, "the next run starts watching from now");
+  ownBaseline = true;
+});
