@@ -209,3 +209,11 @@ test("employer jobs grant the company plan", async () => {
   });
   assert.ok(calls.some((sql) => sql.includes("INSERT INTO billing_ledger") && sql.includes("company_id")));
 });
+
+test("a live-owner enqueue refuses to run without a transaction, where its lock would not hold", async () => {
+  const calls: Array<string> = [];
+  await assert.rejects(
+    enqueueJob(funded(calls, estimateMicro("chat", "FREE")), { type: "chat", userId: USER, plan: "FREE", payload: {}, liveOwner: true }),
+    (error: unknown) => error instanceof HttpError && error.status === 500);
+  assert.equal(calls.some((sql) => sql.includes("INSERT INTO ai_jobs")), false);
+});

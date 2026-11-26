@@ -204,13 +204,57 @@ async def test_check_receipts_keeps_a_ticket_expo_has_no_receipt_for_yet():
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(first)) as client:
         await check_receipts("expo-secret", client, redis, prune, now=RECEIPT_AFTER)
-    assert await redis.zrange(RECEIPTS_KEY, 0, -1) == ["late|b"]
+    assert await redis.zrange(RECEIPTS_KEY, 0, -1, withscores=True) == [("late|0.0|b", RECEIPT_AFTER)]
 
     def later(_request):
         return httpx.Response(200, json={"data": {
             "late": {"status": "error", "details": {"error": "DeviceNotRegistered"}}}})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(later)) as client:
-        assert await check_receipts("expo-secret", client, redis, prune, now=RECEIPT_AFTER + 300) == 1
+        assert await check_receipts("expo-secret", client, redis, prune, now=RECEIPT_AFTER + 300) == 0
+        assert await check_receipts("expo-secret", client, redis, prune, now=2 * RECEIPT_AFTER) == 1
     assert pruned == ["b"]
     assert await redis.zrange(RECEIPTS_KEY, 0, -1) == []
+
+
+@pytest.mark.asyncio
+async def test_tickets_without_a_receipt_go_to_the_back_and_do_not_starve_newer_ones(monkeypatch):
+    import app.workers.handlers.notify as notify
+
+    monkeypatch.setattr(notify, "RECEIPT_BATCH", 2)
+    redis = FakeRedis(decode_responses=True)
+    await redis.zadd(RECEIPTS_KEY, {"s1|0|a": 0, "s2|0|b": 1, "new|5|c": 5})
+    asked = []
+
+    def silent(request):
+        asked.append(sorted(json.loads(request.content)["ids"]))
+        return httpx.Response(200, json={"data": {}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(silent)) as client:
+        await check_receipts("expo-secret", client, redis, lambda _t: None, now=RECEIPT_AFTER + 10)
+        await check_receipts("expo-secret", client, redis, lambda _t: None, now=RECEIPT_AFTER + 20)
+    assert asked == [["s1", "s2"], ["new"]], "the two slow tickets wait their turn again"
+    assert len(await redis.zrange(RECEIPTS_KEY, 0, -1)) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_ticket_without_a_receipt_is_dropped_a_day_after_its_send():
+    redis = FakeRedis(decode_responses=True)
+    await redis.zadd(RECEIPTS_KEY, {"slow|0|a": RECEIPT_KEEP})
+    seen = []
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: seen.append(r) or httpx.Response(200, json={"data": {}}))) as client:
+        assert await check_receipts("expo-secret", client, redis, lambda _t: None, now=RECEIPT_KEEP + RECEIPT_AFTER) == 0
+    assert seen == []
+    assert await redis.zrange(RECEIPTS_KEY, 0, -1) == []
+
+
+@pytest.mark.asyncio
+async def test_remember_keeps_the_send_time_in_the_member():
+    from app.workers.handlers.notify import remember_tickets
+
+    redis = FakeRedis(decode_responses=True)
+    await remember_tickets(redis)([("t1", "ExponentPushToken[x]")])
+    [(member, score)] = await redis.zrange(RECEIPTS_KEY, 0, -1, withscores=True)
+    ticket, sent, to = member.split("|", 2)
+    assert (ticket, to) == ("t1", "ExponentPushToken[x]") and float(sent) == score

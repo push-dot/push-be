@@ -40,19 +40,35 @@ def ticket_ids(messages: list[dict], tickets: object) -> list[tuple[str, str]]:
 def remember_tickets(redis):
     async def remember(pairs: list[tuple[str, str]]) -> None:
         now = time.time()
-        await redis.zadd(RECEIPTS_KEY, {ticket + "|" + to: now for ticket, to in pairs})
+        await redis.zadd(RECEIPTS_KEY, {f"{ticket}|{now}|{to}": now for ticket, to in pairs})
     return remember
+
+
+def _ticket(member: str, score: float) -> tuple[str, float, str]:
+    """(ticket id, send time, token). The score is when the ticket is next due; the send time is in the member.
+    A member from before the send time was kept there ("ticket|token") was scored by its send time."""
+    ticket, _, rest = member.partition("|")
+    sent, _, to = rest.partition("|")
+    try:
+        return ticket, float(sent), to
+    except ValueError:
+        return ticket, score, rest
 
 
 async def check_receipts(token: str, client: httpx.AsyncClient, redis,
                          prune: Callable[[list[str]], Awaitable[object]], now: float | None = None) -> int:
     """A token can be gone only in the later receipt, not in the ticket. Returns the tokens pruned."""
     now = time.time() if now is None else now
-    await redis.zremrangebyscore(RECEIPTS_KEY, "-inf", now - RECEIPT_KEEP)
-    members = await redis.zrangebyscore(RECEIPTS_KEY, "-inf", now - RECEIPT_AFTER, start=0, num=RECEIPT_BATCH)
-    if not members or not token:
+    rows = await redis.zrangebyscore(
+        RECEIPTS_KEY, "-inf", now - RECEIPT_AFTER, start=0, num=RECEIPT_BATCH, withscores=True)
+    due = {member: _ticket(member, score) for member, score in rows}
+    expired = [member for member, (_, sent, _) in due.items() if sent < now - RECEIPT_KEEP]
+    if expired:
+        await redis.zrem(RECEIPTS_KEY, *expired)
+    due = {member: parts for member, parts in due.items() if member not in expired}
+    if not due or not token:
         return 0
-    tokens = dict(member.split("|", 1) for member in members)
+    tokens = {ticket: to for ticket, _, to in due.values()}
     try:
         res = await client.post(EXPO_RECEIPTS, json={"ids": list(tokens)}, headers={
             "authorization": "Bearer " + token, "accept": "application/json"})
@@ -68,10 +84,12 @@ async def check_receipts(token: str, client: httpx.AsyncClient, redis,
         and (receipt.get("details") or {}).get("error") == "DeviceNotRegistered"})
     if dead:
         await prune(dead)
-    # A ticket Expo has no receipt for yet stays for the next pass; the 24-hour trim drops it at last.
-    done = [member for member in members if member.split("|", 1)[0] in receipts]
-    if done:
-        await redis.zrem(RECEIPTS_KEY, *done)
+    await redis.zrem(RECEIPTS_KEY, *due)
+    # A ticket Expo has no receipt for yet goes to the back, due again in 15 minutes, so a backlog of them cannot
+    # hold newer tickets out of the batch. It is dropped once its send time is a day old.
+    waiting = {f"{ticket}|{sent}|{to}": now for ticket, sent, to in due.values() if ticket not in receipts}
+    if waiting:
+        await redis.zadd(RECEIPTS_KEY, waiting)
     return len(dead)
 
 
