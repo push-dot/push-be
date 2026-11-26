@@ -1,4 +1,4 @@
-import { isUnique, query } from "../db.ts";
+import { errorInfo, isUnique, query } from "../db.ts";
 import type { Row } from "../db.ts";
 import { HttpError, data, fieldError, noContent, requireUuid } from "../http.ts";
 import type { JsonObject } from "../json.ts";
@@ -8,16 +8,22 @@ import { forbidExtra } from "./conversations.ts";
 import { readObject, textOf } from "./recruiting-shared.ts";
 
 export const MEMORY_MAX = 300;
+// Deadlock and serialization failures: two crossed edits, retryable by the user.
+const CONTENDED = new Set(["40P01", "40001"]);
 const LIST_LIMIT = 200;
 
 const COLS = "id, text, created_at, updated_at";
 const LIST = `SELECT ${COLS} FROM user_memories WHERE user_id = $1 ORDER BY updated_at DESC, id LIMIT ${LIST_LIMIT}`;
-// Correcting a memory into one the user already has (unique on user_id, text) folds this row into that one.
-const UPDATE = `WITH own AS (SELECT id FROM user_memories WHERE id = $1 AND user_id = $2),
-  dup AS (SELECT m.id FROM user_memories m WHERE m.user_id = $2 AND m.text = $3 AND m.id <> $1 AND EXISTS (SELECT 1 FROM own)),
+// Correcting a memory into one the user already has (unique on user_id, text) folds this row into that one. Both
+// rows are locked in id order first; a target deleted or renamed meanwhile drops out, and this row is renamed instead.
+const UPDATE = `WITH locked AS (
+    SELECT id, text FROM user_memories WHERE user_id = $2 AND (id = $1 OR text = $3) ORDER BY id FOR UPDATE
+  ), own AS (SELECT id FROM locked WHERE id = $1),
+  dup AS (SELECT id FROM locked WHERE id <> $1 AND text = $3 AND EXISTS (SELECT 1 FROM own)),
   gone AS (DELETE FROM user_memories WHERE id = $1 AND user_id = $2 AND EXISTS (SELECT 1 FROM dup) RETURNING id),
   kept AS (UPDATE user_memories SET updated_at = $4 WHERE id = (SELECT id FROM dup) AND EXISTS (SELECT 1 FROM gone) RETURNING ${COLS}),
-  changed AS (UPDATE user_memories SET text = $3, updated_at = $4 WHERE id = $1 AND user_id = $2 AND NOT EXISTS (SELECT 1 FROM dup) RETURNING ${COLS})
+  changed AS (UPDATE user_memories SET text = $3, updated_at = $4
+    WHERE id = $1 AND user_id = $2 AND EXISTS (SELECT 1 FROM own) AND NOT EXISTS (SELECT 1 FROM dup) RETURNING ${COLS})
   SELECT * FROM kept UNION ALL SELECT * FROM changed`;
 const DELETE = "DELETE FROM user_memories WHERE id = $1 AND user_id = $2";
 const CLEAR = "DELETE FROM user_memories WHERE user_id = $1";
@@ -40,14 +46,17 @@ const patchMemory = async (ctx: Ctx, idRaw: string): Promise<Response> => {
   const id = requireUuid(idRaw, "id");
   const body = await readObject(ctx.request);
   forbidExtra(body, ["text"]);
-  const text = textOf(body.text, "text", 1, MEMORY_MAX).trim();
+  // Collapsed like the AI's remember tool, so the same sentence is the same row.
+  const text = textOf(body.text, "text", 1, MEMORY_MAX).trim().split(/\s+/).join(" ");
   if (!text) {throw fieldError("text", "must not be blank");}
   let rows;
   try {
     rows = await query(ctx.deps.query, UPDATE, [id, ctx.user.id, text, ctx.now.toISOString()]);
   } catch (error) {
     // A concurrent edit wrote the same text between the read and the write.
-    if (isUnique(error)) {throw new HttpError(409, "CONFLICT", "a memory with this text already exists");}
+    if (isUnique(error) || CONTENDED.has(String(errorInfo(error)?.code ?? ""))) {
+      throw new HttpError(409, "CONFLICT", "the memory changed meanwhile, try again");
+    }
     throw error;
   }
   const row = rows.rows[0];

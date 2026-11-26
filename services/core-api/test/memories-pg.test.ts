@@ -63,4 +63,7 @@ test("correcting a memory into one the user already has keeps one row", async (t
   const left: unknown = (await db.call(user, "GET", "/me/memories")).body.data;
   assert.deepEqual(Array.isArray(left) ? left.map((row: { id: string }) => row.id) : [], [kept]);
   assert.equal((await db.call(user, "PATCH", `/me/memories/${older}`, { text: "x" })).status, 404);
+  const spaced = await remember(user.id, "연봉은 6천 이상", "2026-11-22T01:00:00Z");
+  const folded = await db.call(user, "PATCH", `/me/memories/${kept}`, { text: " 연봉은   6천  이상 " });
+  assert.equal(folded.data.id, spaced, "inner spaces collapse like the AI's remember tool");
 });
