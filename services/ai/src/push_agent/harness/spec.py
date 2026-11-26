@@ -40,6 +40,10 @@ def employer_start(payload: dict, conversation: dict) -> dict | None:
     start = {"name": name}
     if name == "posting" and conversation.get("posting_id"):
         start["reference_posting_id"] = conversation["posting_id"]
+    if name == "posting":
+        # This turn's own words only: an intent button sends none, and an older message in the
+        # thread is not this request.
+        start["asked"] = str(payload.get("text") or "").strip()
     if name in ("review", "interview") and application_id:
         start["application_id"] = str(application_id)
     return start

@@ -202,16 +202,6 @@ async def _read_claims(model, documents: str) -> dict:
     return {"claims": claims}
 
 
-def _asked(state: dict) -> str:
-    """The employer's latest message: what they asked this flow for."""
-    from langchain_core.messages import HumanMessage
-
-    for message in reversed(state.get("messages") or []):
-        if isinstance(message, HumanMessage):
-            return message.content if isinstance(message.content, str) else ""
-    return ""
-
-
 def flow_of(state: dict) -> dict:
     raw = state.get("flow") or {}
     return raw if isinstance(raw, dict) else {}
@@ -359,15 +349,15 @@ def build_flows(
         flow = flow_of(state)
         profile = CompanyProfile.model_validate(flow["profile"])
         reference = flow.get("reference") or "없음"
-        asked = _asked(state)
-        # What the employer already said comes first, so the choices start from their request.
+        # What the employer said when starting this flow comes first in the choices.
+        asked = flow.get("asked") or ""
         user = (f"[담당자 요청]\n{asked or '없음'}\n\n"
                 f"[회사 프로필]\n{profile.model_dump_json()}\n\n[참고 공고]\n{reference}")
         choices = await generate_for(state)(RoleOptions, node_prompt("pf_role"), user)
         options = [
             {"id": o.id or f"r{i}", "label": o.label} for i, o in enumerate(choices.options[:3])
         ]
-        return flow_update(state, step="role", role_options=options, asked=asked)
+        return flow_update(state, step="role", role_options=options)
 
     async def pf_role(state):
         flow = flow_of(state)

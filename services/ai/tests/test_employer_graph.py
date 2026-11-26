@@ -153,6 +153,7 @@ def test_employer_start_reads_intent_and_conversation():
     assert employer_start({"intent": "posting"}, conv) == {
         "name": "posting",
         "reference_posting_id": "p1",
+        "asked": "",
     }
     assert employer_start({"intent": "review"}, conv) == {"name": "review", "application_id": "a1"}
     assert employer_start({"intent": "general"}, conv) is None
@@ -551,26 +552,33 @@ async def test_a_number_only_in_the_reference_posting_is_cut():
     assert (await _sub_flow(graph, config))["removed"] == ["팀 40명과 일해요"]
 
 
-async def test_the_role_choices_start_from_what_the_employer_asked_for():
+async def test_the_role_choices_start_from_this_turns_request_only():
     from langchain_core.messages import HumanMessage
 
     from push_agent.harness.flows import RoleOptions
+    from push_agent.harness.spec import employer_start
 
-    seen = {}
+    seen = []
 
     async def generate(schema, system, user):
         if schema is RoleOptions:
-            seen["user"] = user
+            seen.append(user)
             return RoleOptions(options=[{"id": "data", "label": "데이터 엔지니어"}])
         raise AssertionError(schema)
 
     state_type, flows = build_flows(
         db=None, generate_for=lambda _s: generate, research_text=None, plan_of=lambda _s: "PRO")
     graph = _sub("posting", flows, state_type)
-    asked = HumanMessage(content="데이터 엔지니어 공고 만들어 줘. 3년 이상, 서울")
-    state = {**BASE, "messages": [asked],
-             "flow": {"name": "posting", "step": "role_options",
-                      "profile": {"name": "에이전트테스트"}}}
-    out = await graph.ainvoke(state, {"configurable": {"thread_id": "asked-1"}})
-    assert "[담당자 요청]\n데이터 엔지니어 공고 만들어 줘. 3년 이상, 서울" in seen["user"]
-    assert _interrupt(out)["gate"] == "pf_role"
+    stale = HumanMessage(content="지난주에 물어본 프론트엔드 공고")
+    typed = employer_start(
+        {"intent": "posting", "text": "데이터 엔지니어 공고, 3년 이상, 서울"}, {})
+    button = employer_start({"intent": "posting", "text": ""}, {})
+    assert typed["asked"] == "데이터 엔지니어 공고, 3년 이상, 서울" and button["asked"] == ""
+    for n, start in enumerate((typed, button)):
+        flow = {**start, "step": "role_options", "profile": {"name": "에이전트테스트"}}
+        out = await graph.ainvoke({**BASE, "messages": [stale], "flow": flow},
+                                  {"configurable": {"thread_id": f"asked-{n}"}})
+        assert _interrupt(out)["gate"] == "pf_role"
+    assert "[담당자 요청]\n데이터 엔지니어 공고, 3년 이상, 서울" in seen[0]
+    assert "[담당자 요청]\n없음" in seen[1]
+    assert "프론트엔드" not in seen[1], "an older message is not this request"
