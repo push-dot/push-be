@@ -330,6 +330,7 @@ export const enqueueChatMessage = async (
   payload: JsonObject,
   text: string,
   attachments: Array<JsonObject> = [],
+  liveOwner = false,
 ): Promise<Response> => {
   const owned = await one(ctx.deps.query,
     "SELECT c.id, c.company_id, co.plan AS company_plan, u.plan AS user_plan FROM conversations c LEFT JOIN companies co ON co.id = c.company_id LEFT JOIN users u ON u.id = $2 WHERE c.id = $1 AND ((c.company_id IS NULL AND c.user_id = $2) OR (" + memberOfCaller("c.company_id", "$2") + "))",
@@ -353,6 +354,7 @@ export const enqueueChatMessage = async (
     payload,
     idempotencyKey: headerKey || undefined,
     conversationId,
+    liveOwner,
   }, ctx.deps.transaction);
   const messageId = await uuid5Url("push:chat:" + jobId + ":user");
   const inserted = await one(ctx.deps.query,

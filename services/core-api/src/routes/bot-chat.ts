@@ -105,10 +105,10 @@ const accessModeOf = async (ctx: Ctx, raw: unknown): Promise<string> => {
   return CANONICAL_ACCESS[String(saved?.ai_access_mode ?? "")] ?? "AUTO";
 };
 
-type BotSend = { text: string; materials: Array<Material>; intent: string | null; ai: JsonObject | null; accessMode: string };
+type BotSend = { text: string; materials: Array<Material>; intent: string | null; ai: JsonObject | null; accessMode: string; liveOwner?: boolean };
 
 /** One message into the bot's thread, as the app sends it or as a schedule runs it (bot-schedules.ts). The caller checked consent. */
-export const sendToBot = async (ctx: Ctx, botId: string, { text, materials, intent, ai, accessMode }: BotSend): Promise<Response> => {
+export const sendToBot = async (ctx: Ctx, botId: string, { text, materials, intent, ai, accessMode, liveOwner = false }: BotSend): Promise<Response> => {
   await allowChat(ctx, ai);
   if (ai) {ai.effort = effortFor("PERSONAL", ctx.user.plan);}
   const payload = {
@@ -116,7 +116,7 @@ export const sendToBot = async (ctx: Ctx, botId: string, { text, materials, inte
   };
   try {
     const thread = await ensureThread(ctx, botId);
-    return await enqueueChatMessage(ctx, thread, payload, text, materials.map(({ kind, id, title }) => ({ kind, id, title })));
+    return await enqueueChatMessage(ctx, thread, payload, text, materials.map(({ kind, id, title }) => ({ kind, id, title })), liveOwner);
   } catch (error) {
     // The bot was deleted while this send was under way. Its thread took every row of the send with it.
     if (typeof error === "object" && error !== null && "code" in error && error.code === FOREIGN_KEY_VIOLATION) {throw notFound();}
