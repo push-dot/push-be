@@ -902,15 +902,21 @@ export const topup = async (ctx: Ctx): Promise<Response> => {
   }
 };
 
-const retireLinked = async (ctx: Ctx, linkedToken: string, token: string): Promise<number | null> => {
-  if (linkedToken === token) {return null;}
-  const old = await one(ctx.deps.query,
-    "UPDATE iap_subscriptions SET status = 'REPLACED' WHERE original_transaction_id = $1 AND user_id = $2 AND platform = 'GOOGLE_PLAY' AND status NOT IN ('CONSUMED', 'REFUNDED') RETURNING product_id, credit_level_micro",
-    [linkedToken, ctx.user.id]);
-  if (!old) {return null;}
-  if (old.credit_level_micro !== null && old.credit_level_micro !== undefined) {return Number(old.credit_level_micro);}
-  const kind = productKind(ctx.env, String(old.product_id));
-  return grantMicro("PERSONAL", kind === "PRO" || kind === "ULTRA" ? kind : "ULTRA");
+const LINK_HOPS = 5;
+
+const knownLink = async (ctx: Ctx, stores: StoreReceipts, linkedToken: string, token: string): Promise<string | null> => {
+  let link = linkedToken;
+  for (let hop = 0; link !== token; hop++) {
+    const row = await one(ctx.deps.query, "SELECT user_id FROM iap_subscriptions WHERE original_transaction_id = $1 AND platform = 'GOOGLE_PLAY'", [link]);
+    if (row) {
+      if (String(row.user_id) !== ctx.user.id) {throw new HttpError(409, "CONFLICT", "purchase belongs to another account");}
+      return link;
+    }
+    const next = hop < LINK_HOPS ? await stores.googleLinkedToken(link) : undefined;
+    if (!next) {return null;}
+    link = next;
+  }
+  return null;
 };
 
 export const verifyIap = async (ctx: Ctx): Promise<Response> => {
@@ -933,11 +939,14 @@ export const verifyIap = async (ctx: Ctx): Promise<Response> => {
     throw new HttpError(400, "VALIDATION_ERROR", "invalid request body", { field: "purchaseToken" });
   }
   const stores = storePort(ctx);
-  const receipt: Awaited<ReturnType<StoreReceipts["verifyGoogle"]>> = platform === "APP_STORE"
+  const receipt: Awaited<ReturnType<StoreReceipts["verifyGoogle"]>> & { superseded?: boolean } = platform === "APP_STORE"
     ? await stores.verifyApple(String(body.signedTransaction))
     : await stores.verifyGoogle(String(body.purchaseToken), body.productId, kind !== "TOPUP");
   if (receipt.sandbox === true && !sandboxAllowed(ctx, ctx.user.id)) {
     throw new HttpError(400, "VALIDATION_ERROR", "purchase is not valid");
+  }
+  if (receipt.superseded === true) {
+    return data(200, { plan: ctx.user.plan || null, periodEndsAt: ts(ctx.user.periodEndsAt) }, ctx.rid);
   }
   if (requireKind(ctx.env, receipt.productId) !== kind) {
     throw new HttpError(400, "VALIDATION_ERROR", "unknown product", { field: "productId" });
@@ -945,6 +954,9 @@ export const verifyIap = async (ctx: Ctx): Promise<Response> => {
   if (kind !== "TOPUP" && (receipt.expiresAt !== null && receipt.expiresAt !== undefined) && Date.parse(receipt.expiresAt) <= ctx.now.getTime()) {
     throw new HttpError(400, "VALIDATION_ERROR", "purchase is not valid");
   }
+  const linked = receipt.linkedPurchaseToken
+    ? await knownLink(ctx, stores, receipt.linkedPurchaseToken, receipt.originalTransactionId)
+    : null;
   await inTransactionOf(ctx)(async (q) => {
     const tx: Ctx = { ...ctx, deps: { ...ctx.deps, query: q } };
     await lockOwner(q, "PERSONAL", ctx.user.id);
@@ -956,17 +968,12 @@ export const verifyIap = async (ctx: Ctx): Promise<Response> => {
     await query(q,
       "UPDATE users SET plan = $2, subscription_status = 'ACTIVE', period_ends_at = COALESCE($3::timestamptz, period_ends_at) WHERE id = $1",
       [ctx.user.id, kind, receipt.expiresAt]);
-    const replaced = receipt.linkedPurchaseToken
-      ? await retireLinked(tx, receipt.linkedPurchaseToken, receipt.originalTransactionId)
-      : null;
-    const amount = grantMicro("PERSONAL", kind);
-    if (replaced === null) {
-      await userLedger(tx, ctx.user.id, amount, receipt.originalTransactionId);
-      return;
+    if (linked) {
+      await query(q,
+        "UPDATE iap_subscriptions SET status = 'REPLACED' WHERE original_transaction_id = $1 AND user_id = $2 AND status NOT IN ('CONSUMED', 'REFUNDED')",
+        [linked, ctx.user.id]);
     }
-    await query(q, "UPDATE iap_subscriptions SET credit_level_micro = $2 WHERE original_transaction_id = $1",
-      [receipt.originalTransactionId, Math.max(replaced, amount)]);
-    await userLedger(tx, ctx.user.id, Math.max(0, amount - replaced), receipt.originalTransactionId);
+    await userLedger(tx, ctx.user.id, receipt.linkedPurchaseToken ? 0 : grantMicro("PERSONAL", kind), receipt.originalTransactionId);
   });
   if (kind === "TOPUP") {return data(200, { plan: ctx.user.plan || null, periodEndsAt: ts(ctx.user.periodEndsAt) }, ctx.rid);}
   return data(200, { plan: kind, periodEndsAt: ts(receipt.expiresAt) }, ctx.rid);

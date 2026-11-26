@@ -222,6 +222,7 @@ test("iap verify while stripe is active returns 409", async () => {
           verified += 1;
           return { productId: "ios.pro", originalTransactionId: "tx-pro", expiresAt: null, consumable: false };
         },
+        googleLinkedToken: async () => undefined,
         verifyGoogle: async () => { throw new Error("google"); },
         decodeAppleNotification: async () => { throw new Error("apple"); },
         decodeGoogleNotification: async () => { throw new Error("google"); },
@@ -251,6 +252,7 @@ test("iap top-up is allowed during an active stripe subscription and does not do
       assert.equal(signed, "jws-top");
       return { productId: "ios.topup", originalTransactionId: "top-1", expiresAt: null, consumable: true };
     },
+    googleLinkedToken: async () => undefined,
     verifyGoogle: async () => { throw new Error("google"); },
     decodeAppleNotification: async () => { throw new Error("apple"); },
     decodeGoogleNotification: async () => { throw new Error("google"); },
@@ -295,6 +297,7 @@ test("apple webhook inserts one ledger row and ignores the same transaction id",
   };
   const stores: NonNullable<Deps["stores"]> = {
     verifyApple: async () => { throw new Error("verify"); },
+    googleLinkedToken: async () => undefined,
     verifyGoogle: async () => { throw new Error("verify"); },
     decodeAppleNotification: async (body) => {
       decoded += 1;
@@ -1054,6 +1057,7 @@ test("a google play push signed for another service account is rejected", async 
 
 const noStores = {
   verifyApple: async () => { throw new Error("apple"); },
+  googleLinkedToken: async () => undefined,
   verifyGoogle: async () => { throw new Error("google"); },
   decodeAppleNotification: async () => { throw new Error("apple"); },
   decodeGoogleNotification: async () => { throw new Error("google"); },
@@ -1193,8 +1197,9 @@ test("device apple verify checks the x5c chain then the App Store Server API", a
   const upgradedSeen: Array<Call> = [];
   echo = await signed("com.push.app", { isUpgraded: true });
   const upgraded = await verify(echo, "99999999-9999-4999-8999-99999999999e", env, upgradedSeen);
-  assert.equal(upgraded.status, 400);
-  assert.equal(upgradedSeen.some((call) => call.sql.includes("INSERT INTO iap_subscriptions") || call.sql.includes("UPDATE users")), false);
+  assert.equal(upgraded.status, 200);
+  assert.deepEqual(await upgraded.json(), { data: { plan: "FREE", periodEndsAt: null } });
+  assert.equal(upgradedSeen.some((call) => /INSERT INTO (iap_subscriptions|billing_ledger)|UPDATE (users|iap_subscriptions)/.test(call.sql)), false);
   echo = await signed("com.push.app");
   mode = "other";
   const mismatch = await verify(echo, "99999999-9999-4999-8999-999999999995");
@@ -1348,15 +1353,21 @@ test("google verify grants only a purchased product or a live subscription", asy
   assert.equal(urls.filter((url) => url === OAUTH_TOKEN).length, 1);
 });
 
-test("google verify retires the subscription its linkedPurchaseToken replaces", async () => {
+test("google verify follows linkedPurchaseToken to the known row, retires it and grants nothing", async () => {
   resetLimits();
-  const fetchImpl = (async (input: RequestInfo | URL) => String(input) === OAUTH_TOKEN
-    ? Response.json({ access_token: "ya29.play", expires_in: 3600 })
-    : Response.json({
-      subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
-      linkedPurchaseToken: "tok-old",
+  const links = new Map([["tok-new", "tok-mid"], ["tok-mid", "tok-old"]]);
+  const urls: Array<string> = [];
+  const fetchImpl = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    urls.push(url);
+    if (url === OAUTH_TOKEN) {return Response.json({ access_token: "ya29.play", expires_in: 3600 });}
+    const token = decodeURIComponent(url.slice(url.lastIndexOf("/") + 1));
+    return Response.json({
+      subscriptionState: token === "tok-new" ? "SUBSCRIPTION_STATE_ACTIVE" : "SUBSCRIPTION_STATE_EXPIRED",
+      linkedPurchaseToken: links.get(token),
       lineItems: [{ productId: "ultra", expiryTime: "2026-11-21T00:00:00Z" }],
-    })) as typeof fetch;
+    });
+  }) as typeof fetch;
   const seen: Array<Call> = [];
   const res = await handle(
     post("/api/v1/billing/iap/verify", { platform: "GOOGLE_PLAY", productId: "ultra", purchaseToken: "tok-new" }, "99999999-9999-4999-8999-99999999998a"),
@@ -1366,11 +1377,21 @@ test("google verify retires the subscription its linkedPurchaseToken replaces", 
       IAP_PRODUCT_PRO: "pro",
       IAP_PRODUCT_ULTRA: "ultra",
     }),
-    { query: claimQuery(seen), now: () => NOW, fetch: fetchImpl },
+    {
+      query: authed(seen, false, null, async (sql, params = []) => {
+        if (sql.includes("INSERT INTO iap_subscriptions")) {return { rows: [{ user_id: USER }], rowCount: 1 };}
+        if (sql.startsWith("SELECT user_id FROM iap_subscriptions") && params[0] === "tok-old") {return { rows: [{ user_id: USER }], rowCount: 1 };}
+        return empty;
+      }),
+      now: () => NOW,
+      fetch: fetchImpl,
+    },
   );
   assert.equal(res.status, 200);
+  assert.equal(urls.filter((url) => url.includes("/subscriptionsv2/tokens/tok-mid")).length, 1);
   const retire = seen.find((call) => call.sql.includes("SET status = 'REPLACED'"));
   assert.deepEqual(retire?.params, ["tok-old", USER]);
+  assert.equal(seen.find((call) => call.sql.includes("INSERT INTO billing_ledger"))?.params[2], 0);
 });
 
 test("google verify exchanges a service account for an access token", async () => {
@@ -1494,6 +1515,7 @@ test("a google pubsub renewal updates the plan once", async () => {
   const port = createStoreReceipts(playEnv, certs, NOW);
   const stores: NonNullable<Deps["stores"]> = {
     ...port,
+    googleLinkedToken: async () => undefined,
     verifyGoogle: async (purchaseToken, productId, subscription) => {
       assert.equal(purchaseToken, "tx-renew");
       assert.equal(productId, "ios.pro");

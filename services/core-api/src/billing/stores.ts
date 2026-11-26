@@ -5,8 +5,9 @@ import type { CoreEnv } from "../types.ts";
 import { APPLE_ROOT_G3_PEM } from "./apple-root-g3.ts";
 
 export interface StoreReceipts {
-  verifyApple(signedTransaction: string): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean; sandbox?: boolean }>;
+  verifyApple(signedTransaction: string): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean; sandbox?: boolean; superseded?: boolean }>;
   verifyGoogle(purchaseToken: string, productId: string, subscription: boolean): Promise<{ productId: string; originalTransactionId: string; expiresAt: string | null; consumable: boolean; sandbox?: boolean; linkedPurchaseToken?: string }>;
+  googleLinkedToken(purchaseToken: string): Promise<string | undefined>;
   decodeAppleNotification(body: string): Promise<{ notificationType: string; originalTransactionId: string; productId: string; expiresAt: string | null; sandbox?: boolean }>;
   decodeGoogleNotification(body: unknown, authorization: string | null): Promise<{ notificationType: string; purchaseToken: string; productId: string; expiresAt: string | null }>;
 }
@@ -508,6 +509,11 @@ export const googlePlayPubsub = (body: unknown): JsonObject | null => {
   return parsed;
 };
 
+const playApp = (pkg: string): string => "https://androidpublisher.googleapis.com/androidpublisher/v3/applications/" + encodeURIComponent(pkg);
+
+const linkedOf = (body: JsonObject): string | undefined =>
+  typeof body.linkedPurchaseToken === "string" && body.linkedPurchaseToken ? body.linkedPurchaseToken : undefined;
+
 export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch, now: Date): StoreReceipts => ({
   verifyApple: async (signedTransaction) => {
     if (!env.APPLE_BUNDLE_ID) {throw notConfigured("app store is not configured");}
@@ -520,19 +526,19 @@ export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch, now: 
     if (String(confirmed.originalTransactionId ?? "") !== originalTransactionId) {throw invalidPurchase();}
     if (String(confirmed.productId ?? "") !== String(payload.productId ?? "")) {throw invalidPurchase();}
     if (confirmed.bundleId !== env.APPLE_BUNDLE_ID || (confirmed.revocationDate !== null && confirmed.revocationDate !== undefined)) {throw invalidPurchase();}
-    if (confirmed.isUpgraded === true) {throw invalidPurchase();}
     return {
       productId: String(confirmed.productId ?? ""),
       originalTransactionId,
       expiresAt: expiresOf(confirmed.expiresDate),
       consumable: confirmed.type === "Consumable",
       sandbox: confirmed.environment === "Sandbox",
+      superseded: confirmed.isUpgraded === true,
     };
   },
   verifyGoogle: async (purchaseToken, productId, subscription) => {
     if (!env.GOOGLE_PLAY_KEY || !env.GOOGLE_PLAY_PACKAGE) {throw notConfigured("google play is not configured");}
     const accessToken = await googleAccessToken(env, fetchImpl, now);
-    const app = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications/" + encodeURIComponent(env.GOOGLE_PLAY_PACKAGE);
+    const app = playApp(env.GOOGLE_PLAY_PACKAGE);
     const url = subscription
       ? app + "/purchases/subscriptionsv2/tokens/" + encodeURIComponent(purchaseToken)
       : app + "/purchases/products/" + encodeURIComponent(productId) + "/tokens/" + encodeURIComponent(purchaseToken);
@@ -551,8 +557,17 @@ export const createStoreReceipts = (env: CoreEnv, fetchImpl: typeof fetch, now: 
       expiresAt: expiresOf(line?.expiryTime),
       consumable: false,
       sandbox: body.testPurchase !== null && body.testPurchase !== undefined,
-      linkedPurchaseToken: typeof body.linkedPurchaseToken === "string" && body.linkedPurchaseToken ? body.linkedPurchaseToken : undefined,
+      linkedPurchaseToken: linkedOf(body),
     };
+  },
+  googleLinkedToken: async (purchaseToken) => {
+    if (!env.GOOGLE_PLAY_KEY || !env.GOOGLE_PLAY_PACKAGE) {throw notConfigured("google play is not configured");}
+    const accessToken = await googleAccessToken(env, fetchImpl, now);
+    const res = await fetchImpl(playApp(env.GOOGLE_PLAY_PACKAGE) + "/purchases/subscriptionsv2/tokens/" + encodeURIComponent(purchaseToken),
+      { headers: { authorization: "Bearer " + accessToken } });
+    if (!res.ok) {return undefined;}
+    const body: unknown = await res.json().catch(() => null);
+    return isJsonObject(body) ? linkedOf(body) : undefined;
   },
   decodeAppleNotification: async (body) => {
     const verified = await appleVerified(appleToken(body), appleRootPem(env), now);

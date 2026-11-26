@@ -1012,6 +1012,7 @@ test("personal grants are unchanged: one full row per store purchase and one mon
     query: dbFor({ userId, companyId: null, plan: "PRO" }), now: () => new Date(at),
     stores: {
       verifyApple: async () => ({ productId: "ios.pro", originalTransactionId: "tx-" + userId, expiresAt: "2026-12-02T09:00:00.000Z", consumable: false }),
+      googleLinkedToken: async () => undefined,
       verifyGoogle: async () => { throw new Error("google"); },
       decodeAppleNotification: async () => { throw new Error("apple"); },
       decodeGoogleNotification: async () => { throw new Error("google"); },
@@ -1104,6 +1105,7 @@ const storeRefund = async (userId: string, tx: string, at: number, note: { platf
     transaction: (work) => pg!.transaction!((q) => work(wrap(q))),
     stores: {
       verifyApple: async () => ({ productId: "ios.topup", originalTransactionId: tx, expiresAt: null, consumable: true }),
+      googleLinkedToken: async () => undefined,
       verifyGoogle: async () => ({ productId: "ios.topup", originalTransactionId: tx, expiresAt: null, consumable: true }),
       decodeAppleNotification: async () => ({ notificationType: note.type, originalTransactionId: tx, productId: "ios.topup", expiresAt: null }),
       decodeGoogleNotification: async () => ({ notificationType: note.type, purchaseToken: tx, productId: "", expiresAt: null }),
