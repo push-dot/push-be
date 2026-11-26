@@ -73,8 +73,6 @@ async def test_every_company_write_that_reaches_outside_sends_its_card():
 
 
 async def test_a_flow_gate_answer_becomes_the_card_core_checks():
-    import json
-
     from push_agent.harness.graph import record_gate_approval
 
     class Db:
@@ -110,6 +108,5 @@ async def test_a_flow_gate_answer_becomes_the_card_core_checks():
     assert "'APPROVED','approve'" in sql
     assert str(params[0]) == approval_id_for(JOB, "flow:send_offer:x")
     assert params[5] == "send_offer"
-    assert {"profile_id": PROFILE, "message": "커피챗 해요"}.items() <= json.loads(
-        params[6]
-    ).items()
+    assert isinstance(params[6], dict), "tool_args goes in as an object, not a JSON string"
+    assert {"profile_id": PROFILE, "message": "커피챗 해요"}.items() <= params[6].items()

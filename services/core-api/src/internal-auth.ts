@@ -118,9 +118,11 @@ const APPROVAL_ROUTES: ReadonlyArray<ApprovalRoute> = [
   { method: "POST", pattern: /^\/api\/v1\/posts$/, need: asCompany("create_company_post", [], ["category", "title", "body"]) },
 ];
 
+// Cards stored before the AI service wrote tool_args as an object hold a JSON string; unwrap it.
 const CONSUME_APPROVAL = `UPDATE approvals SET consumed_at = COALESCE(consumed_at, now()), consumed_key = $5::uuid
   WHERE id = $1 AND $2::uuid IN (user_id, decided_by) AND kind = 'TOOL_ACTION'
-  AND tool_name = $3 AND status = 'APPROVED' AND option_id = 'approve' AND tool_args @> $4::jsonb
+  AND tool_name = $3 AND status = 'APPROVED' AND option_id = 'approve'
+  AND (CASE WHEN jsonb_typeof(tool_args) = 'string' THEN (tool_args #>> '{}')::jsonb ELSE tool_args END) @> $4::jsonb
   AND (consumed_at IS NULL OR consumed_key = $5::uuid)
   RETURNING id`;
 

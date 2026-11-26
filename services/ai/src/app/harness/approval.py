@@ -315,7 +315,9 @@ async def create_tool_approval(
         event["title"],
         stored,
         tool.name,
-        json.dumps(payload, ensure_ascii=False),
+        # The dict itself: both drivers encode it as a jsonb object. A json.dumps string would be
+        # stored as a jsonb string under asyncpg's codec, and core's `tool_args @>` check never matches it.
+        payload,
         tool_call_id,
         job_id,
         utcnow(),

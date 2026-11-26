@@ -334,3 +334,23 @@ test("a company write needs its card without x-push-company too, and a card bind
   assert.equal(await code(await call("PATCH", `/api/v1/postings/${posting}`, { title: "새 제목", requirements: ["x"] })), "APPROVAL_REQUIRED", "live edit beyond title and description");
   assert.equal(consumed.length, before, "refused before any card is consumed");
 });
+
+test("the card check reads a tool_args stored as a JSON string", async () => {
+  const posting = "21212121-2121-4121-8121-212121212121";
+  let sqlSeen = "";
+  resetLimits();
+  await handle(new Request(`https://core.example/api/v1/postings/${posting}/close`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json", "idempotency-key": "61616161-6161-4161-8161-616161616161",
+      "x-push-internal-secret": SECRET, "x-push-act-as": USER, "x-push-company": COMPANY,
+      "x-push-approval": "51515151-5151-4151-8151-515151515151",
+    },
+    body: "{}",
+  }), env(), deps(async (sql, params = []) => {
+    if (sql.includes("UPDATE approvals SET consumed_at")) {sqlSeen = sql; return empty;}
+    if (sql.includes("SELECT status FROM job_postings")) {return { rows: [{ status: "OPEN" }], rowCount: 1 };}
+    return queryFor(COMPANY)(sql, params);
+  }));
+  assert.match(sqlSeen, /CASE WHEN jsonb_typeof\(tool_args\) = 'string' THEN \(tool_args #>> '\{\}'\)::jsonb ELSE tool_args END\) @> \$4::jsonb/);
+});

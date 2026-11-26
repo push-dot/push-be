@@ -4,7 +4,7 @@ CI test-db sets BILLING_PG_URL; elsewhere these tests skip.
 """
 
 import os
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -102,3 +102,35 @@ async def test_a_company_share_link_dies_when_its_author_leaves_and_members_can_
         await db.q().execute("DELETE FROM conversations WHERE id = $1", conversation)
         await db.q().execute("DELETE FROM companies WHERE id = ANY($1::uuid[])",
                              [company, other_company])
+
+
+async def test_a_tool_card_is_stored_as_an_object_core_can_match(db):
+    from pydantic import BaseModel
+
+    from app.harness.approval import create_tool_approval
+    from app.harness.policy import Tier
+    from app.harness.tools import ToolSpec
+
+    class CloseArgs(BaseModel):
+        posting_id: str
+
+    async def _run(_ctx, _args):
+        return {}
+
+    tool = ToolSpec("close_posting", Tier.RISKY_WRITE, CloseArgs, _run,
+                    lambda _a: "공고를 마감해요")
+    user, conversation, job = await _user(db), uuid4(), uuid4()
+    await db.q().execute(
+        "INSERT INTO conversations (id, user_id, title) VALUES ($1, $2, '마감')",
+        conversation, user)
+    try:
+        event, _created = await create_tool_approval(
+            db, user_id=user, conversation_id=conversation, job_id=job, tool=tool,
+            args=CloseArgs(posting_id="p-1"), tool_call_id="call-1")
+        row = await db.q().fetchrow(
+            "SELECT jsonb_typeof(tool_args) AS t, "
+            "tool_args @> '{\"posting_id\": \"p-1\"}'::jsonb AS ok "
+            "FROM approvals WHERE id = $1", UUID(event["id"]))
+        assert row["t"] == "object" and row["ok"], "core's tool_args @> check matches"
+    finally:
+        await db.q().execute("DELETE FROM conversations WHERE id = $1", conversation)
