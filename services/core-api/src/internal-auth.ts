@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 
-import { one } from './db.ts';
+import { one, query as run } from './db.ts';
 import type { Query } from './db.ts';
 import { HttpError, parseUuid } from "./http.ts";
 import type { CoreEnv, UserRow } from "./types.ts";
@@ -10,7 +10,9 @@ const ACT_AS_USER = `SELECT id, display_name, locale, plan, subscription_status,
   (SELECT role FROM company_members WHERE company_members.user_id = users.id) AS company_role
   FROM users WHERE id = $1`;
 
-export type ActAs = { userId: string; companyId: string | null };
+// claimed: the card this call holds. A failed call gives it back (releaseApproval), so a request the
+// handler rejects never spends the person's approval.
+export type ActAs = { userId: string; companyId: string | null; claimed: Array<{ id: string; key: string | null }> };
 
 const ACT_AS_ROUTES: ReadonlyArray<readonly [RegExp, ReadonlySet<string>]> = [
   [/^\/api\/v1\/postings$/, new Set(["GET", "POST"])],
@@ -124,9 +126,13 @@ const CONSUME_APPROVAL = `UPDATE approvals SET consumed_at = COALESCE(consumed_a
   AND tool_name = $3 AND status = 'APPROVED' AND option_id = 'approve'
   AND (CASE WHEN jsonb_typeof(tool_args) = 'string' THEN (tool_args #>> '{}')::jsonb ELSE tool_args END) @> $4::jsonb
   AND (consumed_at IS NULL OR consumed_key = $5::uuid)
-  RETURNING id`;
+  RETURNING id, (consumed_at = now()) AS fresh`;
 
-const requireApproval = async (request: Request, path: string, userId: string, companyId: string | null, query: Query): Promise<void> => {
+const RELEASE_APPROVAL = `UPDATE approvals SET consumed_at = NULL, consumed_key = NULL
+  WHERE id = $1 AND consumed_key IS NOT DISTINCT FROM $2::uuid AND consumed_at IS NOT NULL`;
+
+const requireApproval = async (request: Request, path: string, userId: string, companyId: string | null, query: Query): Promise<ActAs["claimed"]> => {
+  const claimed: ActAs["claimed"] = [];
   for (const route of APPROVAL_ROUTES) {
     const match = request.method === route.method ? route.pattern.exec(path) : null;
     if (!match) {continue;}
@@ -134,10 +140,19 @@ const requireApproval = async (request: Request, path: string, userId: string, c
     if (!need) {continue;}
     const approvalId = parseUuid(request.headers.get("x-push-approval") || "");
     const retryKey = parseUuid(request.headers.get("idempotency-key") || "");
-    if (!approvalId || !(await one(query, CONSUME_APPROVAL, [approvalId, userId, need.tool, JSON.stringify(need.target), retryKey]))) {
+    const row = approvalId ? await one(query, CONSUME_APPROVAL, [approvalId, userId, need.tool, JSON.stringify(need.target), retryKey]) : null;
+    if (!row || !approvalId) {
+      for (const card of claimed) {await run(query, RELEASE_APPROVAL, [card.id, card.key]);}
       refuse();
     }
+    // A retry of a call that already spent the card holds nothing new to give back.
+    else if (row.fresh === true || row.fresh === "t") {claimed.push({ id: approvalId, key: retryKey });}
   }
+  return claimed;
+};
+
+export const releaseApproval = async (query: Query, acted: ActAs): Promise<void> => {
+  for (const card of acted.claimed) {await run(query, RELEASE_APPROVAL, [card.id, card.key]);}
 };
 
 export const actAsAllowed = (method: string, path: string): boolean =>
@@ -202,11 +217,11 @@ export const actAs = async (request: Request, env: CoreEnv, query: Query): Promi
     const member = await one(query, "SELECT 1 FROM company_members WHERE user_id = $1 AND company_id = $2", [userId, companyId]);
     if (!member) {throw new HttpError(403, "FORBIDDEN", "not a member of this company");}
   }
-  await requireApproval(request, new URL(request.url).pathname, userId, companyId, query);
-  return { userId, companyId };
+  const claimed = await requireApproval(request, new URL(request.url).pathname, userId, companyId, query);
+  return { userId, companyId, claimed };
 };
 
-export const userForActAs = async (query: Query, acted: ActAs): Promise<UserRow> => {
+export const userForActAs = async (query: Query, acted: Pick<ActAs, "userId" | "companyId">): Promise<UserRow> => {
   const row = await one(query, ACT_AS_USER, [acted.userId]);
   if (!row) {throw new HttpError(401, "UNAUTHORIZED", "unauthorized");}
   return userFrom(row, acted.companyId);

@@ -354,3 +354,57 @@ test("the card check reads a tool_args stored as a JSON string", async () => {
   }));
   assert.match(sqlSeen, /CASE WHEN jsonb_typeof\(tool_args\) = 'string' THEN \(tool_args #>> '\{\}'\)::jsonb ELSE tool_args END\) @> \$4::jsonb/);
 });
+
+test("a card goes back only when its write surely did not happen", async () => {
+  const posting = "21212121-2121-4121-8121-212121212121";
+  const approval = "51515151-5151-4151-8151-515151515151";
+  const key = "61616161-6161-4161-8161-616161616161";
+  type Case = { fresh?: boolean; posting?: "missing" | "crash"; limited?: boolean; noUser?: boolean };
+  const run = async (c: Case) => {
+    const released: Array<Array<unknown>> = [];
+    resetLimits();
+    const res = await handle(new Request(`https://core.example/api/v1/postings/${posting}/close`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json", "idempotency-key": key,
+        "x-push-internal-secret": SECRET, "x-push-act-as": USER, "x-push-company": COMPANY, "x-push-approval": approval,
+      },
+      body: JSON.stringify({ expectedRevision: 1 }),
+    }), env(), deps(async (sql, params = []) => {
+      if (sql.includes("SET consumed_at = NULL")) {released.push(params); return empty;}
+      if (sql.includes("UPDATE approvals")) {return { rows: [{ id: approval, fresh: c.fresh ?? true }], rowCount: 1 };}
+      if (sql.includes("SELECT status FROM job_postings")) {return { rows: [{ status: "OPEN" }], rowCount: 1 };}
+      if (sql.includes("rate_limits") && c.limited) {return { rows: [{ hits: 100_000 }], rowCount: 1 };}
+      if (sql.includes("INSERT INTO idempotency_keys")) {return { rows: [{ id: "idem" }], rowCount: 1 };}
+      if (sql.includes("FROM users") && sql.includes("display_name") && c.noUser) {return empty;}
+      if (sql.includes("JOIN companies c ON c.id = m.company_id")) {return { rows: [{ id: COMPANY, name: "모아페이" }], rowCount: 1 };}
+      if (sql.includes("SELECT id, revision, closed_at FROM job_postings")) {
+        return c.posting === "missing" ? empty : { rows: [{ id: posting, revision: 1, closed_at: null }], rowCount: 1 };
+      }
+      if (c.posting === "crash" && sql.includes("UPDATE job_postings")) {throw new Error("db down after the write");}
+      return queryFor(COMPANY)(sql, params);
+    }));
+    return { status: res.status, released };
+  };
+  const given = [[approval, key]];
+
+  const missing = await run({ posting: "missing" });
+  assert.equal(missing.status, 404, "the route refused the close before writing");
+  assert.deepEqual(missing.released, given, "a 4xx gives the card back");
+
+  const crashed = await run({ posting: "crash" });
+  assert.ok(crashed.status >= 500, "a crash may come after a commit");
+  assert.deepEqual(crashed.released, [], "so the card stays spent");
+
+  const limited = await run({ limited: true });
+  assert.equal(limited.status, 429);
+  assert.deepEqual(limited.released, given, "a rate-limited call never ran the route");
+
+  const unknown = await run({ noUser: true });
+  assert.equal(unknown.status, 401);
+  assert.deepEqual(unknown.released, given, "an act-as user that does not exist never ran the route");
+
+  const replay = await run({ fresh: false, posting: "missing" });
+  assert.deepEqual(replay.released, [], "a retry of an already spent card gives nothing back");
+});
+
