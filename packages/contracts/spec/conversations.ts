@@ -99,56 +99,6 @@ export const chatEvents = {
     downloadUrl: { type: "string", description: "Relative to /api/v1, e.g. /conversations/{id}/artifacts/{name}" },
     seq,
   }),
-  employer_research: obj({
-    type: enumOf("employer_research"),
-    company: str,
-    summary: str,
-    sourceCounts: obj({ homepage: int, news: int, postings: int }),
-    facts: arr(obj({ text: str, sourceUrl: str })),
-    seq,
-  }, ["type", "company", "facts", "seq"]),
-  posting_draft: obj({
-    type: enumOf("posting_draft"),
-    version: int,
-    draft: obj({
-      title: str,
-      jobCategory: str,
-      careerMin: int,
-      careerMax: nullable(int),
-      location: str,
-      employmentType: str,
-      workStyle: str,
-      salaryRange: nullable(str),
-      description: arr(str),
-      requirements: arr(str),
-      preferred: arr(str),
-      skills: arr(str),
-    }, ["title", "description", "requirements", "preferred"]),
-    notes: arr(str),
-    seq,
-  }, ["type", "version", "draft", "seq"]),
-  review_report: obj({
-    type: enumOf("review_report"),
-    applicationId: nullable(uuid),
-    attachmentName: nullable(str),
-    summary: str,
-    matches: arr(obj({ requirement: str, status: enumOf("MET", "PARTIAL", "MISSING"), evidence: nullable(str) })),
-    flags: arr(obj({ title: str, level: enumOf("CHECK", "SUPPORTED", "UNKNOWN"), reason: str, quote: nullable(str) })),
-    disclaimer: str,
-    seq,
-  }, ["type", "summary", "flags", "disclaimer", "seq"]),
-  interview_kit: obj({
-    type: enumOf("interview_kit"),
-    applicationId: nullable(uuid),
-    questions: arr(obj({
-      text: str,
-      verify: str,
-      goodSignals: arr(str),
-      cautionSignals: arr(str),
-      fromFlag: nullable(str),
-    }, ["text", "verify"])),
-    seq,
-  }, ["type", "questions", "seq"]),
   done: obj({
     type: enumOf("done"),
     operation: nullable(ref("Operation")),
@@ -200,7 +150,7 @@ const chatStreamDescription = "Frames are `id: <seq>` + `data: <json>` with no `
   + "Every stored frame carries at and turn. cancelled carries resumable. "
   + "After SSE_MAX_POLLS polls (default 20) with no terminal event it closes with no error frame; reconnect via GET .../messages/stream/active with ?after=<last seq>. "
   + "done with `awaiting` means the turn paused for an approval or choice card (operation is null). done with a null operation and no awaiting ends a job that wrote no reply, such as a card answer the run dropped. A stream-level failure emits an error frame without seq. "
-  + "The queued job writes one status frame, text 대기 중, with phase queued, since, and ahead. This stream carries no other status: the phases thinking, working and waiting, and the notice event, are written only in a bot thread (GET /bots/{id}/stream). A status row stored before phases has text only. employer_research, posting_draft, review_report, and interview_kit are built in the employer flow and then dropped by the chat runner, so a live turn does not send them. Replay still forwards a stored row of any of those types. "
+  + "The queued job writes one status frame, text 대기 중, with phase queued, since, and ahead. This stream carries no other status: the phases thinking, working and waiting, and the notice event, are written only in a bot thread (GET /bots/{id}/stream). A status row stored before phases has text only. The employer flows send their results as tool, plan and token frames. "
   + "Every Bot card (approval, choice, plan, paper, todo, diff, fit, result) arrives as an a2ui frame: an A2UI surface of the Push catalog, in v0.9.1 or, with the request header A2UI-Version: 1.0, in 1.0. The card fields stay on the stored chat_events row, which services/ai turns into the surface, and are never sent. A card the server answered itself (a choice with auto) sends no frame; the Bot says what it picked in a token. "
   + "Inside a surface, the action answer carries {optionId, optionIds?} for POST .../approvals/{surfaceId}. After answering, the client sets /open to false and /picked to the sent ids itself; the server sends no update. The actions open_review, share, result_action, open_plan, change and open_posting are handled in the app and never sent. "
   + "The resume flow sends a fit surface after the analysis when a posting is known and managed AI is on, and after each boost cycle. During the analysis it sends the todo surface of list analyze, updated in place, with step ids resume, github, company (회사 조사), posting and fit, and READ tool lines with target, resultLine and extra. Subagent lines use their own tool names (for example posting_agent, resume_agent, company_agent, github_code, github_commits, fact_check, review_reader) and each sends a run line followed by an ok or err line; a client shows any tool name with its summary. In general chat the read_sources tool reads up to four pages and four documents at once and returns quote-checked findings. Flows close with one message whose sections, in order and only when non-empty, are 만든 것, 대신 정한 것, 확인이 필요한 점 and 다음. "
