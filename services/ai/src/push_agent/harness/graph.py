@@ -30,7 +30,7 @@ async def record_gate_approval(db, ctx, tool, args) -> None:
         UUID(ctx.conversation_id),
         tool.summarize(args),
         tool.name,
-        json.dumps(args.model_dump(mode="json"), ensure_ascii=False),
+        args.model_dump(mode="json"),
         ctx.tool_call_id,
         UUID(ctx.job_id),
     )
