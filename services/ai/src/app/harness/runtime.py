@@ -159,6 +159,7 @@ def _state(payload: dict, conversation: dict) -> dict:
         "access_mode": mode.value,
         "tool_calls_used": 0,
         "bot": conversation.get("bot"),
+        "own_posting": conversation.get("own_posting"),
     }
 
 
@@ -278,10 +279,14 @@ class HarnessRuntime:
                 "SELECT c.company_id, c.resume_state, c.posting_id, c.application_id, "
                 "b.kind AS bot_kind, b.display_name AS bot_name, b.company_name AS bot_company, "
                 "b.posting_id AS bot_posting_id, p.title AS bot_posting_title, "
+                "op.title AS own_posting_title, "
                 "(SELECT j.created_at FROM ai_jobs j WHERE j.id = $2) AS job_created_at "
                 "FROM conversations c "
                 "LEFT JOIN bots b ON b.id = c.bot_id AND b.deleted_at IS NULL "
                 "LEFT JOIN job_postings p ON p.id = b.posting_id "
+                # Another company's posting (a reference to write from) never joins.
+                "LEFT JOIN job_postings op ON op.id = c.posting_id "
+                "AND c.company_id IS NOT NULL AND op.company_id = c.company_id "
                 "WHERE c.id = $1",
                 payload.get("conversation_id"),
                 _job_uuid(payload.get("job_id")),
@@ -302,6 +307,9 @@ class HarnessRuntime:
             except (KeyError, IndexError):
                 continue
         found["bot"] = bot_context(row)
+        own_title = _column(row, "own_posting_title")
+        if own_title is not None and found.get("posting_id") and found["company_id"] is not None:
+            found["own_posting"] = {"id": found["posting_id"], "title": str(own_title)}
         if _column(row, "job_created_at") is not None:
             found["job_created_at"] = row["job_created_at"]
         return found

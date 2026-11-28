@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.framework.untrusted import DATA_RULE
+from app.framework.untrusted import DATA_RULE, as_data
 from app.harness.registry import register_harness
 from app.harness.tools import HarnessSpec
 from push_agent.harness.graph import build_employer_graph
@@ -49,6 +49,21 @@ def employer_start(payload: dict, conversation: dict) -> dict | None:
     return start
 
 
+def employer_context(state: dict) -> str | None:
+    """The company's own posting this conversation is about, so the agent works on that id
+    instead of finding a posting by title, which two postings can share."""
+    posting = state.get("own_posting")
+    if not isinstance(posting, dict) or not posting.get("id"):
+        return None
+    return (
+        f"이 대화는 이 회사의 공고 하나에 묶여 있다 (posting_id {posting['id']}). "
+        "담당자가 다른 공고를 말하지 않으면 이 공고를 뜻한다. 제목으로 찾지 말고 이 posting_id로 "
+        "`get_posting`, `update_posting_draft`, `update_published_posting`을 부른다. 공고 제목:\n"
+        # An employer wrote the title. Tagged, it stays data.
+        + as_data(str(posting.get("title") or "제목 없음"), "posting_title", 200)
+    )
+
+
 EMPLOYER = HarnessSpec(
     id="employer",
     prompt=((Path(__file__).parent / "prompt.md").read_text(encoding="utf-8")
@@ -56,6 +71,7 @@ EMPLOYER = HarnessSpec(
     tools=EMPLOYER_TOOLS,
     build_graph=build_employer_graph,
     start_flow=employer_start,
+    context=employer_context,
 )
 
 

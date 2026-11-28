@@ -77,6 +77,8 @@ class HarnessState(TypedDict, total=False):
     access_mode: str
     tool_calls_used: int
     bot: dict[str, Any] | None
+    # The conversation's posting, only when the conversation's company owns it: {"id", "title"}.
+    own_posting: dict[str, Any] | None
     # The system prompt of the last model call held other users' text (reference templates).
     others_in_prompt: bool
 
@@ -517,6 +519,10 @@ def build_harness_graph(spec, checkpointer, *, model, db, core):
                 # After the fixed system prompt, so its cached prefix stays the same across turns.
                 facts = SystemMessage(content=as_data("\n".join(kept), "user_memories", None))
                 messages = [messages[0], facts, *messages[1:]]
+        about = spec.context(state) if spec.context is not None else None
+        if about:
+            # After the fixed system prompt, so its cached prefix stays the same across threads.
+            messages = [messages[0], SystemMessage(content=about), *messages[1:]]
         remembered = (state.get("summary") or "").strip()
         if remembered:
             folded = SystemMessage(content=as_data(remembered, "summary", None))
