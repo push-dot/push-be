@@ -41,13 +41,13 @@ const envInt = (value: string | undefined, fallback: number, max: number): numbe
   return parsed;
 };
 
-const phoneOf = (body: Body): string => {
+export const phoneOf = (body: Body): string => {
   const phone = body.phone;
   if (typeof phone !== "string" || !PHONE_RE.test(phone)) {throw fieldError("phone", "must be E.164");}
   return phone;
 };
 
-const codeOf = (body: Body): string => {
+export const codeOf = (body: Body): string => {
   const code = body.code;
   if (typeof code !== "string" || !CODE_RE.test(code)) {throw fieldError("code", "must be 6 digits");}
   return code;
@@ -69,10 +69,10 @@ const callerOf = async (ctx: Ctx): Promise<UserRow | null> => {
 };
 
 // conflict names what is already linked elsewhere: the phone itself, or the pending social identity.
-const taken = (provider: string): HttpError =>
+export const taken = (provider: string): HttpError =>
   new HttpError(409, "PHONE_TAKEN", "this login is already linked to another account", { conflict: provider === "phone" ? "PHONE" : "IDENTITY", provider });
 
-const bindIdentity = async (ctx: Ctx, userId: string, provider: string, subject: string): Promise<void> => {
+export const bindIdentity = async (ctx: Ctx, userId: string, provider: string, subject: string): Promise<void> => {
   if (!provider || !subject) {return;}
   const existing = await one(ctx.deps.query, IDENTITY, [provider, subject]);
   if (existing) {
@@ -158,7 +158,7 @@ const linkOrBlock = async (ctx: Ctx, userId: string, pending: PendingSignup, pho
   return session(ctx, userId, false, { provider: pending.provider });
 };
 
-const insertSocial = async (ctx: Ctx, userId: string, pending: PendingSignup, phone: string, email: string | null): Promise<void> => {
+const insertSocial = async (ctx: Ctx, userId: string, pending: Pick<PendingSignup, "provider" | "subject">, phone: string | null, email: string | null): Promise<void> => {
   const now = ctx.now.toISOString();
   await query(ctx.deps.query, INSERT_SOCIAL, [userId, pending.provider, pending.subject, now, email, email ? now : null, phone]);
 };
@@ -185,10 +185,8 @@ const createFromPending = async (ctx: Ctx, pending: PendingSignup, phone: string
   return finishOwned(ctx, userId, phone, true);
 };
 
-const verifyPhone = async (ctx: Ctx): Promise<Response> => {
-  const body = await readObject(ctx.request);
-  const phone = phoneOf(body);
-  const code = codeOf(body);
+/** Checks the newest open code for this phone and takes one attempt. Returns the code row id, still unconsumed. */
+export const checkPhoneCode = async (ctx: Ctx, phone: string, code: string): Promise<string> => {
   const max = envInt(ctx.env.PHONE_CODE_MAX_ATTEMPTS, DEFAULT_ATTEMPTS, 20);
   const row = await one(ctx.deps.query, ACTIVE_CODE, [phone]);
   if (!row) {throw new HttpError(400, "PHONE_CODE_INVALID", "code is invalid");}
@@ -203,10 +201,40 @@ const verifyPhone = async (ctx: Ctx): Promise<Response> => {
   if (await sha256Hex(`${String(row.id)}:${code}`) !== String(row.code_hash)) {
     throw new HttpError(400, "PHONE_CODE_INVALID", "code is invalid", { attemptsLeft: Math.max(0, max - Number(taken.attempts)) });
   }
-  const pending = await pendingOf(ctx, body);
-  if (!(await one(ctx.deps.query, CONSUME_ONE, [String(row.id), ctx.now.toISOString()]))) {
+  return String(row.id);
+};
+
+export const consumePhoneCode = async (ctx: Ctx, id: string): Promise<void> => {
+  if (!(await one(ctx.deps.query, CONSUME_ONE, [id, ctx.now.toISOString()]))) {
     throw new HttpError(400, "PHONE_CODE_INVALID", "code is invalid");
   }
+};
+
+/** A new personal social login gets its account at once; the phone is asked for later, when the user applies. */
+export const createSocialAccount = async (ctx: Ctx, social: Pick<PendingSignup, "provider" | "subject" | "email">): Promise<Response> => {
+  const userId = crypto.randomUUID();
+  try {
+    await insertSocial(ctx, userId, social, null, social.email);
+  } catch (error) {
+    // The email already belongs to another account: keep the login, drop the email.
+    if (!isUnique(error) || !social.email) {throw error;}
+    try {
+      await insertSocial(ctx, userId, social, null, null);
+    } catch (error_) {
+      if (!isUnique(error_)) {throw error_;}
+      throw taken(social.provider);
+    }
+  }
+  await bindIdentity(ctx, userId, social.provider, social.subject);
+  return session(ctx, userId, true);
+};
+
+const verifyPhone = async (ctx: Ctx): Promise<Response> => {
+  const body = await readObject(ctx.request);
+  const phone = phoneOf(body);
+  const codeId = await checkPhoneCode(ctx, phone, codeOf(body));
+  const pending = await pendingOf(ctx, body);
+  await consumePhoneCode(ctx, codeId);
   if (pending) {
     const owner = await one(ctx.deps.query, BY_PHONE, [phone]);
     if (owner) {return linkOrBlock(ctx, String(owner.id), pending, phone);}

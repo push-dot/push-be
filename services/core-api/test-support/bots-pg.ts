@@ -1,7 +1,7 @@
 import type { Query, Row } from "../src/db.ts";
 import type { JsonObject } from "../src/json.ts";
 import { handle } from '../src/handler.ts';
-import type { CoreEnv } from '../src/handler.ts';
+import type { CoreEnv, Deps } from '../src/handler.ts';
 import { resetLimits } from "../src/ratelimit.ts";
 import { livePg } from "../test/parity/pg.ts";
 
@@ -50,7 +50,7 @@ export const botsPg = async (url: string) => {
     const id = crypto.randomUUID();
     people.push(id);
     await pg.query(
-      "INSERT INTO users (id, provider, provider_subject, display_name, plan) VALUES ($1::uuid, 'test', $1::uuid::text, 'bot test', $2)",
+      "INSERT INTO users (id, provider, provider_subject, display_name, plan, phone, contact_email, contact_email_verified_at) VALUES ($1::uuid, 'test', $1::uuid::text, 'bot test', $2, '+' || translate($1::uuid::text, '-abcdef', ''), 'bot@test.example', now())",
       [id, plan]);
     if (consent) {await pg.query("INSERT INTO user_consents (user_id, reference_data) VALUES ($1::uuid, true)", [id]);}
     return { id, plan };
@@ -68,7 +68,7 @@ export const botsPg = async (url: string) => {
     return id;
   };
 
-  const call = async (user: Person, method: string, path: string, body?: unknown): Promise<Answer> => {
+  const call = async (user: Person, method: string, path: string, body?: unknown, extra: Partial<Deps> = {}): Promise<Answer> => {
     resetLimits();
     const headers = new Headers({ authorization: "Bearer bots-pg", "content-type": "application/json" });
     if (method === "POST") {headers.set("idempotency-key", crypto.randomUUID());}
@@ -76,7 +76,7 @@ export const botsPg = async (url: string) => {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
-    }), env, { query: queryAs(user), transaction: pg.transaction, now: () => new Date() });
+    }), env, { query: queryAs(user), transaction: pg.transaction, now: () => new Date(), ...extra });
     const parsed: unknown = res.status === 204 ? {} : await res.json();
     const json = isObject(parsed) ? parsed : {};
     return { status: res.status, data: isData(json.data) ? json.data : {}, error: errorOf(json.error), body: json };

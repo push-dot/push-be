@@ -324,7 +324,7 @@ export interface paths {
         put?: never;
         /**
          * Apple native identity token
-         * @description Verifies an identity token from expo-apple-authentication. Audience is the iOS bundle id. The nonce claim is the lowercase hex SHA-256 of the raw nonce. A linked identity returns AuthTokens. First login returns pendingToken and creates no user. Does not join an existing account by email. 503 NOT_CONFIGURED when APPLE_BUNDLE_ID or PENDING_SIGNUP_SECRET is empty. 502 PROVIDER_ERROR when JWKS fetch fails. 401 TOKEN_EXPIRED when the identity token is expired. 409 EMAIL_TAKEN (details.accountType) when that Apple subject is already an EMPLOYER.
+         * @description Verifies an identity token from expo-apple-authentication. Audience is the iOS bundle id. The nonce claim is the lowercase hex SHA-256 of the raw nonce. A linked identity returns AuthTokens. First login creates a personal account without a phone and returns AuthTokens (created=true); the phone is asked for at apply time. Does not join an existing account by email. pendingToken is no longer returned; the oneOf stays for older apps. 503 NOT_CONFIGURED when APPLE_BUNDLE_ID is empty. 502 PROVIDER_ERROR when JWKS fetch fails. 401 TOKEN_EXPIRED when the identity token is expired. 409 EMAIL_TAKEN (details.accountType) when that Apple subject is already an EMPLOYER.
          */
         post: operations["postAuthAppleNative"];
         delete?: never;
@@ -484,7 +484,7 @@ export interface paths {
         put?: never;
         /**
          * Exchange OAuth code for tokens
-         * @description A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login returns pendingToken (15 minutes) and creates no user. Employer login still creates or joins by email. Apple does not join an existing account by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 409 EMAIL_TAKEN (details.accountType) when the identity, or an employer email, belongs to the other account type. 503 NOT_CONFIGURED when PENDING_SIGNUP_SECRET is empty. Clears a pending account deletion on session issue.
+         * @description A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login creates a personal account without a phone and returns AuthTokens (created=true); an email already used by another account is left off the new one. pendingToken is no longer returned; the oneOf stays for older apps. Employer login still creates or joins by email. Apple does not join an existing account by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 409 EMAIL_TAKEN (details.accountType) when the identity, or an employer email, belongs to the other account type. Clears a pending account deletion on session issue.
          */
         post: operations["postAuthExchange"];
         delete?: never;
@@ -564,7 +564,7 @@ export interface paths {
         put?: never;
         /**
          * Verify a phone code and sign in
-         * @description Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: log into that account (created=false) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 409 PHONE_TAKEN if a login to attach is already linked to another account (details.conflict IDENTITY with details.provider, the pending social provider; or conflict PHONE with provider phone, when the phone itself is linked elsewhere). It never names the provider of the account that owns the number. A wrong code is 400 PHONE_CODE_INVALID with details.attemptsLeft. Reaching the attempt limit (default 5) makes the next try 429 RATE_LIMITED with details.reason TOO_MANY_ATTEMPTS and details.maxAttempts. Send does not reveal whether a phone is registered. Signup terms are not stored here.
+         * @description Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). pendingToken only comes from older app versions. With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: log into that account (created=false) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 409 PHONE_TAKEN if a login to attach is already linked to another account (details.conflict IDENTITY with details.provider, the pending social provider; or conflict PHONE with provider phone, when the phone itself is linked elsewhere). It never names the provider of the account that owns the number. A wrong code is 400 PHONE_CODE_INVALID with details.attemptsLeft. Reaching the attempt limit (default 5) makes the next try 429 RATE_LIMITED with details.reason TOO_MANY_ATTEMPTS and details.maxAttempts. Send does not reveal whether a phone is registered. Signup terms are not stored here.
          */
         post: operations["postAuthPhoneVerify"];
         delete?: never;
@@ -2832,6 +2832,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/contact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the contact an employer sees
+         * @description Personal accounts only (403 FORBIDDEN otherwise). phone and email are set only after a code check; both are required by POST /postings/{id}/apply. loginEmail is the verified login email, or null, for the app to suggest.
+         */
+        get: operations["getMeContact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/contact/email": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify the contact email
+         * @description The email must be the one the newest code was sent to. 400 EMAIL_CODE_INVALID (details.attemptsLeft on a wrong code), 400 EMAIL_CODE_EXPIRED, 429 RATE_LIMITED with details.reason TOO_MANY_ATTEMPTS.
+         */
+        post: operations["postMeContactEmail"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/contact/email/send": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send a contact email code
+         * @description Mails a 6-digit code (10 minutes, 5 tries). The verified login email needs no code: it is saved at once and the answer is 200 with verified=true. Resend cooldown 60 seconds (429 RATE_LIMITED, details.retryAfterSec). A new code closes the older one.
+         */
+        post: operations["postMeContactEmailSend"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/contact/phone": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify the contact phone
+         * @description Send the code with POST /auth/phone/send. The number is checked against other accounts only after the code matches, so a wrong code never says whether a number is registered. 409 PHONE_TAKEN (details.conflict PHONE, details.canMoveDocuments true) when another personal account has the number: the code stays open, and the same code again with moveDocuments=true copies that account's live documents (latest version, no application) and files here, then moves the number and its phone login to this account. The other account keeps its own rows. Same 400/429 code errors as /auth/phone/verify.
+         */
+        post: operations["postMeContactPhone"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/devices": {
         parameters: {
             query?: never;
@@ -3704,7 +3784,7 @@ export interface paths {
         put?: never;
         /**
          * Apply to a posting
-         * @description Archived documents cannot be attached: they are 404 like an unknown documentId. Open postings only; EMPLOYER accounts get 403. Creates a job, an application, document snapshots and file copies. If the caller already applied, returns the existing application with 201. Every documentId / sourceId must belong to the caller (404 otherwise). fitScore on this response is always null.
+         * @description Archived documents cannot be attached: they are 404 like an unknown documentId. Open postings only; EMPLOYER accounts get 403. 403 CONTACT_REQUIRED (details.missing, a list of PHONE and EMAIL) until GET /me/contact has both a phone and an email. Creates a job, an application, document snapshots and file copies. If the caller already applied, returns the existing application with 201. Every documentId / sourceId must belong to the caller (404 otherwise). fitScore on this response is always null.
          */
         post: operations["postPostingsByIdApply"];
         delete?: never;
@@ -4478,11 +4558,14 @@ export interface components {
                 capturedAt: string | null;
                 careers: unknown[];
                 displayName: string;
+                /** @description The applicant's verified contact email, else the login email, else empty */
                 email: string;
                 headline: string;
                 /** @description The applicant's user id when their hub profile is public (GET /profiles/{id} works), else null */
                 hubProfileId: string | null;
                 jobCategory: string | null;
+                /** @description The applicant's verified phone (E.164), or null */
+                phone: string | null;
                 /**
                  * @description SUBMITTED is the profile captured at apply time. CURRENT is the live profile, for an application with no snapshot.
                  * @enum {string}
@@ -5506,6 +5589,14 @@ export interface components {
                 version: string | null;
             };
             updatedAt: string | null;
+        };
+        Contact: {
+            /** @description Contact email, set after a mail code or by choosing the verified login email */
+            email: string | null;
+            /** @description The verified login email, or null */
+            loginEmail: string | null;
+            /** @description E.164, set after an SMS code */
+            phone: string | null;
         };
         Conversation: {
             applicationId: string | null;
@@ -12619,6 +12710,159 @@ export interface operations {
                 content: {
                     "application/json": {
                         data: components["schemas"]["Consents"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMeContact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Contact"];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postMeContactEmail: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    code: string;
+                    /** Format: email */
+                    email: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            email: string;
+                            /** @constant */
+                            verified: true;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postMeContactEmailSend: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: email */
+                    email: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            email: string;
+                            /** @constant */
+                            verified: true;
+                        };
+                    };
+                };
+            };
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            cooldownSeconds: number;
+                            /** Format: date-time */
+                            expiresAt: string;
+                        };
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    postMeContactPhone: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description UUID. Required on authenticated POST routes except those ending in /stream. The same key and body replays the first response. A different body, or a key still in flight, is 409 IDEMPOTENCY_CONFLICT. A missing or non-UUID key is 400 VALIDATION_ERROR. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    code: string;
+                    moveDocuments?: boolean;
+                    phone: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            moved?: {
+                                documents: number;
+                                files: number;
+                            };
+                            phone: string;
+                        };
                     };
                 };
             };

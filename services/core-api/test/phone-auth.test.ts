@@ -595,7 +595,7 @@ const socialExchange = async (
   });
 };
 
-test("phone signup then a new social login stays on that account", async () => {
+test("a pending token from an older app still links a social login to the phone account", async () => {
   const db = createDb();
   const sent: Array<Sent> = [];
   await send(db, sent);
@@ -605,13 +605,7 @@ test("phone signup then a new social login stays on that account", async () => {
   assert.equal(db.users.length, 1);
   assert.equal(db.sessions[0]?.user_id, id);
 
-  const first = await socialExchange(db, "ex-google", "google", "gsub");
-  assert.equal(first.status, 200);
-  const pendingBody = await jsonOf<Session>(first);
-  assert.equal(typeof pendingBody.data.pendingToken, "string");
-  assert.equal(pendingBody.data.user, undefined);
-  assert.equal(db.users.length, 1);
-  assert.equal(db.sessions.length, 1);
+  const pendingBody = { data: { pendingToken: (await signPendingSignup(env(), { provider: "google", subject: "gsub", email: null }, NOW)).token } };
 
   db.now = new Date(NOW.getTime() + 169_000);
   await send(db, sent);
@@ -630,11 +624,7 @@ test("phone signup then a new social login stays on that account", async () => {
 
   db.now = new Date(NOW.getTime() + 338_000);
   await send(db, sent);
-  const apple = await socialExchange(db, "ex-apple", "apple", "asub");
-  assert.equal(apple.status, 200);
-  const appleBody = await jsonOf<Session>(apple);
-  assert.equal(typeof appleBody.data.pendingToken, "string");
-  assert.equal(db.users.length, 1);
+  const appleBody = { data: { pendingToken: (await signPendingSignup(env(), { provider: "apple", subject: "asub", email: null }, db.now)).token } };
   const viaPhone = await verify(db, sent, sent[2].code, PHONE, { pendingToken: appleBody.data.pendingToken });
   assert.equal(viaPhone.status, 200);
   const viaPhoneBody = await jsonOf<Session>(viaPhone);
