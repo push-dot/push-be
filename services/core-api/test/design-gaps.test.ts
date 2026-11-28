@@ -23,6 +23,7 @@ const deps = (query: Deps["query"]): Deps => ({ query, now: () => new Date(NOW) 
 const authed = (seen: Array<Call>, employer: boolean, extra: Deps["query"]): Deps["query"] => async (sql, params = []) => {
   seen.push({ sql, params });
   if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+  if (sql.startsWith("SELECT phone, contact_email")) {return { rows: [{ phone: "+821012345678", contact_email: "ada@push.app" }], rowCount: 1 };}
   if (sql.includes("access_tokens")) {
     return {
       rows: [{
@@ -179,6 +180,7 @@ test("applicant list and detail add profile fields and document pages", async ()
     email: "bea@acme.com",
     headline: "Backend",
     jobCategory: null,
+    phone: null,
     tenureYears: null,
     careers: [{ company: "Acme" }],
     skills: ["Go"],

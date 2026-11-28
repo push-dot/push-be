@@ -54,6 +54,7 @@ const tokenRow = (employer: boolean, plan = "FREE") => ({
 const authed = (seen: Array<Call>, employer: boolean, extra: Deps["query"], plan = "FREE"): Deps["query"] => async (sql, params = []) => {
   seen.push({ sql, params });
   if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+  if (sql.startsWith("SELECT phone, contact_email")) {return { rows: [{ phone: "+821012345678", contact_email: "ada@push.app" }], rowCount: 1 };}
   if (sql.includes("access_tokens")) {return { rows: [tokenRow(employer, plan)], rowCount: 1 };}
   if (sql.includes("idempotency_keys") && sql.includes("INSERT")) {
     return { rows: [{ id: "11111111-1111-4111-8111-111111111111" }], rowCount: 1 };
@@ -249,6 +250,7 @@ test("public list and detail hide closed postings and the company list keeps the
   const guestQuery: Deps["query"] = async (sql, params = []) => {
     guestSeen.push({ sql, params });
     if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.startsWith("SELECT phone, contact_email")) {return { rows: [{ phone: "+821012345678", contact_email: "ada@push.app" }], rowCount: 1 };}
     return empty;
   };
   const list = await handle(new Request("https://core.example/api/v1/postings"), env(), deps(guestQuery));
@@ -786,6 +788,7 @@ test("guest list requires open status and does not return a draft", async () => 
   const res = await handle(new Request("https://core.example/api/v1/postings"), env(), deps(async (sql, params = []) => {
     seen.push({ sql, params });
     if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.startsWith("SELECT phone, contact_email")) {return { rows: [{ phone: "+821012345678", contact_email: "ada@push.app" }], rowCount: 1 };}
     if (sql.includes("ORDER BY") && sql.includes("job_postings")) {
       return { rows: asksOpen(sql) ? [] : [draft], rowCount: asksOpen(sql) ? 0 : 1 };
     }
@@ -1063,6 +1066,7 @@ test("member detail includes applicantCount and a non-member detail does not", a
   resetLimits();
   const guest = await handle(new Request(`https://core.example/api/v1/postings/${POSTING}`), env(), deps(async (sql) => {
     if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.startsWith("SELECT phone, contact_email")) {return { rows: [{ phone: "+821012345678", contact_email: "ada@push.app" }], rowCount: 1 };}
     if (/p\.status = 'OPEN'|status = 'OPEN'/.test(sql)) {return empty;}
     if (sql.includes("job_postings")) {
       return { rows: [{ id: POSTING, title: "Secret draft", status: "DRAFT", description: "Hidden", closed_at: null }], rowCount: 1 };
@@ -1161,6 +1165,7 @@ test("facets return every career id and category including zeros", async () => {
   ), env(), deps(async (sql, params = []) => {
     seen.push({ sql, params });
     if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.startsWith("SELECT phone, contact_email")) {return { rows: [{ phone: "+821012345678", contact_email: "ada@push.app" }], rowCount: 1 };}
     if (sql.includes("career_0")) {return { rows: [{ career_0: 2, career_7_9: 1 }], rowCount: 1 };}
     if (sql.includes("GROUP BY p.job_category")) {return { rows: [{ id: "dev", count: 3 }], rowCount: 1 };}
     if (sql.includes("GROUP BY p.location")) {return { rows: [{ id: "서울 강남구", count: 1 }], rowCount: 1 };}
@@ -1218,6 +1223,7 @@ test("guest list returns 200 when the status column is missing", async () => {
   const res = await handle(new Request("https://core.example/api/v1/postings"), env(), deps(async (sql, params = []) => {
     seen.push({ sql, params });
     if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.startsWith("SELECT phone, contact_email")) {return { rows: [{ phone: "+821012345678", contact_email: "ada@push.app" }], rowCount: 1 };}
     if (sql.includes("status")) {throw missingRelation("42703", "column \"status\" of relation \"job_postings\" does not exist");}
     if (sql.includes("job_postings") && sql.includes("count(*)")) {return { rows: [{ total: 1 }], rowCount: 1 };}
     if (sql.includes("ORDER BY") && sql.includes("job_postings")) {
@@ -1438,6 +1444,7 @@ test("guest applicant counts are 404", async () => {
     env(),
     deps(async (sql) => {
       if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+      if (sql.startsWith("SELECT phone, contact_email")) {return { rows: [{ phone: "+821012345678", contact_email: "ada@push.app" }], rowCount: 1 };}
       return empty;
     }),
   );
@@ -1490,7 +1497,8 @@ test("apply checks every document and source in one query each and writes in one
     ENV, { query, now: () => NOW });
   assert.equal(res.status, 201);
   const routeCalls = calls.filter((c) => !/rate_limits|access_tokens|idempotency_keys/.test(c.sql));
-  assert.equal(routeCalls.length, 6);
+  // The extra read is the contact check every apply makes.
+  assert.equal(routeCalls.length, 7);
   assert.equal(routeCalls.filter((c) => c.sql.startsWith("WITH job AS")).length, 1);
   assert.equal(routeCalls.filter((c) => c.sql.includes("INSERT INTO ai_jobs")).length, 1);
 });
@@ -1559,6 +1567,7 @@ test("posting facets run their five counts in parallel", async () => {
   const fallback = setTimeout(release, 200);
   const query: Deps["query"] = async (sql) => {
     if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.startsWith("SELECT phone, contact_email")) {return { rows: [{ phone: "+821012345678", contact_email: "ada@push.app" }], rowCount: 1 };}
     inFlight += 1;
     started += 1;
     peak = Math.max(peak, inFlight);

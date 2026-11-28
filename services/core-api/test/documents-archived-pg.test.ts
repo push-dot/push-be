@@ -50,7 +50,7 @@ test("archiving a document removes it from the document list, the library, the a
   const companyId = crypto.randomUUID();
   const postingId = crypto.randomUUID();
   const [kept, gone] = [crypto.randomUUID(), crypto.randomUUID()];
-  await pg.query("INSERT INTO users (id, provider, provider_subject, display_name, plan, created_at) VALUES ($1::uuid, 'test', $1::uuid::text, 'archived fixture', 'FREE', now())", [user]);
+  await pg.query("INSERT INTO users (id, provider, provider_subject, display_name, plan, created_at, phone, contact_email, contact_email_verified_at) VALUES ($1::uuid, 'test', $1::uuid::text, 'archived fixture', 'FREE', now(), '+' || translate($1::uuid::text, '-abcdef', ''), 'archived@test.example', now())", [user]);
   await pg.query("INSERT INTO companies (id, name) VALUES ($1, 'archived fixture company')", [companyId]);
   await pg.query(
     `INSERT INTO job_postings (id, company, title, job_category, career_min, location, employment_type, description, company_id)

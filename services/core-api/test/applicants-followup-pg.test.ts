@@ -62,7 +62,7 @@ const call = async <T = null>(people: Map<string, Person>, userId: string, metho
 
 const insertUser = async (id: string, name: string, email: string, employer = false) => {
   await pg!.query(
-    "INSERT INTO users (id, provider, provider_subject, display_name, email, is_employer, plan) VALUES ($1::uuid, 'test', $1::uuid::text, $2, $3, $4, 'FREE')",
+    "INSERT INTO users (id, provider, provider_subject, display_name, email, is_employer, plan, phone, contact_email, contact_email_verified_at) VALUES ($1::uuid, 'test', $1::uuid::text, $2, $3, $4, 'FREE', '+' || translate($1::uuid::text, '-abcdef', ''), $3, now())",
     [id, name, email, employer]);
 };
 
@@ -116,7 +116,7 @@ test("isNew clears on open, and the detail keeps the profile from apply time", a
   await pg.query(
     "UPDATE profiles SET headline = $2, job_category = 'design', tenure_years = 9, careers = $3::jsonb, skills = $4::jsonb WHERE user_id = $1",
     [applicant, "지금 한 줄", JSON.stringify([{ company: "새회사" }]), JSON.stringify(["Rust"])]);
-  await pg.query("UPDATE users SET display_name = $2, email = $3 WHERE id = $1", [applicant, "바뀐이름", `new-${applicant.slice(0, 8)}@person.test`]);
+  await pg.query("UPDATE users SET display_name = $2, email = $3, contact_email = $3 WHERE id = $1", [applicant, "바뀐이름", `new-${applicant.slice(0, 8)}@person.test`]);
 
   const again = await call<DetailBody>(people, employer, "GET", `/api/v1/postings/${posting}/applicants/${applicationId}`);
   assert.equal(again.body.data.applicant.profileSource, "SUBMITTED");

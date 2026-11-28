@@ -1,4 +1,5 @@
 import { isMissingRelation, isUndefinedColumn, isUnique, namesUndefinedColumn, one, query, withCalendar } from '../db.ts';
+import { missingContact } from "./contact.ts";
 import type { QueryResult } from '../db.ts';
 import type { JsonObject } from "../json.ts";
 import { enqueueIngest } from "../jobs/ingest.ts";
@@ -575,6 +576,8 @@ async function applyPosting(ctx: Ctx, idRaw: string): Promise<Response> {
     [id]));
   if (!posting) {throw notFound();}
   if (ctx.user.accountType === "EMPLOYER") {throw new HttpError(403, "FORBIDDEN", "employer account required");}
+  const missing = await missingContact(ctx);
+  if (missing.length) {throw new HttpError(403, "CONTACT_REQUIRED", "a verified phone and email are required to apply", { missing });}
   const body = await readObject(ctx.request);
   rejectFields(body, ["userId", "createdAt", "id"]);
   const documentIds = idList(body.documentIds, "documentIds");
@@ -1064,7 +1067,7 @@ const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string
     snapshotDocuments(ctx, applicationId),
     applicationFiles(ctx, applicationId),
     one(ctx.deps.query,
-      `SELECT u.display_name, u.email, p.headline, p.job_category, p.tenure_years, p.careers, p.skills,
+      `SELECT u.display_name, COALESCE(u.contact_email, u.email) AS email, u.phone, p.headline, p.job_category, p.tenure_years, p.careers, p.skills,
          (p.user_id IS NOT NULL AND COALESCE(s.profile_public, true) AND ${NOT_DELETING}) AS hub_public
        FROM users u LEFT JOIN profiles p ON p.user_id = u.id LEFT JOIN user_settings s ON s.user_id = u.id WHERE u.id = $1`,
       [String(application.user_id)]),
@@ -1080,6 +1083,7 @@ const getApplicant = async (ctx: Ctx, postingRaw: string, applicationRaw: string
     applicant: {
       displayName: String(person?.display_name ?? ""),
       email: person?.email === null || person?.email === undefined ? "" : String(person.email),
+      phone: textOrNull(person?.phone),
       headline: submitted ? (snap.headline === null || snap.headline === undefined ? "" : String(snap.headline)) : (person?.headline === null || person?.headline === undefined ? "" : String(person.headline)),
       jobCategory: submitted ? textOrNull(snap.jobCategory) : textOrNull(person?.job_category),
       tenureYears: submitted ? tenureOf(snap.tenureYears) : tenureOf(person?.tenure_years),

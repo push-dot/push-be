@@ -158,6 +158,14 @@ const createDb = () => {
       token.used_at = params[1];
       return { rows: [{ id: token.id }], rowCount: 1 };
     }
+    if (sql.startsWith("SELECT user_id FROM user_identities")) {return { rows: [], rowCount: 0 };}
+    if (sql.startsWith("INSERT INTO user_identities")) {return { rows: [], rowCount: 1 };}
+    if (sql.startsWith("INSERT INTO users") && sql.includes("password_hash, phone)")) {
+      // The personal social insert: (id, provider, subject, created_at, email, email_verified_at, phone).
+      if (params[4] && byEmail(params[4])) {throw Object.assign(new Error("duplicate key"), { code: "23505" });}
+      users.push(userRow({ id: params[0], provider: params[1], provider_subject: params[2], created_at: params[3], email: params[4], email_verified_at: params[5], is_employer: false }));
+      return { rows: [], rowCount: 1 };
+    }
     if (sql.startsWith("INSERT INTO users")) {
       users.push(userRow({
         id: params[0],
@@ -661,7 +669,7 @@ const exchangeCode = async (db: ReturnType<typeof createDb>, verified: boolean, 
   return code;
 };
 
-test("exchange rejects unverified google email and defers a new personal account", async () => {
+test("exchange rejects unverified google email and creates a new personal account without a phone", async () => {
   const verifier = "verifier-verifier-verifier-verifier-verifier";
   const challenge = await pkceChallenge(verifier);
   resetLimits();
@@ -691,9 +699,11 @@ test("exchange rejects unverified google email and defers a new personal account
   const conflict = await handle(post("/api/v1/auth/exchange", { code: takenCode, codeVerifier: verifier }), env(), deps(taken));
   const conflictBody = await readJson(conflict);
   assert.equal(conflict.status, 200);
-  assert.equal(typeof at(conflictBody, "data", "pendingToken"), "string");
-  assert.equal(taken.users.length, 1);
-  assert.equal(calls(taken, "INSERT INTO users").length, 0);
+  assert.equal(at(conflictBody, "data", "pendingToken"), undefined);
+  assert.equal(at(conflictBody, "data", "created"), true);
+  // The employer keeps the email; the new personal account starts without one.
+  assert.equal(taken.users.length, 2);
+  assert.equal(taken.users[1].email, null);
 
   resetLimits();
   const linked = createDb();
@@ -708,10 +718,9 @@ test("exchange rejects unverified google email and defers a new personal account
   const session = await handle(post("/api/v1/auth/exchange", { code: linkedCode, codeVerifier: verifier }), env(), deps(linked));
   assert.equal(session.status, 200);
   const body = await readJson(session);
-  assert.equal(typeof at(body, "data", "pendingToken"), "string");
-  assert.equal(at(body, "data", "user"), undefined);
-  assert.equal(linked.users.length, 1);
-  assert.equal(calls(linked, "INSERT INTO users").length, 0);
+  assert.equal(at(body, "data", "pendingToken"), undefined);
+  assert.equal(linked.users.length, 2);
+  assert.notEqual(at(body, "data", "user", "id"), linked.users[0].id);
 
   resetLimits();
   const created = createDb();
@@ -725,10 +734,11 @@ test("exchange rejects unverified google email and defers a new personal account
   const made = await handle(post("/api/v1/auth/exchange", { code: createdCode, codeVerifier: verifier }), env(), deps(created));
   assert.equal(made.status, 200);
   const madeBody = await readJson(made);
-  assert.equal(typeof at(madeBody, "data", "pendingToken"), "string");
-  assert.equal(at(madeBody, "data", "expiresIn"), 900);
-  assert.equal(created.users.length, 0);
-  assert.equal(calls(created, "INSERT INTO users").length, 0);
+  assert.equal(at(madeBody, "data", "pendingToken"), undefined);
+  assert.equal(typeof at(madeBody, "data", "accessToken"), "string");
+  assert.equal(created.users.length, 1);
+  assert.equal(created.users[0].email, "ada@push.app");
+  assert.equal(created.users[0].phone ?? null, null);
 });
 
 const objectEmails = async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -786,10 +796,10 @@ test("github callback keeps a missing email on the exchange code", async () => {
   resetLimits();
   const session = await handle(post("/api/v1/auth/exchange", { code, codeVerifier: verifier }), env(), deps(db));
   assert.equal(session.status, 200);
-  const pending = await readJson(session);
-  assert.equal(typeof at(pending, "data", "pendingToken"), "string");
-  assert.equal(at(pending, "data", "expiresIn"), 900);
-  assert.equal(db.users.length, 0);
+  const made = await readJson(session);
+  assert.equal(typeof at(made, "data", "accessToken"), "string");
+  assert.equal(db.users.length, 1);
+  assert.equal(db.users[0].email, "ada@push.app");
 
   resetLimits();
   const bare = createDb();

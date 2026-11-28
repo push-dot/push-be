@@ -1,4 +1,4 @@
-import { signPendingSignup } from "../auth/pending-signup.ts";
+import { createSocialAccount } from "./phone-auth.ts";
 import { verifyPkce } from "../crypto.ts";
 import { isMissingRelation, isUndefinedColumn, isUnique, query, one } from "../db.ts";
 import type { Row } from "../db.ts";
@@ -404,8 +404,7 @@ export const completePersonalSocial = async (ctx: Ctx, rec: Row): Promise<Respon
   const rawEmail = (rec.email === null || rec.email === undefined) || String(rec.email).trim() === "" ? null : String(rec.email).trim().toLowerCase();
   const verified = asBool(rec.email_verified) && (rawEmail !== null && rawEmail !== undefined);
   if (provider !== "apple" && !verified) {throw new HttpError(400, "EMAIL_NOT_VERIFIED", "email is not verified");}
-  const signed = await signPendingSignup(ctx.env, { provider, subject, email: verified ? rawEmail : null }, ctx.now);
-  return data(200, { pendingToken: signed.token, expiresIn: signed.expiresIn }, ctx.rid);
+  return createSocialAccount(ctx, { provider, subject, email: verified ? rawEmail : null });
 };
 
 export async function exchange(ctx: Ctx): Promise<Response> {

@@ -74,7 +74,7 @@ export const routes: Array<Route> = [
     tag: "auth",
     summary: "Apple native identity token",
     auth: "public",
-    description: "Verifies an identity token from expo-apple-authentication. Audience is the iOS bundle id. The nonce claim is the lowercase hex SHA-256 of the raw nonce. A linked identity returns AuthTokens. First login returns pendingToken and creates no user. Does not join an existing account by email. 503 NOT_CONFIGURED when APPLE_BUNDLE_ID or PENDING_SIGNUP_SECRET is empty. 502 PROVIDER_ERROR when JWKS fetch fails. 401 TOKEN_EXPIRED when the identity token is expired. 409 EMAIL_TAKEN (details.accountType) when that Apple subject is already an EMPLOYER.",
+    description: "Verifies an identity token from expo-apple-authentication. Audience is the iOS bundle id. The nonce claim is the lowercase hex SHA-256 of the raw nonce. A linked identity returns AuthTokens. First login creates a personal account without a phone and returns AuthTokens (created=true); the phone is asked for at apply time. Does not join an existing account by email. pendingToken is no longer returned; the oneOf stays for older apps. 503 NOT_CONFIGURED when APPLE_BUNDLE_ID is empty. 502 PROVIDER_ERROR when JWKS fetch fails. 401 TOKEN_EXPIRED when the identity token is expired. 409 EMAIL_TAKEN (details.accountType) when that Apple subject is already an EMPLOYER.",
     body: body(obj({ identityToken: str, nonce: str })),
     responses: {
       200: ok({
@@ -89,7 +89,7 @@ export const routes: Array<Route> = [
     tag: "auth",
     summary: "Exchange OAuth code for tokens",
     auth: "public",
-    description: "A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login returns pendingToken (15 minutes) and creates no user. Employer login still creates or joins by email. Apple does not join an existing account by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 409 EMAIL_TAKEN (details.accountType) when the identity, or an employer email, belongs to the other account type. 503 NOT_CONFIGURED when PENDING_SIGNUP_SECRET is empty. Clears a pending account deletion on session issue.",
+    description: "A linked personal identity returns AuthTokens and creates no user. First personal Google, GitHub, or Apple login creates a personal account without a phone and returns AuthTokens (created=true); an email already used by another account is left off the new one. pendingToken is no longer returned; the oneOf stays for older apps. Employer login still creates or joins by email. Apple does not join an existing account by email. 400 EMAIL_NOT_VERIFIED when a new Google or GitHub email is not verified. 409 EMAIL_TAKEN (details.accountType) when the identity, or an employer email, belongs to the other account type. Clears a pending account deletion on session issue.",
     body: body(obj({ code: str, codeVerifier: str })),
     responses: {
       200: ok({
@@ -195,7 +195,7 @@ export const routes: Array<Route> = [
     tag: "auth",
     summary: "Verify a phone code and sign in",
     auth: "optional",
-    description: "Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: log into that account (created=false) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 409 PHONE_TAKEN if a login to attach is already linked to another account (details.conflict IDENTITY with details.provider, the pending social provider; or conflict PHONE with provider phone, when the phone itself is linked elsewhere). It never names the provider of the account that owns the number. A wrong code is 400 PHONE_CODE_INVALID with details.attemptsLeft. Reaching the attempt limit (default 5) makes the next try 429 RATE_LIMITED with details.reason TOO_MANY_ATTEMPTS and details.maxAttempts. Send does not reveal whether a phone is registered. Signup terms are not stored here.",
+    description: "Authorization is ignored. Without pendingToken: log into the personal account for this phone, or create a phone-only account (created=true). pendingToken only comes from older app versions. With a pending social token and a new phone: create one account that has that identity and the phone (created=true). With a pending token and a phone-only account: link that one social identity (linked=true plus provider) and return its session. With a pending token and an account that already has a social identity, including the same provider with another subject: log into that account (created=false) and attach nothing. 400 PHONE_CODE_INVALID, 400 PHONE_CODE_EXPIRED, 401 UNAUTHENTICATED, 401 TOKEN_EXPIRED, 409 PHONE_TAKEN if a login to attach is already linked to another account (details.conflict IDENTITY with details.provider, the pending social provider; or conflict PHONE with provider phone, when the phone itself is linked elsewhere). It never names the provider of the account that owns the number. A wrong code is 400 PHONE_CODE_INVALID with details.attemptsLeft. Reaching the attempt limit (default 5) makes the next try 429 RATE_LIMITED with details.reason TOO_MANY_ATTEMPTS and details.maxAttempts. Send does not reveal whether a phone is registered. Signup terms are not stored here.",
     body: body(obj({
       phone: { type: "string", pattern: String.raw`^\+[1-9]\d{7,14}$` },
       code: { type: "string", pattern: String.raw`^\d{6}$` },
@@ -219,6 +219,40 @@ export const routes: Array<Route> = [
         }),
       }, ["accessToken", "refreshToken", "expiresIn", "created", "user"])),
     },
+  }),
+  get("core", "/api/v1/me/contact", {
+    tag: "auth",
+    summary: "Read the contact an employer sees",
+    description: "Personal accounts only (403 FORBIDDEN otherwise). phone and email are set only after a code check; both are required by POST /postings/{id}/apply. loginEmail is the verified login email, or null, for the app to suggest.",
+    responses: { 200: ok(ref("Contact")) },
+  }),
+  post("core", "/api/v1/me/contact/phone", {
+    tag: "auth",
+    summary: "Verify the contact phone",
+    description: "Send the code with POST /auth/phone/send. The number is checked against other accounts only after the code matches, so a wrong code never says whether a number is registered. 409 PHONE_TAKEN (details.conflict PHONE, details.canMoveDocuments true) when another personal account has the number: the code stays open, and the same code again with moveDocuments=true copies that account's live documents (latest version, no application) and files here, then moves the number and its phone login to this account. The other account keeps its own rows. Same 400/429 code errors as /auth/phone/verify.",
+    body: body(obj({
+      phone: { type: "string", pattern: String.raw`^\+[1-9]\d{7,14}$` },
+      code: { type: "string", pattern: String.raw`^\d{6}$` },
+      moveDocuments: bool,
+    }, ["phone", "code"])),
+    responses: { 200: ok(obj({ phone: str, moved: obj({ documents: int, files: int }) }, ["phone"])) },
+  }),
+  post("core", "/api/v1/me/contact/email/send", {
+    tag: "auth",
+    summary: "Send a contact email code",
+    description: "Mails a 6-digit code (10 minutes, 5 tries). The verified login email needs no code: it is saved at once and the answer is 200 with verified=true. Resend cooldown 60 seconds (429 RATE_LIMITED, details.retryAfterSec). A new code closes the older one.",
+    body: body(obj({ email }, ["email"])),
+    responses: {
+      200: ok(obj({ email: str, verified: { type: "boolean", const: true } })),
+      202: ok(obj({ cooldownSeconds: int, expiresAt: dateTime }), "Accepted"),
+    },
+  }),
+  post("core", "/api/v1/me/contact/email", {
+    tag: "auth",
+    summary: "Verify the contact email",
+    description: "The email must be the one the newest code was sent to. 400 EMAIL_CODE_INVALID (details.attemptsLeft on a wrong code), 400 EMAIL_CODE_EXPIRED, 429 RATE_LIMITED with details.reason TOO_MANY_ATTEMPTS.",
+    body: body(obj({ email, code: { type: "string", pattern: String.raw`^\d{6}$` } }, ["email", "code"])),
+    responses: { 200: ok(obj({ email: str, verified: { type: "boolean", const: true } })) },
   }),
   del("core", "/api/v1/me", {
     tag: "auth",
@@ -515,6 +549,11 @@ export const schemas = {
     email: { type: "string", description: "Empty string when unknown" },
     provider: { type: "string", description: "google, github, apple, email, phone, or empty" },
     plan: enumOf("FREE", "PRO", "ULTRA"),
+  }),
+  Contact: obj({
+    phone: { ...nullable(str), description: "E.164, set after an SMS code" },
+    email: { ...nullable(str), description: "Contact email, set after a mail code or by choosing the verified login email" },
+    loginEmail: { ...nullable(str), description: "The verified login email, or null" },
   }),
   AuthTokens: obj({
     accessToken: str,

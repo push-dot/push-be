@@ -13,6 +13,7 @@ export const recorder = (answer: (sql: string, params: Array<unknown>) => Array<
   const query: Deps["query"] = async (sql, params = []) => {
     calls.push({ sql, params });
     if (sql.includes("rate_limits")) {return { rows: [{ hits: 1 }], rowCount: 1 };}
+    if (sql.startsWith("SELECT phone, contact_email")) {return { rows: [{ phone: "+821012345678", contact_email: "ada@push.app" }], rowCount: 1 };}
     if (sql.includes("access_tokens")) {
       return {
         rows: [{

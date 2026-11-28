@@ -144,6 +144,20 @@ const createDb = () => {
       row.used_at = cells[1];
       return { rows: [{ code: row.code }], rowCount: 1 };
     }
+    if (sql.startsWith("SELECT user_id FROM user_identities")) {return { rows: [], rowCount: 0 };}
+    if (sql.startsWith("INSERT INTO user_identities")) {return { rows: [], rowCount: 1 };}
+    if (sql.startsWith("INSERT INTO users") && sql.includes("password_hash, phone)")) {
+      // The personal social insert: (id, provider, subject, created_at, email, email_verified_at, phone).
+      const email = params[4];
+      if (email && users.some((row) => String(row.email).toLowerCase() === String(email).toLowerCase())) {throw duplicate();}
+      if (users.some((row) => row.provider === params[1] && row.provider_subject === params[2])) {throw duplicate();}
+      users.push({
+        id: cells[0], provider: cells[1], provider_subject: cells[2], display_name: "user", locale: "ko", created_at: cells[3],
+        email: cells[4], email_verified_at: cells[5], is_employer: false, phone: cells[6], plan: "FREE", subscription_status: "NONE",
+        stripe_customer_id: null, period_ends_at: null, company_id: null, company_role: null,
+      });
+      return { rows: [], rowCount: 1 };
+    }
     if (sql.startsWith("INSERT INTO users")) {
       const email = params[6];
       if (email && users.some((row) => String(row.email).toLowerCase() === String(email).toLowerCase())) {throw duplicate();}
@@ -298,11 +312,12 @@ test("apple form_post does not join an account that already has the email", asyn
   }), env(), deps(db));
   assert.equal(exchanged.status, 200);
   const pending: Pending = await exchanged.json();
-  assert.equal(typeof pending.data.pendingToken, "string");
-  assert.equal(pending.data.expiresIn, 900);
-  assert.equal(db.users.length, 1);
+  assert.equal(pending.data.pendingToken, undefined);
+  assert.notEqual(pending.data.user?.id, GOOGLE_ID);
+  assert.equal(db.users.length, 2);
   assert.equal(db.users[0].id, GOOGLE_ID);
-  assert.equal(db.users.some((row) => row.provider === "apple"), false);
+  // The relay email stays with the google account; the new apple account has none.
+  assert.equal(db.users.find((row) => row.provider === "apple")?.email, null);
 
   prepare();
   db.setToken(signJwt(claims({ email: undefined, email_verified: undefined })));
@@ -313,8 +328,8 @@ test("apple form_post does not join an account that already has the email", asyn
   }), env(), deps(db));
   assert.equal(again.status, 200);
   const second: Pending = await again.json();
-  assert.equal(typeof second.data.pendingToken, "string");
-  assert.equal(db.users.length, 1);
+  assert.equal(second.data.user?.id, pending.data.user?.id);
+  assert.equal(db.users.length, 2);
 });
 
 test("apple native verifies nonce audience and expiry", async () => {
@@ -327,25 +342,9 @@ test("apple native verifies nonce audience and expiry", async () => {
   }), env(), deps(db));
   assert.equal(ok.status, 200);
   const session: Pending = await ok.json();
-  assert.equal(typeof session.data.pendingToken, "string");
-  assert.equal(session.data.expiresIn, 900);
-  assert.equal(db.users.length, 0);
+  assert.equal(session.data.pendingToken, undefined);
+  assert.equal(db.users.length, 1);
 
-  db.users.push({
-    id: GOOGLE_ID,
-    provider: "apple",
-    provider_subject: SUB,
-    display_name: "Ada",
-    locale: "ko",
-    created_at: NOW.toISOString(),
-    email: null,
-    email_verified_at: null,
-    is_employer: false,
-    plan: "FREE",
-    subscription_status: "NONE",
-    company_id: null,
-    company_role: null,
-  });
   prepare();
   const back = await handle(new Request("https://core.example/api/v1/auth/apple/native", {
     method: "POST",
@@ -355,7 +354,7 @@ test("apple native verifies nonce audience and expiry", async () => {
   assert.equal(back.status, 200);
   const signedIn: Pending = await back.json();
   assert.equal(signedIn.data.pendingToken, undefined);
-  assert.equal(signedIn.data.user?.id, GOOGLE_ID);
+  assert.equal(signedIn.data.user?.id, session.data.user?.id);
   assert.equal(db.users.length, 1);
 
   prepare();

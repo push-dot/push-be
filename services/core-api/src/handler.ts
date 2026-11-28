@@ -6,6 +6,7 @@ import { deleteAccount, exchange, logout, me, oauthCallback, oauthStart, refresh
 import { dispatchAppleAuth } from "./routes/apple-auth.ts";
 import { dispatchEmailAuth } from "./routes/email-auth.ts";
 import { dispatchPhoneAuth } from "./routes/phone-auth.ts";
+import { dispatchContact } from "./routes/contact.ts";
 import { dispatchToss, runTossRenewals } from "./routes/toss-billing.ts";
 import { appleWebhook, billingStatus, checkout, googleWebhook, ledger, portal, topup, verifyIap, webhook } from "./routes/billing.ts";
 import { createEvent, deleteEvent, listEvents, patchEvent } from "./routes/calendar.ts";
@@ -211,6 +212,8 @@ export async function dispatch(ctx: Ctx, path: string): Promise<Response> {
   if (phoned) {return phoned;}
   const appled = await dispatchAppleAuth(ctx, path);
   if (appled) {return appled;}
+  const contact = await dispatchContact(ctx, path);
+  if (contact) {return contact;}
 
   if (method === "POST" && path === "/api/v1/conversations") {return createConversation(ctx);}
   const conv = path.match(/^\/api\/v1\/conversations\/([^/]+)$/);
